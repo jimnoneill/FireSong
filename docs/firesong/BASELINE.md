@@ -84,3 +84,27 @@ Measured on the server machine on 2026-11-12/13 at the integration head, after m
 | `cd android/firesong-tv && ./gradlew assembleDebug testDebugUnitTest testReleaseUnitTest lintDebug` | **pass**: 30 + 30, lint clean |
 
 Quirk found during integration: the server's integration tests open `/m` from the embedded `client/dist`, so run `pnpm build` in `client/` before `cargo test` in a fresh worktree; otherwise `phone_listener_keeps_the_pairing_token_and_command_allowlist` gets 404.
+
+## After the integration review fixes (`fs/integration`, 2026-11-12/13)
+
+Measured on the server machine after the fixes for the integration review (pairing cookie, offer flood, rotation save, phone latency calibration, solo phone, rack processors, reveal synth, TV app lifecycle and configure replay, prep restarts and eviction, tvctl/cube.sh guards). Logs are in `/mnt/fast/firesong/logs/int-fix-*`.
+
+| Command | Result |
+|---|---|
+| in `client/`: `pnpm typecheck`, `lint`, `format:check`, `rules:check`, `build` | **pass** |
+| `cargo test --workspace --exclude Nightingale --locked` | **pass**: app-api 4, app-core 90, server 19 (3 new: stale cookie vs new link, offer flood vs the TV seat, rotation that cannot be saved), xtask 0 |
+| `cargo fmt --all --check`; `cargo clippy ... -D warnings` | **pass** |
+| `cargo test --workspace --locked` | **FAIL, pre-existing** (row 8, GTK `-sys` crates) |
+| `cd tools/firesong-tests && pnpm test` | **pass**: 90 (+ solo mic, calibration, reveal synth wiring) |
+| `cd tools/firesong-tests && pnpm harness` | **pass**: 4/4 (+ rack release) on 4 of 5 runs; see the note below |
+| `cd tools/webtest && pnpm test`, `typecheck`, `lint`, `format:check` | **pass**: 47 |
+| `scripts/firesong/test-client.sh` | **pass**: 48 |
+| `scripts/firesong/e2e-phone-mic.sh` | **pass**: 21/21 |
+| `scripts/firesong/e2e-integration.sh` | **pass**: 15/15 checks, 3 runs. Display 100 vs 80, raw 999 vs 169 |
+| `party-prep.py self-test`; `test_fetch_clips.py`; `cube.sh self-test`; `server-install.sh self-test`; shellcheck | **pass**: 60; 14; 23; 13; clean (`devenv.sh` checked with `-s bash`) |
+| `cd android/firesong-tv && ./gradlew assembleDebug testDebugUnitTest testReleaseUnitTest lintDebug` | **pass**: 37 + 37, lint clean |
+
+Quirks found:
+
+- The harness test "latency-locked echo" is flaky, and it was flaky before these fixes. It failed in 1 of 5 full harness runs and 1 of 4 solo runs. With the pre-fix audio code it failed in 2 of 6 solo runs. When it fails, the echo autocorrelation peak sits at the 50 ms search floor instead of at `d_i`.
+- `scripts/firesong/e2e-integration.sh --no-build` does not work. The script sources `devenv.sh` with `--no-build` still in `$1`, so the devenv key becomes `--no-build` and the server binary is looked for in `target---no-build`. Run it without the flag.

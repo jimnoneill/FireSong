@@ -96,14 +96,34 @@ export function createRevealSynth({ context, destination }: SoundOutput): Reveal
   limiter.threshold.value = -8;
   limiter.ratio.value = 12;
   master.connect(limiter);
-  limiter.connect(destination);
 
   const noise = makeNoise(context);
   const live = new Set<AudioScheduledSourceNode>();
 
+  // The output (on the TV, the never-closed voice engine) only holds the
+  // synth while it sounds, so finished reveals leave nothing in its graph.
+  let wired = false;
+  const unwireWhenSilent = () => {
+    if (wired && live.size === 0) {
+      limiter.disconnect();
+      wired = false;
+    }
+  };
+
   const track = (source: AudioScheduledSourceNode, start: number, stop: number) => {
+    if (!wired) {
+      limiter.connect(destination);
+      wired = true;
+    }
     live.add(source);
-    source.addEventListener('ended', () => live.delete(source), { once: true });
+    source.addEventListener(
+      'ended',
+      () => {
+        live.delete(source);
+        unwireWhenSilent();
+      },
+      { once: true },
+    );
     source.start(start);
     source.stop(stop);
   };
@@ -265,6 +285,7 @@ export function createRevealSynth({ context, destination }: SoundOutput): Reveal
         }
       }
       live.clear();
+      unwireWhenSilent();
     },
   };
 }

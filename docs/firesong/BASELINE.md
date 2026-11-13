@@ -63,3 +63,24 @@ No new failures.
 | `cargo test --workspace --locked` (Tauri crate included) | **FAIL, pre-existing**: the same GTK `-sys` build scripts as row 8. The Tauri crate's calls into `server` and `app-api` (`remote_router`, `AppState::new`, `RemoteAddress::new`, `dispatch`) keep their signatures. |
 
 Mutation check of the new server tests: removing the host-token layer, disabling the `save_config` secret restore, skipping the `resumeKey` check, and stamping offers with the wrong slot each made at least one test fail.
+
+## After integration (`fs/integration`: all work packages merged)
+
+Measured on the server machine on 2026-11-12/13 at the integration head, after merging `fs/server`, `fs/deploy`, `fs/tv-voice`, `fs/phone-page`, `fs/firetv-apk` and `fs/noraebang` and wiring their seams. Logs are in `/mnt/fast/firesong/logs/int-*`.
+
+| Command | Result |
+|---|---|
+| in `client/`: `pnpm typecheck`, `lint`, `format:check`, `rules:check`, `build` | **pass** (the Vite chunk-size warning is upstream) |
+| `cargo test --workspace --exclude Nightingale --locked` | **pass**: app-api 4, app-core 90 (77 base + 1 idle exit + 12 noraebang clips), server 16 (`tests/firesong.rs`, one new: a phone hello on the TV door), xtask 0 |
+| `cargo fmt --all --check`; `cargo clippy --workspace --exclude Nightingale --all-targets --all-features --locked -- -D warnings` | **pass** |
+| `cargo test --workspace --locked` | **FAIL, pre-existing** (row 8, GTK `-sys` crates) |
+| `cd tools/firesong-tests && pnpm test` | **pass**: 80 (74 from WP4 + 6 integration: noraebang seams, echo mix, diagnostics flag) |
+| `cd tools/firesong-tests && pnpm harness` | **pass**: 3/3 |
+| `cd tools/webtest && pnpm test`, `typecheck`, `lint`, `format:check` | **pass**: 47 |
+| `scripts/firesong/test-client.sh` | **pass**: 48 |
+| `scripts/firesong/e2e-phone-mic.sh` | **pass**: 21/21 |
+| `scripts/firesong/e2e-integration.sh` (real server, TV and two phones, 440 vs 330 Hz) | **pass**: 15/15 checks, 5 passing runs. Display scores 100 vs 80, raw 995-999 vs 168-169 |
+| `party-prep.py self-test`; `test_fetch_clips.py`; `cube.sh self-test`; `server-install.sh self-test`; shellcheck | **pass**: 53; 14; 21; 13; clean |
+| `cd android/firesong-tv && ./gradlew assembleDebug testDebugUnitTest testReleaseUnitTest lintDebug` | **pass**: 30 + 30, lint clean |
+
+Quirk found during integration: the server's integration tests open `/m` from the embedded `client/dist`, so run `pnpm build` in `client/` before `cargo test` in a fresh worktree; otherwise `phone_listener_keeps_the_pairing_token_and_command_allowlist` gets 404.

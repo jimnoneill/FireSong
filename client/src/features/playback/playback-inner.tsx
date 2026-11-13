@@ -12,10 +12,13 @@ import type { PlaybackOptions, PlaybackProgress } from '@/bridge/playback-remote
 import type { PlaybackPlayer } from '@/bridge/playback-session';
 import type { PlaybackCommand, PlaybackStatus } from '@/bridge/playback-status';
 import { isTauri } from '@/bridge/runtime';
-import { Background } from '@/features/playback/components/background';
-import { ResultDialog } from '@/features/playback/components/dialogs/result';
+import {
+  ModeBackground,
+  ModeLyrics,
+  ModeResult,
+} from '@/features/noraebang/components/playback-mode';
+import { useNoraebangSettings } from '@/features/noraebang/settings';
 import { LoadingScreen } from '@/features/playback/components/loading-screen';
-import { LyricsDisplay } from '@/features/playback/components/lyrics-display';
 import { PauseOverlay } from '@/features/playback/components/pause-overlay';
 import { PitchGraph } from '@/features/playback/components/pitch-graph';
 import { PlaybackHud } from '@/features/playback/components/playback-hud';
@@ -24,6 +27,7 @@ import {
   isPixabayTheme,
   themeKey,
   themeName,
+  type PlaybackTheme,
 } from '@/features/playback/components/theme';
 import { usePlaybackInput, usePlaybackResult } from '@/features/playback/hooks';
 import { usePlaybackConfigPersist } from '@/features/playback/hooks/use-playback-config-persist';
@@ -60,6 +64,9 @@ export type PlaybackInnerProps = {
 };
 
 type PlaybackLayoutProps = PlaybackInnerProps;
+
+const showPitchGraph = (theme: PlaybackTheme, noraebang: boolean): boolean =>
+  !noraebang && !isPitchGuideTheme(theme);
 
 function displaySettings(config: AppConfig | null) {
   return {
@@ -107,7 +114,11 @@ function PlaybackLayout({
   const hudPosition = lyricsVerticalPosition === 'top' ? 'bottom' : 'top';
   const sessionWindowControls = sessionPlayback && isTauri;
 
-  const result = usePlaybackResult(song, queuePlayback, players ?? []);
+  const noraebang = useNoraebangSettings().enabled;
+  const result = usePlaybackResult(song, queuePlayback, players ?? [], {
+    alwaysShowResult: noraebang,
+    playSuccessSound: !noraebang,
+  });
   usePlaybackInput(config, !result.open);
 
   // One state object feeds the host modals and the phone remote, so both offer
@@ -231,18 +242,22 @@ function PlaybackLayout({
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-black" style={{ contain: 'strict' }}>
-      <Background />
+      <ModeBackground noraebang={noraebang} />
       <PlaybackHud
         title={song.title}
         artist={song.artist}
         config={config}
         position={hudPosition}
         windowControls={sessionWindowControls}
+        hideScore={noraebang}
       />
-      {!isPitchGuideTheme(theme) && (
+      {showPitchGraph(theme, noraebang) && (
         <PitchGraph series={mic.series} position={hudPosition} scale={pitchGraphScale} />
       )}
-      <LyricsDisplay
+      <ModeLyrics
+        noraebang={noraebang}
+        title={song.title}
+        artist={song.artist}
         segments={segments}
         verticalPosition={lyricsVerticalPosition}
         horizontalPosition={lyricsHorizontalPosition}
@@ -254,7 +269,10 @@ function PlaybackLayout({
 
       <PauseOverlay open={paused && !result.open} actions={actions} onCommand={runCommand} />
 
-      <ResultDialog
+      <ModeResult
+        noraebang={noraebang}
+        players={players ?? []}
+        soloMicrophoneId={mic.selectedMicId}
         open={result.open}
         results={result.results}
         song={song}

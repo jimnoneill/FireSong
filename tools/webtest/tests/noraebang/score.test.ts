@@ -147,16 +147,17 @@ describe('noraebang score', () => {
   });
 
   it('ranks by shown score, raw score breaking ties, sharing equal ranks', () => {
-    const score = (displayScore: number, rawScore: number) => ({
-      displayScore,
-      rawScore,
-      tier: 'great' as const,
-    });
     expect(rankScores([score(88, 300), score(95, 400), score(88, 320), score(88, 300)])).toEqual([
       3, 1, 2, 3,
     ]);
     expect(rankScores([])).toEqual([]);
   });
+});
+
+const score = (displayScore: number, rawScore: number) => ({
+  displayScore,
+  rawScore,
+  tier: 'great' as const,
 });
 
 /** Smallest raw score that shows `target` at full participation (0 for anything below the floor). */

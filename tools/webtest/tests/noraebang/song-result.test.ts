@@ -67,19 +67,20 @@ describe('song-result frame', () => {
 });
 
 describe('song-result sink', () => {
-  let unregister = () => {};
-  afterEach(() => unregister());
+  let unregister: (() => void) | null = null;
+  afterEach(() => unregister?.());
 
   it('is a no-op until the TV socket registers, then sends through it', () => {
     expect(publishSongResult('t', [entry('remote:mic-aaaa-1111', 500, 1)])).toBe(false);
 
     const send = vi.fn<(frame: TvToServer) => void>();
-    unregister = registerSongResultSink({ send, slotForMicrophone: slotFor });
+    const release = registerSongResultSink({ send, slotForMicrophone: slotFor });
+    unregister = release;
     expect(publishSongResult('t', [entry('remote:mic-aaaa-1111', 500, 1)])).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0]).toMatchObject({ type: 'song-result', title: 't' });
 
-    unregister();
+    release();
     expect(publishSongResult('t', [entry('remote:mic-aaaa-1111', 500, 1)])).toBe(false);
   });
 });

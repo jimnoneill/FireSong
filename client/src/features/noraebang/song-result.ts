@@ -75,6 +75,11 @@ export function registerSongResultSink(next: SongResultSink): () => void {
   };
 }
 
+/** The slot a microphone is in, from the registered sink; `null` without one. */
+export function phoneMicSlot(microphoneId: string): MicSlot | null {
+  return sink?.slotForMicrophone(microphoneId) ?? null;
+}
+
 /** Sends the result to the phones; `false` when there is no sink or no phone singer. */
 export function publishSongResult(title: string, entries: readonly SongResultEntry[]): boolean {
   const current = sink;

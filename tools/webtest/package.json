@@ -5,7 +5,11 @@
   "description": "FireSong unit and component tests for client code. React and every client dependency come from client/node_modules; this package only adds the test runner.",
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "format": "../../client/node_modules/.bin/oxfmt -c ../../client/.oxfmtrc.json tests vitest.config.ts package.json tsconfig.json",
+    "format:check": "../../client/node_modules/.bin/oxfmt -c ../../client/.oxfmtrc.json --check tests vitest.config.ts package.json tsconfig.json",
+    "lint": "PATH=\"$PWD/../../client/node_modules/.bin:$PATH\" oxlint -c ../../client/.oxlintrc.json --tsconfig tsconfig.json tests vitest.config.ts",
+    "test": "vitest run",
+    "typecheck": "../../client/node_modules/.bin/tsc -p tsconfig.json"
   },
   "devDependencies": {
     "happy-dom": "20.14.6",

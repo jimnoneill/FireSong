@@ -13,6 +13,8 @@ m-bain/whisperX, ``whisperx/alignment.py``); only the trellis/backtrack section
 is replaced.
 """
 
+import os
+
 import numpy as np
 import pandas as pd
 import torch
@@ -23,6 +25,25 @@ from nltk.data import load as nltk_load
 
 from whisperx.audio import SAMPLE_RATE
 from whisperx.utils import interpolate_nans, PUNKT_LANGUAGES
+
+
+def _load_sentence_splitter(punkt_lang):
+    resource = f"tokenizers/punkt_tab/{punkt_lang}.pickle"
+    try:
+        return nltk_load(resource)
+    except LookupError:
+        pass
+    # nltk refuses data in a directory other accounts can write, so fetch into
+    # the analyzer's own NLTK_DATA directory (searched first) instead of
+    # ~/nltk_data, and without group/other write bits.
+    target = (os.environ.get("NLTK_DATA") or "").split(os.pathsep)[0] or None
+    previous_umask = os.umask(0o022)
+    try:
+        nltk.download("punkt_tab", quiet=True, download_dir=target)
+    finally:
+        os.umask(previous_umask)
+    return nltk_load(resource)
+
 
 LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
 
@@ -99,11 +120,7 @@ def ctc_align(
         clean_wdx = list(range(len(text.split(" ") if model_lang not in LANGUAGES_WITHOUT_SPACES else text)))
 
         punkt_lang = PUNKT_LANGUAGES.get(model_lang, "english")
-        try:
-            sentence_splitter = nltk_load(f"tokenizers/punkt_tab/{punkt_lang}.pickle")
-        except LookupError:
-            nltk.download("punkt_tab", quiet=True)
-            sentence_splitter = nltk_load(f"tokenizers/punkt_tab/{punkt_lang}.pickle")
+        sentence_splitter = _load_sentence_splitter(punkt_lang)
         sentence_spans = list(sentence_splitter.span_tokenize(text))
 
         segment_data[sdx] = {

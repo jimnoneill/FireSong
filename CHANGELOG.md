@@ -26,6 +26,7 @@ below.
 ### Fixes
 
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.
+- Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
 
 ## [1.4.1] - 2026-11-09
 

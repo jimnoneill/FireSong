@@ -1,4 +1,4 @@
-import { MicIcon, MicOffIcon } from 'lucide-react';
+import { ListMusicIcon, MicIcon, MicOffIcon } from 'lucide-react';
 
 import { LevelMeter } from '@/features/phone-mic/components/level-meter';
 import { linkMessage } from '@/features/phone-mic/components/problem-message';
@@ -7,8 +7,12 @@ import type { PhoneMicSnapshot } from '@/features/phone-mic/lib/session';
 import { slotColor, type MicSlot } from '@/features/remote-mic/protocol';
 import { t } from '@/i18n';
 import { Alert, AlertDescription } from '@/shared/components/ui/alert';
-import { Button } from '@/shared/components/ui/button';
+import { Button, buttonVariants } from '@/shared/components/ui/button';
 import { playerColorOption } from '@/shared/player-colors';
+import { cn } from '@/shared/utils/cn';
+
+/** The existing phone queue page, opened in a new tab so the mic page is not unloaded. */
+const REMOTE_QUEUE_PATH = '/q';
 
 type LivePanelProps = {
   snapshot: PhoneMicSnapshot;
@@ -84,6 +88,16 @@ export function LivePanel({
       {snapshot.wakeLock === 'unavailable' ? (
         <p className="text-center text-sm text-muted-foreground">{t('phoneMic.wakeLockHint')}</p>
       ) : null}
+
+      <a
+        href={REMOTE_QUEUE_PATH}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-12 text-base')}
+      >
+        <ListMusicIcon className="size-5" />
+        {t('phoneMic.actions.queue')}
+      </a>
 
       <Button type="button" variant="ghost" className="self-center" onClick={onLeave}>
         {t('phoneMic.actions.leave')}

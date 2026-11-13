@@ -9,6 +9,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [ "${1:-}" != "--no-build" ]; then
-  pnpm --dir "$repo/client" build >/dev/null
+  # From client/, so corepack picks the pnpm pinned in client/package.json.
+  (cd "$repo/client" && pnpm build >/dev/null)
 fi
 exec node "$repo/tools/phone-mic-e2e/run.mjs"

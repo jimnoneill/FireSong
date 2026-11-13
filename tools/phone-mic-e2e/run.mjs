@@ -225,6 +225,8 @@ async function joinFlow({ relay, phone }) {
     ms: timings.joinToLiveMs,
   });
 
+  check('song queue opens the existing /q page in a new tab', await phone.evaluate(`document.querySelector('a[href="/q"][target="_blank"]') !== null`));
+
   const hello = relay.framesFrom('mic', 'hello').at(-1)?.frame;
   check('hello carries micId, QR slot and name', hello?.slot === SLOT && hello?.name === 'Jim' && /^[\w-]{8,64}$/.test(hello?.micId), { hello });
   const constraints = await phone.evaluate('window.__e2e.constraints[0]');

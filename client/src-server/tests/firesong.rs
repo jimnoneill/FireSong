@@ -1077,3 +1077,37 @@ async fn a_new_link_wins_over_a_stale_pairing_cookie() {
     assert_eq!(status, StatusCode::OK);
     assert!(headers.get(header::SET_COOKIE).is_none());
 }
+
+#[tokio::test]
+async fn a_rotation_that_cannot_be_saved_changes_nothing() {
+    let _turn = ROTATION.lock().await;
+    let server = start(fast_timings()).await;
+    let full = server::router(server.state.clone());
+    let (mut alice, _) = phone(&server, mic_hello(MIC_A, Some(1))).await;
+
+    // A directory where the temporary file goes makes the write fail.
+    let blocker = data_root().join("remote-control.json.part");
+    std::fs::create_dir_all(&blocker).expect("block the token write");
+    let (status, _, body) = http(full, rotate_request()).await;
+    std::fs::remove_dir_all(&blocker).expect("unblock");
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(!body.contains(PAIRING_TOKEN));
+
+    expect_quiet_phone(&mut alice).await;
+    let old = get(&format!("/q?t={PAIRING_TOKEN}"))
+        .body(Body::empty())
+        .expect("req");
+    let phone_router = server::remote_router(server.state.clone());
+    assert_eq!(http(phone_router, old).await.0, StatusCode::OK);
+}
+
+/// Asserts the phone gets no frame (it was not kicked) for a short while.
+async fn expect_quiet_phone(socket: &mut Socket) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
+        assert!(
+            matches!(message, Message::Ping(_) | Message::Pong(_)),
+            "unexpected frame {message:?}"
+        );
+    }
+}

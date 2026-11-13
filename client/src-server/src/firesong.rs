@@ -251,16 +251,26 @@ async fn handle_mic_links(State(state): State<AppState>, headers: HeaderMap) -> 
 }
 
 /// New pairing token: every printed or shown link stops working and every
-/// phone is disconnected (`slot-lost {kicked}`). Returns the new links.
+/// phone is disconnected (`slot-lost {kicked}`). Returns the new links. The
+/// token is saved first; if that fails nothing changes, or a restart would
+/// bring the revoked token back.
 async fn handle_rotate_pairing_token(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<MicLinks>, (StatusCode, &'static str)> {
+    const FAILED: (StatusCode, &str) = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "token rotation failed: the new token could not be saved",
+    );
     let fresh = app_core::RemoteControl::default();
     let to_save = fresh.clone();
-    tokio::task::spawn_blocking(move || to_save.save())
+    tokio::task::spawn_blocking(move || to_save.try_save())
         .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "token rotation failed"))?;
+        .map_err(|_| FAILED)?
+        .map_err(|error| {
+            tracing::warn!("pairing token rotation not saved: {error}");
+            FAILED
+        })?;
     *state.remote.write().unwrap_or_else(PoisonError::into_inner) = fresh;
     let kicked = state.firesong.hub().kick_all();
     tracing::info!(kicked, "pairing token rotated");

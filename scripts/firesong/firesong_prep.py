@@ -680,9 +680,11 @@ def _alloc(st: os.stat_result) -> int:
     return blocks * 512 if blocks is not None else st.st_size
 
 
-def scan_cache(root: Path, song_dir: Path) -> CacheUsage:
+def scan_cache(root: Path, song_dir: Path, statvfs: bool = True) -> CacheUsage:
     """Sizes of every song's files in the songs dir (top level, sources/,
-    playable_videos/), plus the whole volume's usage."""
+    playable_videos/), plus the whole volume's usage (root is the mount point
+    of the size-capped volume, so its statvfs is the honest measure against
+    the hard cap; statvfs=False judges by the files alone)."""
     groups: dict[str, SongGroup] = {}
     walk = 0
     other = 0
@@ -717,12 +719,14 @@ def scan_cache(root: Path, song_dir: Path) -> CacheUsage:
                 add(p, st, name)
             else:
                 other += _alloc(st)
-    try:
-        vfs = os.statvfs(root)
-        used = (vfs.f_blocks - vfs.f_bfree) * vfs.f_frsize
-        total = vfs.f_blocks * vfs.f_frsize
-    except OSError:
-        used, total = 0, 0
+    used, total = 0, 0
+    if statvfs:
+        try:
+            vfs = os.statvfs(root)
+            used = (vfs.f_blocks - vfs.f_bfree) * vfs.f_frsize
+            total = vfs.f_blocks * vfs.f_frsize
+        except OSError:
+            pass
     # Partial groups (stems without a transcript) are resume state for the
     # analyzer: not finished, never evicted.
     return CacheUsage(groups, walk, used, total, other)
@@ -822,6 +826,7 @@ class PrepOptions:
     scan_timeout: float = 900.0
     song_estimate: int = 0
     dry_run: bool = False
+    use_statvfs: bool = True
 
 
 class Prep:
@@ -924,7 +929,7 @@ class Prep:
 
     def usage(self) -> CacheUsage:
         assert self.s.song_cache is not None and self.s.song_dir is not None
-        return scan_cache(self.s.song_cache, self.s.song_dir)
+        return scan_cache(self.s.song_cache, self.s.song_dir, self.o.use_statvfs)
 
     def effective_cap(self, usage: CacheUsage) -> int:
         cap = self.s.cap_bytes

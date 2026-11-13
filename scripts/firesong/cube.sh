@@ -37,6 +37,10 @@ set -euo pipefail
 
 PKG="${FIRESONG_TV_PACKAGE:-org.firesong.tv}"
 ACTIVITY="${FIRESONG_TV_ACTIVITY:-.MainActivity}"
+# Settings (url, host_token) are accepted only through this activity alias,
+# which requires WRITE_SECURE_SETTINGS (adb shell has it); see
+# android/firesong-tv/README.md. The launcher activity ignores setting extras.
+CONFIGURE_ACTIVITY="${FIRESONG_TV_CONFIGURE_ACTIVITY:-.Configure}"
 LAUNCHER="${FIRESONG_TV_LAUNCHER:-com.amazon.tv.launcher}"
 ENV_FILE="${FIRESONG_ENV_FILE:-$HOME/.config/firesong/firesong.env}"
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -236,8 +240,10 @@ cmd_launch() {
     extras="$extras --es host_token $(rq "$token")"
   fi
   note "launching $PKG${url:+ at $url}${token_file:+ (with host token)}"
+  local target="$ACTIVITY"
+  [ -z "$extras" ] || target="$CONFIGURE_ACTIVITY"
   # shellcheck disable=SC2086 # extras is pre-quoted for the device shell
-  adb_ shell "am start -n $PKG/$ACTIVITY$extras" | tr -d '\r' | grep -v -i 'host_token' || true
+  adb_ shell "am start -n $PKG/$target$extras" | tr -d '\r' | grep -v -i 'host_token' || true
 }
 
 cmd_screencap() {
@@ -404,7 +410,7 @@ FAKE
   check "install firesong when idle" 0 "Success" install "$t/firesong.apk"
   check "install refuses other packages" 1 "only org.firesong.tv" install "$t/other.apk"
   check "launch passes url and token" 0 "Starting" launch --url "https://h:1/?tv=1&mode=noraebang" --host-token-file "$t/token"
-  if grep -q "es url 'https://h:1/?tv=1&mode=noraebang' --es host_token '0123456789abcdef0123456789abcdef'" "$t/calls"; then
+  if grep -q "org.firesong.tv/.Configure --es url 'https://h:1/?tv=1&mode=noraebang' --es host_token '0123456789abcdef0123456789abcdef'" "$t/calls"; then
     pass=$((pass + 1)); echo "ok   launch quotes extras for the device shell"
   else
     failn=$((failn + 1)); echo "FAIL launch quotes extras for the device shell"; tail -n 3 "$t/calls"
@@ -413,6 +419,11 @@ FAKE
   check "install refused while someone watches" 1 "not idle" install "$t/firesong.apk"
   check "launch refused while someone watches" 1 "not idle" launch
   check "launch with --force" 0 "going ahead" --force launch
+  if tail -n 1 "$t/calls" | grep -q "am start -n org.firesong.tv/.MainActivity\$\|am start -n org.firesong.tv/.MainActivity'\?$"; then
+    pass=$((pass + 1)); echo "ok   launch without settings opens the launcher activity"
+  else
+    failn=$((failn + 1)); echo "FAIL launch without settings opens the launcher activity"; tail -n 3 "$t/calls"
+  fi
   check "idle exits 1 when busy" 1 "busy" idle
   check "screencap writes a PNG" 0 "bytes" screencap "$t/shot.png"
   check "logcat grep filter" 0 "FireSongJS" logcat firesong

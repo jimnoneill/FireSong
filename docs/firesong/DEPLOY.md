@@ -209,7 +209,7 @@ Rules it enforces, because the Cube is the family TV and its owner is away:
 Before:
 
 1. `party-prep.py prep "<playlist>"` well ahead of time (it yields to GPU reservations, so start early).
-2. Rotate the phone pairing token: `systemctl --user stop firesong; rm /mnt/fast/firesong/data/remote-control.json; systemctl --user start firesong`. The server makes a new token on start; old QR codes stop working.
+2. Rotate the phone pairing token: `curl -fsS -X POST -H "x-firesong-host-token: $(cat /mnt/fast/firesong/data/firesong/host-token)" http://127.0.0.1:64448/api/firesong/rotate-pairing-token -o /dev/null`. It writes a new token, disconnects every phone, and old QR codes and cookies get 401 from then on (PROTOCOL.md §2.1). With the service stopped, deleting `/mnt/fast/firesong/data/remote-control.json` does the same on the next start.
 3. Funnel on (1.3). Check that `tailscale funnel status` still lists `:443`.
 4. Check key expiry is disabled (1.4).
 5. At the TV: the Cube on Ethernet, Fire TV audio set to PCM/Stereo, the TV in Game Mode.

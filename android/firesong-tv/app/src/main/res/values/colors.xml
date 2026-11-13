@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- FireSong palette (the icon and banner use the same values; see branding/make_drawables.py). -->
+    <!-- FireSong palette (the icon ground and the brand images use the same values; see branding/make_assets.py). -->
     <color name="fs_night">#FF120A24</color>
     <color name="fs_night_deep">#FF07040F</color>
     <color name="fs_plum">#FF2A1450</color>

@@ -102,6 +102,6 @@ When no page is shown (an error or "not set up" screen), Back opens the exit pro
 | `FsProbe.kt`, `Prefs.kt` | `FSPROBE` bridge, SharedPreferences |
 | `app/src/main/res/xml/network_security_config.xml`, `app/src/debug/res/xml/…` | Trust (release, debug) |
 | `app/src/main/res/raw/firesong_lan_ca.pem` | Placeholder CA. Its key was destroyed at creation; replace it before use. |
-| `branding/make_drawables.py` | Generates the original vector icon, banner and mark (Noto Sans outlines, OFL 1.1) |
+| `../../branding/make_assets.py` | Builds the launcher banner, adaptive-icon layers and overlay mark from the mascot art in `branding/source/` |
 | `probe/` | Spike S1: probe page, worklet, `prepare.sh`, `serve_tls.py`, `cdp.py`, `run-s1.sh`, results |
 | `../../tools/tvctl` | Host-side adb helper |

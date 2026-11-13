@@ -17,7 +17,7 @@
 #   reverse <port>          adb reverse tcp:PORT tcp:PORT (the Cube's localhost:PORT reaches
 #                           the server machine's; a secure context with no certificate)
 #   unreverse [port]        remove the reverses this script created (or just PORT)
-#   home                    press HOME
+#   home                    press HOME, only while FireSong is in front (--force: anyway)
 #   self-test               check this script against a fake adb (no device needed)
 #
 # Safety rules (the Cube is a family TV and its owner is away):
@@ -333,6 +333,17 @@ cmd_unreverse() {
 cmd_home() {
   ensure_device
   with_lock
+  local line
+  line="$(resumed_activity)"
+  case "$line" in
+    *" $PKG/"*) ;;
+    *)
+      if [ "$FORCE" != 1 ]; then
+        echo "FireSong is not in front (${line:-foreground unknown}); HOME not sent (--force sends it anyway)"
+        return 0
+      fi
+      note "warning: FireSong is not in front ($line); --force given, pressing HOME" ;;
+  esac
   adb_ shell input keyevent KEYCODE_HOME
   echo "pressed HOME"
 }
@@ -374,11 +385,11 @@ case "$1" in
     shift
     case "$*" in
       *"dumpsys activity activities"*)
-        if [ "$(cat "$FAKE_DIR/foreground")" = launcher ]; then
-          echo "  ResumedActivity: ActivityRecord{1 u0 com.amazon.tv.launcher/.ui.HomeActivity_vNext t1}"
-        else
-          echo "    mResumedActivity: ActivityRecord{2 u0 com.plexapp.android/.Player t9}"
-        fi ;;
+        case "$(cat "$FAKE_DIR/foreground")" in
+          launcher) echo "  ResumedActivity: ActivityRecord{1 u0 com.amazon.tv.launcher/.ui.HomeActivity_vNext t1}" ;;
+          firesong) echo "    mResumedActivity: ActivityRecord{3 u0 org.firesong.tv/.MainActivity t5}" ;;
+          *) echo "    mResumedActivity: ActivityRecord{2 u0 com.plexapp.android/.Player t9}" ;;
+        esac ;;
       *"pm path"*) echo "package:/data/app/org.firesong.tv-1/base.apk" ;;
       *"am start"*) echo "Starting: Intent { cmp=org.firesong.tv/.MainActivity }" ;;
       *getprop*) printf 'AFTGAZL\ngazelle\n9\nFake 7.7\n' ;;
@@ -440,7 +451,16 @@ FAKE
   else
     pass=$((pass + 1)); echo "ok   never uses reverse --remove-all"
   fi
-  check "home presses HOME" 0 "pressed HOME" home
+  : > "$t/calls"
+  check "home leaves another app alone" 0 "HOME not sent" home
+  if grep -q KEYCODE_HOME "$t/calls"; then
+    failn=$((failn + 1)); echo "FAIL home sent no key over another app"
+  else
+    pass=$((pass + 1)); echo "ok   home sent no key over another app"
+  fi
+  echo firesong > "$t/foreground"
+  check "home presses HOME over FireSong" 0 "pressed HOME" home
+  echo other > "$t/foreground"
   echo "unauthorized" > "$t/adbstate"
   check "unauthorized is reported, not re-keyed" 1 "not authorised" status
   rm -f "$t/adbstate"

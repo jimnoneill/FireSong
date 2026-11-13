@@ -988,3 +988,21 @@ async fn mic_links_use_the_pinned_https_origin_and_rotation_revokes_them() {
     let phone_router = server::remote_router(server.state.clone());
     assert_eq!(http(phone_router, old).await.0, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn a_phone_hello_on_the_tv_door_cannot_take_the_tv_seat() {
+    let server = start(fast_timings()).await;
+    let mut tv = tv(&server).await;
+
+    let mut stray = connect(server.full, ("x-firesong-host-token", HOST_TOKEN)).await;
+    send(&mut stray, mic_hello("phone-on-the-tv-door", Some(1))).await;
+    assert_eq!(recv_type(&mut stray, "error").await["code"], "bad-hello");
+    expect_close(&mut stray, 4400).await;
+
+    // The real TV keeps its seat: no tv-replaced, and it still relays.
+    expect_quiet(&mut tv).await;
+    let (mut phone, _) = phone(&server, mic_hello("phone-on-the-phone-door", Some(2))).await;
+    send(&mut phone, json!({"type": "offer", "sdp": "v=0", "restart": false})).await;
+    let offer = recv_type(&mut tv, "offer").await;
+    assert_eq!(offer["slot"], 2);
+}

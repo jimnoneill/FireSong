@@ -279,7 +279,7 @@ impl Session {
         let frame = decode_tv_frame(text).map_err(|code| self.before_hello(code))?;
         match frame {
             TvToServer::Hello { .. } => {
-                if self.greeted {
+                if self.greeted || is_phone_hello(text) {
                     return Err(RtcErrorCode::BadHello);
                 }
                 self.greeted = true;
@@ -380,4 +380,13 @@ async fn close(socket: &mut WebSocket, code: u16) {
             reason: "".into(),
         })))
         .await;
+}
+
+/// A phone page opened on the TV door sends `hello {v, micId, ...}`. Unknown
+/// fields are ignored when decoding, so it would otherwise take the TV seat
+/// and close the real TV with 4409, which does not reconnect on its own.
+fn is_phone_hello(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .is_some_and(|value| value.get("micId").is_some())
 }

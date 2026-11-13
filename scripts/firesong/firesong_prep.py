@@ -1220,6 +1220,16 @@ def configure(settings: Settings, log: Log, force: bool = False, dry_run: bool =
                              "leave the library pointing at missing stems. Pass --force to accept "
                              "re-analysis.", EXIT_ERROR)
     changes = {k: v for k, v in want.items() if paths.get(k) != v}
+    for k in ("models", "vendor"):
+        if k in changes:
+            before = resolve_config_path(paths.get(k), Path.cwd()) or settings.data_path / k
+            try:
+                in_use = before.is_dir() and any(before.iterdir())
+            except OSError:
+                in_use = False
+            if in_use:
+                log.warn(f"{before} is not empty; after the switch the analyzer setup runs again in "
+                         f"{changes[k]} unless you move it there first")
     auto = cfg.get("auto_analyze")
     if not changes and auto is False:
         log.info(f"{cfg_path} already points at {want['songs']}; nothing to do")

@@ -48,7 +48,8 @@ def main() -> None:
     ws = websocket.create_connection(page_ws(), timeout=10, suppress_origin=True)
     try:
         if cmd == "eval":
-            res = call(ws, "Runtime.evaluate", {"expression": sys.argv[2], "returnByValue": True, "awaitPromise": True})
+            res = call(ws, "Runtime.evaluate", {"expression": sys.argv[2], "returnByValue": True,
+                                                "awaitPromise": True, "userGesture": True})
             print(json.dumps(res.get("result", {}).get("result", {}).get("value", res)))
         elif cmd == "shot":
             res = call(ws, "Page.captureScreenshot", {"format": "png"})

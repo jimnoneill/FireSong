@@ -50,6 +50,7 @@ Checks:
 - integration end to end: `scripts/firesong/e2e-integration.sh` (builds the client and the server, then the real server on 127.0.0.1:64480/64481 with a throwaway data dir, a generated UltraStar song, the TV page and two phones in headless Chrome singing 440 and 330 Hz; no ML, no Plex; artifacts in `/mnt/fast/firesong/artifacts/e2e/<time>/`);
 - deploy tooling: `/usr/bin/python3 scripts/firesong/party-prep.py self-test`, `bash scripts/firesong/cube.sh self-test`, `bash scripts/firesong/server-install.sh self-test`, `/usr/bin/python3 -m unittest scripts/firesong/test_fetch_clips.py`;
 - Fire TV app: `cd android/firesong-tv && ./gradlew --no-daemon assembleDebug testDebugUnitTest testReleaseUnitTest lintDebug`;
+- on the real Cube (TV idle; wakes it over HDMI-CEC and puts it back to sleep): `scripts/firesong/cube-lifecycle-check.sh` checks that HOME tears down the page and that FireSong's audio player disappears (it plays an inaudible 15 kHz, -66 dBFS tone first, because Chrome stops a silent page's audio output on its own), and that reopening rebuilds the page and reconnects;
 - `cargo test --workspace --exclude Nightingale --locked`, then restore `client/src/types` (see `BASELINE.md`). Build the client first (`cd client && pnpm build`): the server's integration tests load `/m` from the embedded `client/dist`;
 - `cargo clippy --workspace --exclude Nightingale --all-targets --all-features --locked -- -D warnings`.
 

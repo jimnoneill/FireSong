@@ -88,7 +88,11 @@ class ScreenWakeLock implements WakeLockPort {
   private releases = 0;
   private readonly releasedListeners: (() => void)[] = [];
 
-  constructor(private readonly wakeLock: WakeLock | undefined) {}
+  private readonly wakeLock: WakeLock | undefined;
+
+  constructor(wakeLock: WakeLock | undefined) {
+    this.wakeLock = wakeLock;
+  }
 
   onReleased(listener: () => void): void {
     this.releasedListeners.push(listener);

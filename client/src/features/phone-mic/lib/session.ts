@@ -110,10 +110,12 @@ export class PhoneMicSession {
   private diagTimer: number | null = null;
   private lastError: string | null = null;
 
-  constructor(
-    private readonly ports: PhoneMicPorts,
-    private readonly linkSlot: MicSlot | null,
-  ) {
+  private readonly ports: PhoneMicPorts;
+  private readonly linkSlot: MicSlot | null;
+
+  constructor(ports: PhoneMicPorts, linkSlot: MicSlot | null) {
+    this.ports = ports;
+    this.linkSlot = linkSlot;
     this.name = normalizeSingerName(readSingerName(ports.storage));
     this.signaling = new MicSignaling(
       {

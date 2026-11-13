@@ -49,10 +49,13 @@ export class MicSignaling {
   private pingTimer: number | null = null;
   private stopped = true;
 
-  constructor(
-    private readonly deps: SignalingDeps,
-    private readonly events: SignalingEvents,
-  ) {}
+  private readonly deps: SignalingDeps;
+  private readonly events: SignalingEvents;
+
+  constructor(deps: SignalingDeps, events: SignalingEvents) {
+    this.deps = deps;
+    this.events = events;
+  }
 
   get isOpen(): boolean {
     return this.openedAt !== null;
@@ -64,9 +67,9 @@ export class MicSignaling {
     this.connect();
   }
 
-  /** Reconnects at once when no socket is up (page shown again, user tap). */
+  /** Skips a pending backoff (page shown again, user tap); a live or opening socket is kept. */
   reconnectNow(): void {
-    if (this.stopped || this.openedAt !== null) {
+    if (this.stopped || this.socket !== null) {
       return;
     }
     this.connect();

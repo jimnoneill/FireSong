@@ -80,7 +80,11 @@ export class BrowserMicMedia implements MicMediaPort {
   private enabled = true;
   private readonly troubleListeners: (() => void)[] = [];
 
-  constructor(private readonly mediaDevices: MediaDevices | undefined) {}
+  private readonly mediaDevices: MediaDevices | undefined;
+
+  constructor(mediaDevices: MediaDevices | undefined) {
+    this.mediaDevices = mediaDevices;
+  }
 
   /** The live capture track the peer connection sends. */
   get currentTrack(): MediaStreamTrack | null {

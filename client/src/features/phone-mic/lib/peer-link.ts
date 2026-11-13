@@ -114,7 +114,11 @@ export class PeerLink<Track> implements MicPeerPort {
   private answerError: string | null = null;
   private lastRtp: RtpSample | null = null;
 
-  constructor(private readonly deps: PeerLinkDeps<Track>) {}
+  private readonly deps: PeerLinkDeps<Track>;
+
+  constructor(deps: PeerLinkDeps<Track>) {
+    this.deps = deps;
+  }
 
   onStateChange(listener: (state: PeerLinkState) => void): void {
     this.stateListeners.push(listener);

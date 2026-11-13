@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.FireSong" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/fs_night</item>
+        <item name="android:colorAccent">@color/fs_ember</item>
+        <item name="android:colorPrimary">@color/fs_plum</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>

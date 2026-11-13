@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FireSong S1 probe</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px 24px; background: #120a24; color: #fff4e8;
+         font: 14px/1.35 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 22px; color: #ffc247; }
+  #summary { font-size: 16px; margin-bottom: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 2px 8px; border-bottom: 1px solid #2a1450; vertical-align: top; }
+  td:first-child { white-space: nowrap; color: #cbb8e6; width: 1%; }
+  .ok { color: #7dff9a; } .bad { color: #ff6a8a; }
+  #media { position: fixed; right: 16px; bottom: 16px; display: flex; gap: 8px; }
+  video { width: 160px; height: 90px; background: #000; border: 1px solid #4b2a86; }
+  #keys { color: #ffc247; }
+</style>
+</head>
+<body>
+<h1>FireSong S1 probe</h1>
+<div id="summary">running…</div>
+<div id="keys">keys: (press remote keys)</div>
+<table id="results"></table>
+<div id="media">
+  <video id="vMuted" muted autoplay playsinline loop src="test.mp4"></video>
+  <video id="vSound" playsinline src="test.mp4"></video>
+</div>
+<script>
+'use strict';
+// Every result is one console line "FSPROBE-S1 {json}". The Fire TV app mirrors
+// console messages to logcat (tag FireSongJS); tools/tvctl greps them.
+const results = {};
+const TAG = 'FSPROBE-S1';
+const table = document.getElementById('results');
+
+function show(k, v, good) {
+  const tr = document.createElement('tr');
+  const td1 = document.createElement('td'); td1.textContent = k;
+  const td2 = document.createElement('td');
+  td2.textContent = typeof v === 'string' ? v : JSON.stringify(v);
+  if (good === true) td2.className = 'ok';
+  if (good === false) td2.className = 'bad';
+  tr.append(td1, td2); table.append(tr);
+}
+function report(k, v, good) {
+  results[k] = v;
+  console.log(TAG + ' ' + JSON.stringify({ k, v }));
+  show(k, v, good);
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function withTimeout(p, ms, what) {
+  return Promise.race([p, sleep(ms).then(() => { throw new Error('timeout ' + ms + ' ms: ' + what); })]);
+}
+function err(e) { return (e && (e.name ? e.name + ': ' : '') + (e.message || String(e))) || String(e); }
+
+async function step(name, fn) {
+  try { await fn(); } catch (e) { report(name + '.error', err(e), false); }
+}
+
+// --- keys (logged as they arrive, all session long) ---------------------------
+const keyLog = [];
+for (const type of ['keydown', 'keyup']) {
+  window.addEventListener(type, (e) => {
+    const rec = { type, key: e.key, code: e.code, keyCode: e.keyCode, repeat: e.repeat, trusted: e.isTrusted };
+    console.log('FSPROBE-KEY ' + JSON.stringify(rec));
+    if (type === 'keydown') {
+      keyLog.push(e.key === ' ' ? 'Space' : e.key);
+      document.getElementById('keys').textContent = 'keys: ' + keyLog.slice(-14).join(' ');
+    }
+    // Keep Arrow/Space from scrolling the probe page.
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
+  }, true);
+}
+
+async function run() {
+  const t0 = performance.now();
+
+  await step('ua', async () => {
+    report('userAgent', navigator.userAgent);
+    const m = navigator.userAgent.match(/Chrome\/(\d+)\.[\d.]+/);
+    const major = m ? Number(m[1]) : null;
+    report('chromeMajor', major, major !== null && major >= 111);
+  });
+
+  await step('context', async () => {
+    report('isSecureContext', window.isSecureContext, window.isSecureContext === true);
+    report('location.origin', location.origin);
+    report('viewport', {
+      inner: [innerWidth, innerHeight], screen: [screen.width, screen.height],
+      dpr: devicePixelRatio, minWidth1280: matchMedia('(min-width: 1280px)').matches,
+    });
+    report('hardware', {
+      cores: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory ?? null,
+      jsHeapLimitMB: performance.memory ? Math.round(performance.memory.jsHeapSizeLimit / 1048576) : null,
+    });
+  });
+
+  await step('fsprobe', async () => {
+    if (window.FSPROBE && typeof window.FSPROBE.info === 'function') {
+      report('FSPROBE.info', JSON.parse(window.FSPROBE.info()), true);
+    } else {
+      report('FSPROBE.info', 'absent (not inside the FireSong app)', false);
+    }
+  });
+
+  await step('js', async () => {
+    report('Array.prototype.toSorted', typeof Array.prototype.toSorted, typeof Array.prototype.toSorted === 'function');
+    const okl = typeof CSS !== 'undefined' && CSS.supports('color', 'oklch(50% 0.1 120)');
+    report("CSS.supports('color','oklch(50% 0.1 120)')", okl, okl === true);
+    report('WebAssembly', typeof WebAssembly, typeof WebAssembly === 'object');
+  });
+
+  await step('rtc', async () => {
+    report('typeof RTCPeerConnection', typeof RTCPeerConnection, typeof RTCPeerConnection === 'function');
+    const hasJbt = typeof RTCRtpReceiver !== 'undefined' && 'jitterBufferTarget' in RTCRtpReceiver.prototype;
+    report('RTCRtpReceiver.prototype.jitterBufferTarget', hasJbt, hasJbt);
+    const hasPdh = typeof RTCRtpReceiver !== 'undefined' && 'playoutDelayHint' in RTCRtpReceiver.prototype;
+    report('RTCRtpReceiver.prototype.playoutDelayHint', hasPdh);
+    const pc = new RTCPeerConnection();
+    const tr = pc.addTransceiver('audio', { direction: 'recvonly' });
+    let set = null;
+    try { tr.receiver.jitterBufferTarget = 40; set = tr.receiver.jitterBufferTarget; } catch (e) { set = err(e); }
+    report('receiver.jitterBufferTarget=40 reads back', set, set === 40);
+    const offer = await pc.createOffer();
+    report('createOffer(recvonly audio)', { ok: true, opus: /opus\/48000/i.test(offer.sdp) }, true);
+    pc.close();
+  });
+
+  let ctx = null;
+  await step('audio', async () => {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    report('typeof AudioContext', typeof AC, typeof AC === 'function');
+    report('typeof AudioWorkletNode', typeof AudioWorkletNode, typeof AudioWorkletNode === 'function');
+    ctx = new AC({ latencyHint: 'interactive' });
+    report('AudioContext.state (new)', ctx.state);
+    if (ctx.state !== 'running') {
+      try { await withTimeout(ctx.resume(), 3000, 'resume'); } catch (e) { report('AudioContext.resume', err(e), false); }
+    }
+    report('AudioContext.state (after resume)', ctx.state, ctx.state === 'running');
+    report('AudioContext', {
+      sampleRate: ctx.sampleRate, baseLatency: ctx.baseLatency ?? null, outputLatency: ctx.outputLatency ?? null,
+    });
+    report('audioWorklet present', !!ctx.audioWorklet, !!ctx.audioWorklet);
+    await withTimeout(ctx.audioWorklet.addModule('probe-worklet.js'), 5000, 'addModule');
+    report('audioWorklet.addModule', 'ok', true);
+    const node = new AudioWorkletNode(ctx, 'fs-probe');
+    const got = new Promise((resolve) => { node.port.onmessage = (e) => resolve(e.data); });
+    const sink = ctx.createGain(); sink.gain.value = 0;
+    node.connect(sink).connect(ctx.destination);
+    const msg = await withTimeout(got, 4000, 'worklet message');
+    report('AudioWorklet process() ran', msg, msg && msg.blocks > 0);
+    node.disconnect();
+    // outputLatency settles once audio is flowing.
+    await sleep(500);
+    report('AudioContext latency after 0.5 s', { baseLatency: ctx.baseLatency ?? null, outputLatency: ctx.outputLatency ?? null });
+    const ctx0 = new AC({ latencyHint: 0 });
+    try { await withTimeout(ctx0.resume(), 2000, 'resume ctx0'); } catch (e) { /* reported below */ }
+    await sleep(300);
+    report('AudioContext latencyHint:0', { state: ctx0.state, baseLatency: ctx0.baseLatency ?? null, outputLatency: ctx0.outputLatency ?? null });
+    await ctx0.close();
+  });
+
+  await step('video', async () => {
+    const vm = document.getElementById('vMuted');
+    const vs = document.getElementById('vSound');
+    // Unmuted for the autoplay policy, but nearly silent: people may be home.
+    vs.volume = 0.02;
+    async function watch(v, label) {
+      const playing = new Promise((r) => v.addEventListener('playing', () => r(true), { once: true }));
+      let playErr = null;
+      try { await v.play(); } catch (e) { playErr = err(e); }
+      let ok = false;
+      try { ok = await withTimeout(playing, 5000, label + ' playing'); } catch (e) { playErr = playErr || err(e); }
+      const t1 = v.currentTime; await sleep(700); const t2 = v.currentTime;
+      report(label, { playing: ok && t2 > t1, currentTimeAdvanced: +(t2 - t1).toFixed(2), paused: v.paused, error: playErr,
+        size: [v.videoWidth, v.videoHeight] }, ok && t2 > t1);
+    }
+    await watch(vm, 'muted mp4 autoplay');
+    await watch(vs, 'unmuted mp4 play() without gesture');
+    vs.muted = true;
+    vs.pause();
+    vm.pause();
+  });
+
+  await step('wakelock', async () => {
+    report('typeof navigator.wakeLock', typeof navigator.wakeLock, typeof navigator.wakeLock === 'object');
+    if (navigator.wakeLock) {
+      try {
+        const s = await withTimeout(navigator.wakeLock.request('screen'), 3000, 'wakeLock');
+        report("wakeLock.request('screen')", { ok: true, released: s.released }, true);
+        await s.release();
+      } catch (e) { report("wakeLock.request('screen')", err(e), false); }
+    }
+  });
+
+  // Remote WebRTC audio inside Web Audio, with and without a muted <audio>
+  // element attached (older Chromium needed the element for audio to flow).
+  await step('rtcloop', async () => {
+    if (!ctx) throw new Error('no AudioContext');
+    const a = new RTCPeerConnection(); const b = new RTCPeerConnection();
+    a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {});
+    b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {});
+    const osc = ctx.createOscillator(); osc.frequency.value = 440;
+    const dst = ctx.createMediaStreamDestination(); osc.connect(dst); osc.start();
+    for (const t of dst.stream.getAudioTracks()) a.addTrack(t, dst.stream);
+    const gotTrack = new Promise((r) => { b.ontrack = (e) => r(e.streams[0] || new MediaStream([e.track])); });
+    await a.setLocalDescription(await a.createOffer());
+    await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription(await b.createAnswer());
+    await a.setRemoteDescription(b.localDescription);
+    const stream = await withTimeout(gotTrack, 4000, 'ontrack');
+    const connected = await withTimeout(new Promise((r) => {
+      const chk = () => (['connected', 'completed'].includes(b.iceConnectionState) ? r(b.iceConnectionState) : null);
+      b.oniceconnectionstatechange = chk; chk();
+    }), 8000, 'ice connected').catch((e) => err(e));
+    report('loopback ICE', connected, connected === 'connected' || connected === 'completed');
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser(); an.fftSize = 2048; src.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    const rms = () => { an.getFloatTimeDomainData(buf); let s = 0; for (const x of buf) s += x * x; return Math.sqrt(s / buf.length); };
+    await sleep(1500);
+    const rmsBare = rms();
+    report('remote stream RMS in Web Audio (no <audio>)', +rmsBare.toFixed(4), rmsBare > 0.01);
+    const el = new Audio(); el.muted = true; el.srcObject = stream; el.play().catch(() => {});
+    await sleep(1500);
+    const rmsEl = rms();
+    report('remote stream RMS in Web Audio (+ muted <audio>)', +rmsEl.toFixed(4), rmsEl > 0.01);
+    try {
+      const st = await b.getStats();
+      let jb = null;
+      st.forEach((r) => { if (r.type === 'inbound-rtp' && r.kind === 'audio') jb = { jitterBufferDelay: r.jitterBufferDelay, emitted: r.jitterBufferEmittedCount, target: r.jitterBufferTargetDelay ?? null }; });
+      report('inbound-rtp jitter buffer stats', jb);
+    } catch (e) { report('getStats', err(e), false); }
+    osc.stop(); el.srcObject = null; a.close(); b.close();
+  });
+
+  const bad = Object.entries(results).filter(([k]) => k.endsWith('.error')).map(([k]) => k);
+  report('elapsedMs', Math.round(performance.now() - t0));
+  document.getElementById('summary').textContent = bad.length ? 'done with errors: ' + bad.join(', ') : 'done';
+  console.log(TAG + '-DONE ' + JSON.stringify({ count: Object.keys(results).length, errors: bad }));
+}
+
+window.addEventListener('load', () => { run().catch((e) => console.error(TAG + ' fatal ' + err(e))); });
+</script>
+</body>
+</html>

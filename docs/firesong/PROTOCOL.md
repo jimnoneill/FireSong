@@ -83,7 +83,7 @@ New HTTP routes:
 | Exempt paths | `/favicon.png`, `/favicon.ico`, `/apple-touch-icon.png` (the same list as the remote router) |
 | Scope | Every other path on the full listener: `/api/*`, `/media/*`, `/ws`, `/rtc` and the static bundle. Loopback requests are **not** exempt, because Caddy makes every request look like loopback. |
 
-How the Fire TV app gets the token: deploy tooling reads the file and starts the app with `am start … --es host_token <t>`. The app stores it in SharedPreferences and sets the cookie for the TV origin through `CookieManager` before `loadUrl`.
+How the Fire TV app gets the token: deploy tooling reads the file and runs `tools/tvctl configure --url <tv-origin>/?tv=1 --token-file <data>/firesong/host-token`, which is `am start -n org.firesong.tv/.Configure --es url … --es host_token <t>`. Only the `.Configure` alias accepts settings; it requires `WRITE_SECURE_SETTINGS`, which `adb shell` holds and ordinary apps cannot, and the launcher activity ignores setting extras. The app stores the token in SharedPreferences, **bound to the origin of the URL it came with** (a later URL on another origin drops it), and sets the cookie for that origin through `CookieManager` before `loadUrl`. The extras, the trust rules and the remote-key mapping are in `android/firesong-tv/README.md`.
 
 How the operator's browser gets it: open `<tv-origin>/?host=<t>` once.
 
@@ -456,7 +456,7 @@ sequenceDiagram
 | `/rtc`, registry, relay, mic links, `remote-mics.json`, `FIRESONG_ICE_SERVERS` | WP3 (server) | `client/src-server/src/rtc.rs`, `lib.rs` (route lines), `state.rs` (one field) |
 | TV socket client, adapter wrapper, MicRack, voice engine | WP4 (tv-voice) | `client/src/bridge/rtc-socket.ts`, `remote-mics.ts`, `microphone.ts`, `client/src/audio/*` |
 | Phone page | WP5 (phone-page) | `client/src/features/phone-mic/*`, `client/src/entry.ts` + `index.html` (entry hook, instead of an `app.tsx` route), `tools/phone-mic-e2e/` |
-| Cookie bootstrap and secure context on the Cube | WP6 (firetv-apk) | `firetv/` |
+| Cookie bootstrap and secure context on the Cube | WP6 (firetv-apk) | `android/firesong-tv/`, `tools/tvctl` |
 | `song-result` sender, tier captions, display score | WP8 (noraebang) | `features/noraebang/*`, `utils/noraebang-score.ts` |
 | Env files, host-token handoff to the app, song-cache guard and LRU | WP1 (deploy) | `deploy/server/*`, `scripts/firesong_prep.py` |
 

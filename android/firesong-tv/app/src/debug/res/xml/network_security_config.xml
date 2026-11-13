@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug builds only: cleartext allowed for `adb reverse` (http://localhost:<port>,
+    a secure context without certificates) and plain-LAN testing; user-installed
+    CAs are trusted as well, for interception proxies.
+-->
+<network-security-config xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="AcceptsUserCertificates,InsecureBaseConfiguration">
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+            <certificates src="@raw/firesong_lan_ca" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

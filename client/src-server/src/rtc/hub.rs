@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 use app_core::remote_mic::{
     close_code, slot_color, IceServer, LatencyMethod, MicToServer, MuteSource, RtcErrorCode,
     ServerToMic, ServerToTv, SlotLostReason, SlotResult, SlotState, TvSlot, TvToServer,
-    PROTOCOL_VERSION, SLOT_COUNT,
+    OFFER_BURST, OFFER_PER_SEC, PROTOCOL_VERSION, SLOT_COUNT,
 };
 use serde::Serialize;
 use tokio::sync::{mpsc, Notify};
 
 use super::mic_store::MicStore;
+use super::Bucket;
 use crate::host_auth::new_token;
 use crate::remote::constant_time_eq;
 
@@ -89,6 +90,14 @@ struct Entry {
     muted_by: MuteSource,
     latency_ms: Option<u32>,
     latency_method: Option<LatencyMethod>,
+    /// Newest offer over the slot's offer budget, relayed once it refills.
+    held_offer: Option<HeldOffer>,
+}
+
+#[derive(Clone)]
+struct HeldOffer {
+    sdp: String,
+    restart: bool,
 }
 
 impl Entry {
@@ -117,6 +126,8 @@ struct Inner {
     reservation: Duration,
     tv: Option<Peer>,
     slots: [Option<Entry>; SLOTS],
+    /// Per slot number, not per phone, so rejoining cannot refill it.
+    offer_budget: [Bucket; SLOTS],
     store: MicStore,
 }
 
@@ -138,6 +149,7 @@ impl Hub {
                 reservation,
                 tv: None,
                 slots: Default::default(),
+                offer_budget: std::array::from_fn(|_| Bucket::new(OFFER_BURST, OFFER_PER_SEC)),
                 store,
             }),
         }
@@ -158,17 +170,20 @@ impl Hub {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.expire(Instant::now());
+        inner.flush_offers();
         inner
     }
 
-    /// Ends reservations that ran out. Socket ticks call it, so it runs at
-    /// least once per ping interval while anyone is connected.
+    /// Ends reservations that ran out and relays held offers whose slot has
+    /// budget again. Socket ticks call it, so it runs at least once per ping
+    /// interval while anyone is connected.
     pub(crate) fn sweep(&self) {
         drop(self.lock());
     }
 
     pub(crate) fn tv_hello(&self, peer: Peer) {
         let mut inner = self.lock();
+        inner.drop_held_offers();
         if let Some(old) = inner.tv.replace(peer.clone()) {
             old.send(&ServerToTv::Error {
                 code: RtcErrorCode::TvReplaced,
@@ -190,6 +205,7 @@ impl Hub {
         let mut inner = self.lock();
         if inner.tv.as_ref().is_some_and(|tv| tv.conn == conn) {
             inner.tv = None;
+            inner.drop_held_offers();
             inner.tell_phones_tv_state(false);
         }
     }
@@ -323,6 +339,7 @@ impl Hub {
                 }
             }
             entry.link = Link::Connected(peer.clone());
+            entry.held_offer = None;
             if name.is_some() {
                 entry.name.clone_from(&name);
             }
@@ -356,6 +373,7 @@ impl Hub {
             muted_by: MuteSource::Mic,
             latency_ms: stored.latency_ms,
             latency_method: stored.latency_method,
+            held_offer: None,
         };
         inner.slots[index] = Some(entry.clone());
         if let Some(name) = &name {
@@ -388,13 +406,10 @@ impl Hub {
             }
             MicToServer::Offer { sdp, restart } => {
                 tracing::trace!(slot, restart, "rtc offer: {sdp}");
-                let tv = tv.ok_or(RtcErrorCode::NoTv)?;
-                tv.send(&ServerToTv::Offer {
-                    slot,
-                    mic_id,
-                    sdp,
-                    restart,
-                });
+                if tv.is_none() {
+                    return Err(RtcErrorCode::NoTv);
+                }
+                inner.offer(index, HeldOffer { sdp, restart });
                 Ok(())
             }
             MicToServer::Ice { candidate } => {
@@ -451,6 +466,7 @@ impl Hub {
             return;
         };
         entry.link = Link::Reserved { until };
+        entry.held_offer = None;
         let mic_id = entry.mic_id.clone();
         inner.slot_lost(slot_number(index), mic_id, SlotLostReason::Disconnected);
         inner.send_roster();
@@ -498,6 +514,56 @@ impl Inner {
         }
         if changed {
             self.send_roster();
+        }
+    }
+
+    /// Relays a phone's offer while its slot has offer budget; otherwise holds
+    /// it, newest wins, for [`Inner::flush_offers`].
+    fn offer(&mut self, index: usize, offer: HeldOffer) {
+        let Some(entry) = self.slots[index].as_mut() else {
+            return;
+        };
+        if !self.offer_budget[index].take() {
+            entry.held_offer = Some(offer);
+            return;
+        }
+        entry.held_offer = None;
+        if let Some(tv) = &self.tv {
+            tv.send(&ServerToTv::Offer {
+                slot: slot_number(index),
+                mic_id: entry.mic_id.clone(),
+                sdp: offer.sdp,
+                restart: offer.restart,
+            });
+        }
+    }
+
+    fn flush_offers(&mut self) {
+        let Some(tv) = &self.tv else {
+            return;
+        };
+        for index in 0..SLOTS {
+            let Some(entry) = self.slots[index].as_mut() else {
+                continue;
+            };
+            if entry.held_offer.is_none() || !self.offer_budget[index].take() {
+                continue;
+            }
+            if let Some(offer) = entry.held_offer.take() {
+                tv.send(&ServerToTv::Offer {
+                    slot: slot_number(index),
+                    mic_id: entry.mic_id.clone(),
+                    sdp: offer.sdp,
+                    restart: offer.restart,
+                });
+            }
+        }
+    }
+
+    /// Offers meant for a TV that is gone; phones offer again on `tv-state`.
+    fn drop_held_offers(&mut self) {
+        for entry in self.slots.iter_mut().flatten() {
+            entry.held_offer = None;
         }
     }
 

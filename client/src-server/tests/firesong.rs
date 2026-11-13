@@ -1111,3 +1111,89 @@ async fn expect_quiet_phone(socket: &mut Socket) {
         );
     }
 }
+
+#[tokio::test]
+async fn phones_flooding_offers_cannot_rate_limit_the_tv() {
+    let server = start(fast_timings()).await;
+    let mut tv = tv(&server).await;
+    let (mut alice, _) = phone(&server, mic_hello(MIC_A, Some(1))).await;
+    let (mut bob, _) = phone(&server, mic_hello(MIC_B, Some(2))).await;
+
+    // The TV answers every offer, as the real page does for a restart.
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let tv_task = tokio::spawn(async move {
+        let mut offers: Vec<(u64, String)> = Vec::new();
+        let mut errors: Vec<Value> = Vec::new();
+        loop {
+            tokio::select! {
+                _ = &mut stop_rx => break,
+                message = tv.next() => {
+                    let Some(Ok(message)) = message else {
+                        errors.push(json!({"closed": true}));
+                        break;
+                    };
+                    let Message::Text(text) = message else {
+                        if let Message::Close(frame) = message {
+                            errors.push(json!({"close": format!("{frame:?}")}));
+                            break;
+                        }
+                        continue;
+                    };
+                    let frame: Value = serde_json::from_str(&text).expect("json frame");
+                    match frame["type"].as_str() {
+                        Some("offer") => {
+                            let slot = frame["slot"].as_u64().expect("slot");
+                            offers.push((slot, frame["sdp"].as_str().unwrap_or_default().into()));
+                            let answer = json!({"type": "answer", "slot": slot, "sdp": "v=0 answer"});
+                            if tv.send(Message::Text(answer.to_string())).await.is_err() {
+                                errors.push(json!({"send": "failed"}));
+                                break;
+                            }
+                        }
+                        Some("error") => errors.push(frame),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (tv, offers, errors)
+    });
+
+    let drain = |socket: &mut Socket| {
+        while let Some(Some(Ok(_))) = futures_util::FutureExt::now_or_never(socket.next()) {}
+    };
+    let mut last = 0;
+    for round in 0..55 {
+        last = round;
+        let offer = |who: &str| json!({"type": "offer", "sdp": format!("v=0 {who}-{round}"), "restart": true});
+        send(&mut alice, offer("alice")).await;
+        send(&mut bob, offer("bob")).await;
+        drain(&mut alice);
+        drain(&mut bob);
+        tokio::time::sleep(Duration::from_millis(55)).await;
+    }
+    // Coalesced offers still deliver each phone's latest one.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let _ = stop_tx.send(());
+    let (mut tv, offers, errors) = tv_task.await.expect("tv task");
+
+    assert!(errors.is_empty(), "the TV seat got {errors:?}");
+    for (slot, who) in [(1, "alice"), (2, "bob")] {
+        let relayed: Vec<&String> = offers
+            .iter()
+            .filter(|(s, _)| *s == slot)
+            .map(|(_, sdp)| sdp)
+            .collect();
+        assert!(
+            relayed.len() <= 12,
+            "slot {slot} relayed {} offers",
+            relayed.len()
+        );
+        assert_eq!(
+            relayed.last().map(|sdp| sdp.as_str()),
+            Some(format!("v=0 {who}-{last}").as_str())
+        );
+    }
+    send(&mut tv, json!({"type": "ping", "t": 7})).await;
+    assert_eq!(recv_type(&mut tv, "pong").await["t"].as_f64(), Some(7.0));
+}

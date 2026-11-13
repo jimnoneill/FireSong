@@ -57,8 +57,16 @@ pub const MAX_DISPLAY_SCORE: u8 = 100;
 pub const MAX_RAW_SCORE: u32 = 1_000;
 
 /// Per-socket token bucket: `RATE_BURST` frames, refilled at `RATE_PER_SEC`.
+/// The TV socket answers for every slot, so its bucket is `SLOT_COUNT` times
+/// larger.
 pub const RATE_BURST: u32 = 40;
 pub const RATE_PER_SEC: u32 = 20;
+
+/// Offers relayed to the TV per slot: `OFFER_BURST`, refilled at
+/// `OFFER_PER_SEC`. Offers beyond that are held, newest only, until the slot
+/// has budget again, so no phone can keep the TV renegotiating.
+pub const OFFER_BURST: u32 = 4;
+pub const OFFER_PER_SEC: u32 = 1;
 
 /// WebSocket close codes the server uses on `/rtc`.
 pub mod close_code {

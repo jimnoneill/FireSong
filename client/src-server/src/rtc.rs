@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use app_core::remote_mic::{
     close_code, decode_mic_frame, decode_tv_frame, MicToServer, RtcErrorCode, ServerToMic,
-    ServerToTv, TvToServer, MAX_FRAME_BYTES, RATE_BURST, RATE_PER_SEC,
+    ServerToTv, TvToServer, MAX_FRAME_BYTES, RATE_BURST, RATE_PER_SEC, SLOT_COUNT,
 };
 use axum::{
     extract::{
@@ -149,24 +149,38 @@ fn strip_default_port(authority: &str) -> String {
         .to_string()
 }
 
-/// Token bucket: [`RATE_BURST`] frames, refilled at [`RATE_PER_SEC`].
+/// Token bucket: `burst` tokens, refilled at `per_sec`.
 struct Bucket {
+    burst: f64,
+    per_sec: f64,
     tokens: f64,
     at: Instant,
 }
 
 impl Bucket {
-    fn new() -> Self {
+    fn new(burst: u32, per_sec: u32) -> Self {
         Self {
-            tokens: f64::from(RATE_BURST),
+            burst: f64::from(burst),
+            per_sec: f64::from(per_sec),
+            tokens: f64::from(burst),
             at: Instant::now(),
         }
     }
 
+    /// Frames one socket may send: [`RATE_BURST`] at [`RATE_PER_SEC`]. The TV
+    /// answers for every slot, so it gets that budget once per slot.
+    fn for_socket(role: Role) -> Self {
+        let slots = match role {
+            Role::Tv => u32::from(SLOT_COUNT),
+            Role::Mic => 1,
+        };
+        Self::new(RATE_BURST * slots, RATE_PER_SEC * slots)
+    }
+
     fn take(&mut self) -> bool {
         let now = Instant::now();
-        let refill = now.duration_since(self.at).as_secs_f64() * f64::from(RATE_PER_SEC);
-        self.tokens = (self.tokens + refill).min(f64::from(RATE_BURST));
+        let refill = now.duration_since(self.at).as_secs_f64() * self.per_sec;
+        self.tokens = (self.tokens + refill).min(self.burst);
         self.at = now;
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
@@ -312,7 +326,7 @@ async fn run(hub: Arc<Hub>, timings: Timings, role: Role, mut socket: WebSocket)
         conn,
         greeted: false,
         closing: false,
-        bucket: Bucket::new(),
+        bucket: Bucket::for_socket(role),
     };
     tracing::debug!(conn, ?role, "rtc connected");
 

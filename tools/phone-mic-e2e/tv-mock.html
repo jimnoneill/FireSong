@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>FireSong TV mock</title>
+  </head>
+  <body>
+    <p>TV mock: answers phone offers on /rtc and measures the received audio.</p>
+    <script type="module">
+      // Plays the TV side of PROTOCOL.md §7 for the e2e test: recvonly peer
+      // connection per slot, muted <audio> sink (Chromium remote-stream quirk),
+      // Web Audio RMS of what arrives, and inbound RTP packet rates.
+      const state = { ready: false, slots: {}, errors: [] };
+      window.tvMock = state;
+      const context = new AudioContext();
+      const peers = new Map();
+      const ws = new WebSocket(`ws://${location.host}/rtc`);
+      const send = (frame) => ws.send(JSON.stringify(frame));
+
+      const slotState = (slot) => {
+        state.slots[slot] ??= {
+          offers: 0,
+          restartOffers: 0,
+          answers: 0,
+          tracks: 0,
+          connectionState: 'new',
+          rms: 0,
+          maxRms: 0,
+          packetsReceived: 0,
+          packetsPerSecond: 0,
+          micId: null,
+        };
+        return state.slots[slot];
+      };
+
+      const gathered = (pc) =>
+        new Promise((resolve) => {
+          if (pc.iceGatheringState === 'complete') return resolve();
+          const timer = setTimeout(resolve, 2000);
+          pc.addEventListener('icegatheringstatechange', () => {
+            if (pc.iceGatheringState === 'complete') {
+              clearTimeout(timer);
+              resolve();
+            }
+          });
+        });
+
+      const listen = (slot, stream) => {
+        const info = slotState(slot);
+        const sink = new Audio();
+        sink.muted = true;
+        sink.srcObject = stream;
+        sink.play().catch((error) => state.errors.push(String(error)));
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 2048;
+        context.createMediaStreamSource(stream).connect(analyser);
+        const samples = new Float32Array(analyser.fftSize);
+        clearInterval(info.timer);
+        info.timer = setInterval(() => {
+          analyser.getFloatTimeDomainData(samples);
+          let sum = 0;
+          for (const sample of samples) sum += sample * sample;
+          info.rms = Math.sqrt(sum / samples.length);
+          info.maxRms = Math.max(info.maxRms, info.rms);
+        }, 50);
+      };
+
+      const watchStats = (slot, pc) => {
+        const info = slotState(slot);
+        let last = null;
+        const timer = setInterval(async () => {
+          if (pc.connectionState === 'closed') return clearInterval(timer);
+          const report = await pc.getStats();
+          report.forEach((stat) => {
+            if (stat.type !== 'inbound-rtp' || stat.kind !== 'audio') return;
+            const now = performance.now();
+            if (last !== null && now > last.at) {
+              info.packetsPerSecond = ((stat.packetsReceived - last.packets) * 1000) / (now - last.at);
+            }
+            last = { at: now, packets: stat.packetsReceived };
+            info.packetsReceived = stat.packetsReceived;
+          });
+        }, 1000);
+      };
+
+      const onOffer = async (frame) => {
+        const info = slotState(frame.slot);
+        info.offers += 1;
+        if (frame.restart) info.restartOffers += 1;
+        info.micId = frame.micId;
+        let peer = peers.get(frame.slot);
+        if (!frame.restart || peer === undefined || peer.micId !== frame.micId) {
+          peer?.pc.close();
+          const pc = new RTCPeerConnection({ iceServers: [] });
+          peer = { pc, micId: frame.micId };
+          peers.set(frame.slot, peer);
+          pc.addEventListener('connectionstatechange', () => {
+            if (peers.get(frame.slot)?.pc === pc) info.connectionState = pc.connectionState;
+          });
+          pc.addEventListener('track', (event) => {
+            info.tracks += 1;
+            event.receiver.jitterBufferTarget = 0;
+            listen(frame.slot, event.streams[0] ?? new MediaStream([event.track]));
+          });
+          watchStats(frame.slot, pc);
+        }
+        await peer.pc.setRemoteDescription({ type: 'offer', sdp: frame.sdp });
+        await peer.pc.setLocalDescription(await peer.pc.createAnswer());
+        await gathered(peer.pc);
+        send({ type: 'answer', slot: frame.slot, sdp: peer.pc.localDescription.sdp });
+        info.answers += 1;
+      };
+
+      ws.addEventListener('open', () => send({ type: 'hello', v: 1 }));
+      ws.addEventListener('message', (event) => {
+        const frame = JSON.parse(event.data);
+        if (frame.type === 'ready') state.ready = true;
+        if (frame.type === 'roster') state.roster = frame.slots;
+        if (frame.type === 'offer') onOffer(frame).catch((error) => state.errors.push(String(error)));
+        if (frame.type === 'slot-lost') {
+          state.lastSlotLost = frame;
+          if (frame.reason !== 'replaced') {
+            peers.get(frame.slot)?.pc.close();
+            peers.delete(frame.slot);
+            slotState(frame.slot).connectionState = 'lost';
+          }
+        }
+        if (frame.type === 'diag') state.lastDiag = frame;
+      });
+      window.tvMockSend = send;
+    </script>
+  </body>
+</html>

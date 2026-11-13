@@ -52,6 +52,9 @@ Host-specific values (Cube address, Funnel origin, GPU UUID, tokens) go in git-i
 - **Rebase-friendly.** FireSong code goes in new files. Upstream files get only thin hooks, such as one route line, one `AppState` field or one adapter wrapper. The allowed hooks are listed in design §9.
 - **Upstreamable fixes stay separate.** Fixes that make sense for Nightingale too (secret redaction, WS reconnect, `context.resume()`, analyzer idle exit) go in their own commits, so they can be offered upstream.
 - **Tests.** Upstream's agent rules (`.rulesync/rules`) say not to add automated tests. FireSong-only modules, such as `app-core/src/remote_mic.rs`, carry their own tests anyway, because parallel work packages depend on their contracts. Tests never go into upstream files. This is a fork-level choice and the owner can reverse it.
+  - Rust: `#[cfg(test)]` modules inside FireSong files, run by `cargo test`.
+  - Client code: `tools/webtest/` is a separate pnpm package (vitest + happy-dom) that imports client code through `@/` and takes React from `client/node_modules`, so `client/package.json` and its lockfile stay untouched. Run `pnpm --dir tools/webtest install --frozen-lockfile`, then `test`, `typecheck`, `lint` and `format:check` there.
+  - Scripts: `python3 -m unittest scripts/firesong/test_fetch_clips.py`.
 - **Content.** Every audio and visual asset must be original or license-safe: CC0, public domain, or the Pixabay/Pexels licenses. No imitation of any real karaoke brand's jingles, logos or trade dress. Background clips are never committed.
 
 ## Code map by work package
@@ -69,6 +72,6 @@ The work packages are those of design §9. "Key" is the worktree/branch key used
 | WP5 | `phone-page` | Phone `/m` page | `client/src/features/phone-mic/*`; *hook* `app.tsx` (route) |
 | WP6 | `firetv-apk` | Fire TV WebView app, `tvctl` | `firetv/`, `tools/tvctl`; *hook* `nav-input-context.tsx` (media keys) |
 | WP7 | integration | Cube run of the WP4 harness | none new |
-| WP8 | `noraebang` | Clip pool, lyric bar, score curve, reveal and fanfare, `song-result` | `app-core/src/noraebang_clips.rs`, `client/src/features/noraebang/*`, `scripts/noraebang-clips/`; *hooks* `backgrounds.rs`, `schemas.ts`, `theme.ts`, `use-pixabay-slots.ts`, `playback-inner.tsx`, `result.tsx`, `state.ts` |
+| WP8 | `noraebang` | Noraebang mode: clip pool, two-line wipe lyrics, 0-100 score curve, reveal with synthesised drum roll and fanfare, `song-result`, echo presets | `app-core/src/noraebang_clips.rs` (+ *hooks* `pub mod` in `app-core/src/lib.rs`, one arm in `app-api/src/lib.rs`), `client/src/bridge/noraebang-clips.ts`, `client/src/features/noraebang/*`, `scripts/firesong/fetch-clips.py`, `tools/webtest/`; *hooks* `playback-inner.tsx`, `playback-hud.tsx` (`hideScore`), `use-playback-result.ts` (options, `voicedRatio`), `result.tsx` (export `ResultActions`), `lib/pitch/state.ts` + `use-pitch-scoring.ts` + `playback-mic-context.tsx` (`voicedRatio`), i18n catalogs (`firesong.noraebang.*` keys) |
 | WP9, WP10 | later | Travel rig, home dress rehearsal | `deploy/server/travel-rig.sh`, `docs/party-runbook.md` |
 | WP11, WP12 | gated by spikes | Phone-side pitch; native voice engine | see design §9 |

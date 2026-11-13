@@ -421,7 +421,7 @@ sequenceDiagram
 | TV socket client, adapter wrapper, MicRack, voice engine | WP4 (tv-voice) | `client/src/bridge/rtc-socket.ts`, `remote-mics.ts`, `microphone.ts`, `client/src/audio/*` |
 | Phone page | WP5 (phone-page) | `client/src/features/phone-mic/*`, `app.tsx` (route) |
 | Cookie bootstrap and secure context on the Cube | WP6 (firetv-apk) | `firetv/` |
-| `song-result` sender, tier captions, display score | WP8 (noraebang) | `features/noraebang/*`, `utils/noraebang-score.ts` |
+| `song-result` sender, tier captions, display score, echo presets | WP8 (noraebang) | `features/noraebang/*` (§12) |
 | Env files, host-token handoff to the app, song-cache guard and LRU | WP1 (deploy) | `deploy/server/*`, `scripts/firesong_prep.py` |
 
 ## 11. Changing the contract
@@ -431,3 +431,21 @@ sequenceDiagram
 3. Restore the upstream generated files, which `cargo test` reformats: `git checkout -- $(git diff --name-only -- client/src/types | grep -v /firesong/)`.
 4. Update the zod schemas and constants in `protocol.ts`, then run `pnpm --dir client typecheck` (the `ProtocolSchemasMatchRust` check) and `pnpm --dir client lint`.
 5. Update this page in the same commit.
+
+## 12. Noraebang hooks for the TV voice engine (WP8 and WP4)
+
+WP8 owns the noraebang presentation; the TV voice engine and `/rtc` socket (WP4) plug into it through four narrow seams in `client/src/features/noraebang/`. Until WP4 registers them, each seam falls back to something safe.
+
+| Seam | Module | WP4 does | Fallback |
+|---|---|---|---|
+| `registerSongResultSink({ send, slotForMicrophone })` | `song-result.ts` | Register once the TV socket is up: `send` writes a `TvToServer` frame, `slotForMicrophone('remote:<micId>')` returns the roster slot or `null`. The reveal calls it when it starts, with one `SlotResult` per phone singer (local mics are left out). The same lookup orders the reveal by slot. | No frame is sent; the reveal uses setup order. |
+| `provideRevealSoundOutput(() => ({ context, destination }))` | `audio/sound-output.ts` | Hand over the long-lived voice-engine `AudioContext` and the node to mix into (before the master limiter), so the drum roll and fanfare play on the already-unlocked context. | A page-lifetime `AudioContext` of its own. |
+| `currentEchoPreset()`, `subscribeEchoPreset(fn)`, `slotEcho(preset, latencyMs)` | `echo.ts` | Read the preset and build each slot's echo: `slotEcho` returns `{delayMs, wet, feedback, lowpassHz, reverbSend, latencyWarning}` with the latency-locked delay `clamp(L, 90, 220)` ms, 160 ms when `L < 60` ms or unknown, and a raised wet level plus `latencyWarning` above 220 ms (design §3, §6e). | — |
+| `phoneMicMonitoringForced()` | `echo.ts` | When true (noraebang mode), keep every connected slot's monitor send on, between songs and during pauses, whatever `setMonitoring` says (§8). | — |
+
+Constants added to `protocol.ts` for the frame builder: `MAX_TITLE_CHARS` (200, Unicode code points, as `remote_mic.rs` counts them), `MAX_DISPLAY_SCORE` (100) and `MAX_RAW_SCORE` (1000).
+
+**Mode switch.** Noraebang mode is a client-local setting (`features/noraebang/settings.ts`, localStorage key `firesong.noraebang`): `?mode=noraebang` turns it on, `?mode=classic` off, and `?echo=off|light|noraebang|hall` picks the echo preset. The query is read when the bundle loads, so the Fire TV app opens `/?tv=1&mode=noraebang`.
+
+**Clip pool.** `list_noraebang_clips` (app-api) returns `NoraebangClips {status, clips[], skipped}` from `FIRESONG_CLIP_DIR` (§3). A clip is `<name>.mp4|.webm` plus a sidecar `<name>.json`: `{source, license, title?, author?, source_url?, license_url?, tags[], duration_sec?}`, with `license` one of `cc0`, `public-domain`, `pixabay`, `pexels`, `original`. Anything else is skipped. `scripts/firesong/fetch-clips.py` writes the pool (dry run unless `--apply`).
+

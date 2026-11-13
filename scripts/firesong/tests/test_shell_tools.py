@@ -44,12 +44,12 @@ class ShellToolTests(unittest.TestCase):
                          "--release-root", "/nonexistent/firesong-dry-run"], cwd=str(REPO))
             self.assertEqual(r.returncode, 0, r.stderr)
             err = r.stderr
-            self.assertIn("pnpm --dir", err)
-            self.assertIn("build", err)
+            self.assertIn("(cd client && pnpm install --frozen-lockfile)", err)
+            self.assertIn("(cd client && pnpm build)", err)
             self.assertIn("cargo build --manifest-path", err)
             self.assertIn("--release --locked -p server", err)
             self.assertIn("mv -T", err)
-            self.assertLess(err.index("pnpm --dir"), err.index("cargo build"), "client before server")
+            self.assertLess(err.index("pnpm build"), err.index("cargo build"), "client before server")
             self.assertFalse(Path("/nonexistent/firesong-dry-run").exists())
 
     @unittest.skipUnless(os.access(SHELLCHECK, os.X_OK) if os.path.isabs(SHELLCHECK) else shutil.which(SHELLCHECK),

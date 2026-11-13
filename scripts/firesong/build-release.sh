@@ -15,7 +15,8 @@
 # Steps:
 #   1. source scripts/firesong/devenv.sh: node 24, corepack pnpm, cargo, HUSKY=0,
 #      CARGO_TARGET_DIR=/mnt/fast/firesong/target-<key>, caches on /mnt/staging1.
-#   2. client: pnpm install --frozen-lockfile, then pnpm build -> client/dist.
+#   2. client (from client/, so corepack picks the pinned pnpm): pnpm install
+#      --frozen-lockfile, then pnpm build -> client/dist.
 #   3. server: cargo build --release --locked -p server. rust-embed bakes
 #      client/dist into the binary, so the client must be built first.
 #   4. assemble <release-root>/releases/<UTC-stamp>-<git-sha>/ with the server,
@@ -67,6 +68,14 @@ run() {
   [ "$DRY" = 1 ] || "$@"
 }
 
+in_client() {
+  # pnpm must run from client/: corepack picks the pnpm version from the
+  # nearest package.json's packageManager, and the repo root has none
+  # (`pnpm --dir client` from the root gets corepack's default pnpm instead).
+  printf '+ (cd client && %s)\n' "$*" >&2
+  [ "$DRY" = 1 ] || (cd "$REPO/client" && "$@")
+}
+
 # --- toolchain ---------------------------------------------------------------
 FIRESONG_DEVENV_QUIET=1
 export FIRESONG_DEVENV_QUIET
@@ -100,9 +109,9 @@ say "destination $DEST"
 
 # --- build ---------------------------------------------------------------------
 if [ "$SKIP_INSTALL" = 0 ]; then
-  run pnpm --dir "$REPO/client" install --frozen-lockfile
+  in_client pnpm install --frozen-lockfile
 fi
-run pnpm --dir "$REPO/client" build
+in_client pnpm build
 [ "$DRY" = 1 ] || [ -f "$REPO/client/dist/index.html" ] || die "client build produced no client/dist/index.html"
 run cargo build --manifest-path "$REPO/Cargo.toml" --release --locked -p server
 [ "$DRY" = 1 ] || [ -x "$BIN" ] || die "cargo produced no $BIN"
@@ -119,7 +128,7 @@ run cp -a "$REPO/client/dist" "$STAGE/client-dist"
 if [ "$DRY" = 0 ]; then
   (cd "$STAGE" && sha256sum server preflight.sh party-prep.py firesong_prep.py cube.sh Caddyfile.tv > SHA256SUMS)
   python3 -I - "$STAGE/release.json" "$ID" "$SHA" "$BRANCH" "${DIRTY:+true}" \
-    "$(node -v)" "$(pnpm --dir "$REPO/client" -v)" "$(cargo -V)" <<'PY'
+    "$(node -v)" "$(cd "$REPO/client" && pnpm -v)" "$(cargo -V)" <<'PY'
 import json, sys
 path, rid, sha, branch, dirty, node, pnpm, cargo = sys.argv[1:9]
 with open(path, "w", encoding="utf-8") as f:

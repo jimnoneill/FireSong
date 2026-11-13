@@ -2,6 +2,7 @@ import { MicRack, type MicRackPort, type RackSlotStatus, type TapListener } from
 import { SlotLatency } from '@/audio/slot-latency';
 import { getVoiceEngine } from '@/audio/voice-engine';
 import type { EchoMix } from '@/audio/voice-params';
+import { installDiag } from '@/features/remote-mic/diag';
 import {
   linkNoraebang,
   noraebangMonitorAlways,
@@ -537,7 +538,9 @@ export const startRemoteMics = (): (() => void) => {
   }
   const release = remoteMics.start();
   const unlink = linkNoraebang(remoteMics);
+  const uninstallDiag = installDiag(remoteMics);
   return () => {
+    uninstallDiag();
     unlink();
     release();
   };

@@ -15,8 +15,17 @@ below.
 
 ### Features
 
-- Phones can now be wireless microphones on a FireSong TV: each phone sings as its own player, with a karaoke echo timed to that phone's delay.
+- Phones can now be wireless microphones on a FireSong TV: scan a slot's QR code, sing as your own player with a karaoke echo timed to your phone's delay, and see your score on the phone after each song.
+- Noraebang mode: background clips, a two-line wipe lyric bar, the live score hidden while you sing, and a 0-100 score reveal with a drum roll, fanfare and Korean captions.
 - The microphone latency setting now goes up to 800 ms, enough for wireless and network microphones.
+
+### Improvements
+
+- The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
+
+### Fixes
+
+- The phone pairing code for the self-hosted server no longer changes every time the server restarts.
 
 ## [1.4.1] - 2026-11-09
 

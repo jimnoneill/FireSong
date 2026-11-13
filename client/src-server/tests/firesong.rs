@@ -1002,7 +1002,11 @@ async fn a_phone_hello_on_the_tv_door_cannot_take_the_tv_seat() {
     // The real TV keeps its seat: no tv-replaced, and it still relays.
     expect_quiet(&mut tv).await;
     let (mut phone, _) = phone(&server, mic_hello("phone-on-the-phone-door", Some(2))).await;
-    send(&mut phone, json!({"type": "offer", "sdp": "v=0", "restart": false})).await;
+    send(
+        &mut phone,
+        json!({"type": "offer", "sdp": "v=0", "restart": false}),
+    )
+    .await;
     let offer = recv_type(&mut tv, "offer").await;
     assert_eq!(offer["slot"], 2);
 }

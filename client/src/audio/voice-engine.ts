@@ -1,6 +1,4 @@
-import { ensureWorkletUrl } from '@/bridge/microphone.web';
-
-import { gateWorkletUrl } from './gate-worklet';
+import { rackWorkletUrl } from './rack-worklets';
 import {
   BUS_COMPRESSOR_RATIO,
   BUS_COMPRESSOR_THRESHOLD_DB,
@@ -73,10 +71,7 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
   reverbSend.connect(reverb).connect(busCompressor);
   busCompressor.connect(limiter).connect(context.destination);
 
-  const ready = Promise.all([
-    context.audioWorklet.addModule(ensureWorkletUrl()),
-    context.audioWorklet.addModule(gateWorkletUrl()),
-  ]).then(() => undefined);
+  const ready = context.audioWorklet.addModule(rackWorkletUrl());
 
   return {
     context,

@@ -66,7 +66,7 @@ const enqueueCaptureOperation = <T>(operation: () => Promise<T>): Promise<T> => 
   return next;
 };
 
-export const ensureWorkletUrl = (): string => {
+const ensureWorkletUrl = (): string => {
   if (workletUrl !== null) {
     return workletUrl;
   }

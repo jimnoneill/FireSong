@@ -2,7 +2,7 @@ import { SAMPLE_CHUNK } from '@/bridge/microphone.web';
 import type { MicSlot } from '@/features/remote-mic/protocol';
 
 import { FeedbackTracker, findFeedbackPeak } from './feedback-guard';
-import { GATE_PROCESSOR, parseGateMeter } from './gate-worklet';
+import { ACTIVE_PARAM, CHUNK_PROCESSOR, GATE_PROCESSOR, parseGateMeter } from './rack-worklets';
 import type { VoiceEngine } from './voice-engine';
 import {
   COMPRESSOR_RATIO,
@@ -22,7 +22,6 @@ import {
   type EchoSettings,
 } from './voice-params';
 
-const CHUNKER_PROCESSOR = 'nightingale-mic-processor';
 const GUARD_INTERVAL_MS = 50;
 const GUARD_FFT_SIZE = 2048;
 const RAMP_SEC = 0.02;
@@ -86,6 +85,7 @@ type StripNodes = {
   gate: AudioWorkletNode;
   chunker: AudioWorkletNode;
   analyser: AnalyserNode;
+  compressor: DynamicsCompressorNode;
   fader: GainNode;
   notch: BiquadFilterNode;
   monitor: GainNode;
@@ -107,7 +107,7 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
     numberOfOutputs: 1,
     outputChannelCount: [1],
   });
-  const chunker = new AudioWorkletNode(context, CHUNKER_PROCESSOR, {
+  const chunker = new AudioWorkletNode(context, CHUNK_PROCESSOR, {
     numberOfInputs: 1,
     numberOfOutputs: 0,
     processorOptions: { chunkSize: SAMPLE_CHUNK },
@@ -150,6 +150,7 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
     gate,
     chunker,
     analyser,
+    compressor,
     fader,
     notch,
     monitor,
@@ -216,6 +217,9 @@ class SlotStrip {
   dispose(): void {
     this.detach();
     this.setTap(null);
+    for (const processor of [this.nodes.gate, this.nodes.chunker]) {
+      processor.parameters.get(ACTIVE_PARAM)?.setValueAtTime(0, this.engine.context.currentTime);
+    }
     for (const node of Object.values(this.nodes)) {
       node.disconnect();
     }

@@ -61,10 +61,10 @@ New HTTP routes:
 
 ## 2. Authentication
 
-### 2.1 Pairing token (phones; upstream, unchanged)
+### 2.1 Pairing token (phones; upstream)
 
 - The token is stored in `<data>/remote-control.json` and is 32 lowercase hex characters.
-- A phone can present it three ways: the cookie `nightingale_remote`, the header `x-nightingale-token`, or the query `?t=`. A valid `?t=` sets the cookie (`Path=/; HttpOnly; SameSite=Lax`).
+- A phone can present it three ways: the cookie `nightingale_remote`, the header `x-nightingale-token`, or the query `?t=`. Each is checked on its own, so a stale cookie from before a rotation does not hide a valid `?t=`. A valid `?t=` sets the cookie (`Path=/; HttpOnly; SameSite=Lax`, plus `Secure` when `X-Forwarded-Proto` is `https`), replacing the stale one.
 - QR links are `…/m?t=<token>&slot=N`. The phone must stay in a **Safari tab**, because a Home Screen web app has its own cookie jar and would lose the cookie.
 - Rotate the token before every party: `POST /api/firesong/rotate-pairing-token` on the full listener (host token required). It writes a new token to `remote-control.json`, frees every slot (each connected phone gets `slot-lost {kicked}` and close 4410, the TV gets `slot-lost {kicked}` and a `roster`), and returns the new `MicLinks`. Old links and cookies get `401` from then on. Open `/q` queue pages keep their `/ws` event stream until they reload, but their commands are refused. With the server stopped, deleting `remote-control.json` also rotates it.
 - A token generated on first start is written to `remote-control.json` at once, so it survives restarts.

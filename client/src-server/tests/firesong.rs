@@ -934,6 +934,7 @@ async fn oversized_frames_get_too_large() {
 
 #[tokio::test]
 async fn mic_links_use_the_pinned_https_origin_and_rotation_revokes_them() {
+    let _turn = ROTATION.lock().await;
     let server = start(fast_timings()).await;
     let full = server::router(server.state.clone());
     let mut tv = tv(&server).await;
@@ -1009,4 +1010,70 @@ async fn a_phone_hello_on_the_tv_door_cannot_take_the_tv_seat() {
     .await;
     let offer = recv_type(&mut tv, "offer").await;
     assert_eq!(offer["slot"], 2);
+}
+
+/// Rotation writes the process-wide `remote-control.json`; rotation tests take turns.
+static ROTATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn rotate_request() -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/firesong/rotate-pairing-token")
+        .header("x-firesong-host-token", HOST_TOKEN)
+        .body(Body::empty())
+        .expect("req")
+}
+
+fn token_of(link: &str) -> String {
+    let (_, query) = link.split_once("?t=").expect("token in link");
+    query.split('&').next().expect("token").to_string()
+}
+
+#[tokio::test]
+async fn a_new_link_wins_over_a_stale_pairing_cookie() {
+    let _turn = ROTATION.lock().await;
+    let state = new_state(&fresh_dir("auth"), Timings::default());
+    let full = server::router(state.clone());
+    let phone = server::remote_router(state);
+
+    let (status, _, body) = http(full, rotate_request()).await;
+    assert_eq!(status, StatusCode::OK);
+    let links: Value = serde_json::from_str(&body).expect("links json");
+    let fresh = token_of(links["slots"][0]["url"].as_str().expect("url"));
+    assert_ne!(fresh, PAIRING_TOKEN);
+
+    // A phone from an earlier party still holds the old cookie when it scans the new QR.
+    let rejoin = get(&format!("/m?t={fresh}&slot=1"))
+        .header(
+            header::COOKIE,
+            format!("nightingale_remote={PAIRING_TOKEN}"),
+        )
+        .header("x-forwarded-proto", "https")
+        .body(Body::empty())
+        .expect("req");
+    let (status, headers, _) = http(phone.clone(), rejoin).await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = headers[header::SET_COOKIE].to_str().expect("cookie");
+    assert!(
+        cookie.starts_with(&format!("nightingale_remote={fresh};")),
+        "{cookie}"
+    );
+    assert!(cookie.contains("; Secure"), "{cookie}");
+
+    // Without a fresh link the old cookie alone opens nothing.
+    let stale = get("/q")
+        .header(
+            header::COOKIE,
+            format!("nightingale_remote={PAIRING_TOKEN}"),
+        )
+        .body(Body::empty())
+        .expect("req");
+    assert_eq!(http(phone.clone(), stale).await.0, StatusCode::UNAUTHORIZED);
+    let stale_link = get(&format!("/q?t={PAIRING_TOKEN}"))
+        .header(header::COOKIE, format!("nightingale_remote={fresh}"))
+        .body(Body::empty())
+        .expect("req");
+    let (status, headers, _) = http(phone, stale_link).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get(header::SET_COOKIE).is_none());
 }

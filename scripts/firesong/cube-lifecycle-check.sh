@@ -69,10 +69,6 @@ players() {
   grep -E "u/pid:$UID_FS/" "$OUT/.audio" | grep -c 'state:started'
 }
 
-# IDs of those players in the last `players` snapshot, one per line.
-player_ids() {
-  grep -E "u/pid:$UID_FS/" "$OUT/.audio" | grep 'state:started' | sed -n 's/^ *ID:\([0-9]*\) .*/\1/p'
-}
 
 # Number of DevTools page targets (0 once the WebView is destroyed).
 pages() {
@@ -198,7 +194,7 @@ check "voice engine running" "voice engine not running" [ "$(jfield "$d1" engine
 a0=$(players); echo "started FireSong players before the tone (silent page): $a0"
 tone=$(cdp_eval "$TONE_JS"); echo "tone context: $tone"
 sleep 2
-a1=$(players); cp "$OUT/.audio" "$OUT/audio-with-tone.txt"; ids_before=$(player_ids | tr '\n' ' ')
+a1=$(players); cp "$OUT/.audio" "$OUT/audio-with-tone.txt"
 check "tone playing: OS lists $a1 started FireSong player(s)" "tone: no started FireSong player ($tone)" [ "$a1" -ge 1 ]
 CDP_PORT=$CDP python3 "$REPO/android/firesong-tv/probe/cdp.py" shot "$OUT/page-in-front.png" >/dev/null 2>&1
 
@@ -221,10 +217,12 @@ p3=$(pages)
 check "reopen: WebView page rebuilt (pages=$p3)" "reopen: no WebView page" [ "$p3" -ge 1 ]
 d3=$(wait_diag); echo "$d3" > "$OUT/page-after-reopen.json"; echo "page: $d3"
 check "reopen: page reloaded and reconnected to /rtc" "reopen: page not connected to /rtc" [ "$(jfield "$d3" rtc)" = true ]
-a3=$(players); ids_after=$(player_ids | tr '\n' ' ')
-echo "started FireSong players: before HOME [$ids_before] after reopen [$ids_after]"
-survivors=$(comm -12 <(tr ' ' '\n' <<<"$ids_before" | sed '/^$/d' | sort) <(tr ' ' '\n' <<<"$ids_after" | sed '/^$/d' | sort) | tr '\n' ' ')
-check "reopen: none of the players from before HOME came back ($a3 new)" "reopen: players from before HOME still started: $survivors" [ -z "$survivors" ]
+# Chrome reuses an idle output stream, so the OS may give the new page's
+# player the same ID as before HOME; compare against the silent page instead.
+fresh=$(cdp_eval 'window.__fireSongCheckTone === undefined')
+check "reopen: a fresh page (the test tone is gone with the old one)" "reopen: the old page's tone context is still there" [ "$fresh" = true ]
+a3=$(players)
+check "reopen: $a3 started FireSong player(s), no more than the silent page had ($a0)" "reopen: $a3 started FireSong players, more than the silent page's $a0" [ "$a3" -le "$a0" ]
 
 echo "RESULT pass=$pass fail=$fail artifacts=$OUT"
 [ "$fail" = 0 ]

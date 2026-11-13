@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# tvctl: drive the FireSong app on the Fire TV Cube from the FireSong host.
+#
+#   tools/tvctl [-s SERIAL] <command> [args]
+#
+# SERIAL defaults to $FIRESONG_CUBE_SERIAL (scripts/firesong/devenv.local.sh).
+#
+# Commands
+#   status                 adb state, resumed activity, WebView, FireSong version
+#   idle                   exit 0 when the TV is free (launcher, dream or FireSong in front)
+#   install [APK]          adb install -r (default: the debug build); TV must be idle
+#   configure [opts]       send settings to org.firesong.tv/.Configure (TV must be idle):
+#        --url URL  --token-file FILE  --leaf-pin PINS  --ui-density DPI
+#        --devtools on|off  --clear  --reload
+#   launch                 start FireSong (TV must be idle)
+#   stop                   force-stop FireSong (only org.firesong.tv)
+#   home                   press HOME, only while FireSong is in front
+#   key CODE...            input keyevent, only while FireSong is in front
+#   longkey CODE           input keyevent --longpress, only while FireSong is in front
+#   screencap OUT.png      save a screenshot
+#   logcat [ARGS]          FireSong, FireSongJS and chromium lines (adb logcat args pass through)
+#   reverse PORT / unreverse PORT     adb reverse tcp:PORT tcp:PORT (Cube localhost -> host)
+#   devtools [LOCALPORT] / undevtools [LOCALPORT]
+#                          forward LOCALPORT (9222) to FireSong's WebView DevTools socket
+#   info                   dumpsys webviewupdate, meminfo org.firesong.tv, audio flinger summary
+#
+# Safety rules (owner's): never touches the adb key, never uninstalls or
+# modifies other apps, and only installs/launches while the TV is idle. Press
+# HOME and remove reverses/forwards when done.
+set -euo pipefail
+
+PKG=org.firesong.tv
+ACTIVITY="$PKG/.MainActivity"
+CONFIGURE="$PKG/.Configure"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+DEFAULT_APK="$REPO/android/firesong-tv/app/build/outputs/apk/debug/app-debug.apk"
+ADB="${ADB:-}"
+if [ -z "$ADB" ]; then
+  if command -v adb >/dev/null 2>&1; then ADB="$(command -v adb)"; else ADB="${ANDROID_HOME:-$HOME/Android/Sdk}/platform-tools/adb"; fi
+fi
+SERIAL="${FIRESONG_CUBE_SERIAL:-}"
+
+die() { echo "tvctl: $*" >&2; exit 1; }
+
+if [ "${1:-}" = "-s" ]; then SERIAL="${2:-}"; shift 2; fi
+[ -n "$SERIAL" ] || die "no device: pass -s <ip:5555> or set FIRESONG_CUBE_SERIAL"
+[ -x "$ADB" ] || die "adb not found ($ADB)"
+
+adbs() { "$ADB" -s "$SERIAL" "$@"; }
+
+resumed() {
+  # Fire OS 7 prints "ResumedActivity: ActivityRecord{... pkg/.Activity tNNN}";
+  # newer Android prints "mResumedActivity:". Match both.
+  adbs shell dumpsys activity activities 2>/dev/null |
+    grep -m1 -E '^\s*m?ResumedActivity' | sed -E 's/.* ([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+).*/\1/' || true
+}
+
+is_idle() {
+  local r
+  r="$(resumed)"
+  case "$r" in
+    com.amazon.tv.launcher/*|"$PKG"/*) return 0 ;;
+    "") # nothing resumed (asleep or dreaming over the launcher)
+      adbs shell dumpsys power 2>/dev/null | grep -q -E 'mWakefulness=(Asleep|Dozing|Dreaming)' ;;
+    *) return 1 ;;
+  esac
+}
+
+require_idle() {
+  is_idle || die "TV is busy ($(resumed)); not touching it"
+}
+
+require_front() {
+  case "$(resumed)" in
+    "$PKG"/*) ;;
+    *) die "FireSong is not in front ($(resumed)); refusing to send keys" ;;
+  esac
+}
+
+webview_pid() {
+  adbs shell pidof "$PKG" 2>/dev/null | awk '{print $1}'
+}
+
+cmd="${1:-status}"
+shift || true
+
+case "$cmd" in
+  status)
+    echo "serial:   $SERIAL ($(adbs get-state 2>&1))"
+    echo "resumed:  $(resumed)"
+    adbs shell dumpsys power | grep -m1 -E 'mWakefulness=' | sed 's/^ */power:    /'
+    adbs shell dumpsys webviewupdate | grep -m1 'Current WebView package' | sed 's/^ */webview:  /'
+    v="$(adbs shell dumpsys package "$PKG" 2>/dev/null | grep -m1 versionName || true)"
+    echo "firesong: ${v:-not installed}" | sed 's/  */ /g'
+    if is_idle; then echo "idle:     yes"; else echo "idle:     NO"; fi
+    ;;
+  idle)
+    is_idle
+    ;;
+  install)
+    apk="${1:-$DEFAULT_APK}"
+    [ -f "$apk" ] || die "no APK at $apk (build it: ./gradlew -p android/firesong-tv assembleDebug)"
+    require_idle
+    adbs install -r "$apk"
+    ;;
+  configure)
+    args=(shell am start -n "$CONFIGURE")
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --url) args+=(--es url "'$2'"); shift 2 ;;
+        --token-file)
+          [ -r "$2" ] || die "cannot read token file $2"
+          tok="$(tr -d '[:space:]' < "$2")"
+          [[ "$tok" =~ ^[A-Za-z0-9._~-]{16,256}$ ]] || die "token in $2 has an unexpected format"
+          args+=(--es host_token "$tok"); shift 2 ;;
+        --no-token) args+=(--es host_token "''"); shift ;;
+        --leaf-pin) args+=(--es leaf_pin "'$2'"); shift 2 ;;
+        --ui-density) args+=(--ei ui_density "$2"); shift 2 ;;
+        --devtools) case "$2" in on|true|1) args+=(--ez devtools true) ;; *) args+=(--ez devtools false) ;; esac; shift 2 ;;
+        --clear) args+=(--ez clear true); shift ;;
+        --reload) args+=(--ez reload true); shift ;;
+        *) die "configure: unknown option $1" ;;
+      esac
+    done
+    require_idle
+    # Never echo the command: it may carry the host token.
+    adbs "${args[@]}" >/dev/null
+    echo "configured (see: tvctl logcat -d | grep configure)"
+    ;;
+  launch)
+    require_idle
+    adbs shell am start -n "$ACTIVITY" >/dev/null
+    echo "launched $ACTIVITY"
+    ;;
+  stop)
+    adbs shell am force-stop "$PKG"
+    ;;
+  home)
+    # Only leave FireSong; never press keys while someone uses another app.
+    case "$(resumed)" in
+      "$PKG"/*) adbs shell input keyevent KEYCODE_HOME ;;
+      *) echo "FireSong is not in front ($(resumed)); HOME not sent" ;;
+    esac
+    ;;
+  key)
+    [ $# -gt 0 ] || die "key: give one or more key codes"
+    require_front
+    for k in "$@"; do adbs shell input keyevent "$k"; done
+    ;;
+  longkey)
+    [ $# -eq 1 ] || die "longkey: give one key code"
+    require_front
+    adbs shell input keyevent --longpress "$1"
+    ;;
+  screencap)
+    out="${1:?screencap: give an output .png}"
+    adbs exec-out screencap -p > "$out"
+    echo "wrote $out ($(stat -c %s "$out") bytes)"
+    ;;
+  logcat)
+    adbs logcat -v threadtime "$@" -s FireSong:V FireSongJS:V chromium:V cr_AwContents:V
+    ;;
+  reverse)
+    p="${1:?reverse: give a port}"
+    adbs reverse "tcp:$p" "tcp:$p"
+    ;;
+  unreverse)
+    p="${1:?unreverse: give a port}"
+    adbs reverse --remove "tcp:$p"
+    ;;
+  devtools)
+    lp="${1:-9222}"
+    pid="$(webview_pid)"
+    [ -n "$pid" ] || die "FireSong is not running"
+    sock="$(adbs shell cat /proc/net/unix 2>/dev/null | grep -o "webview_devtools_remote_$pid" | head -1 || true)"
+    if [ -z "$sock" ]; then
+      echo "tvctl: no DevTools socket listed for pid $pid (release build without --devtools on?); trying anyway" >&2
+      sock="webview_devtools_remote_$pid"
+    fi
+    adbs forward "tcp:$lp" "localabstract:$sock"
+    echo "DevTools: http://127.0.0.1:$lp/json"
+    ;;
+  undevtools)
+    adbs forward --remove "tcp:${1:-9222}"
+    ;;
+  info)
+    adbs shell dumpsys webviewupdate | head -6
+    adbs shell dumpsys meminfo "$PKG" | grep -E 'TOTAL|Native Heap|Dalvik Heap|Graphics' | head -6 || true
+    adbs shell dumpsys media.audio_flinger | grep -E 'Output thread|Sample rate|HAL frame count|Normal frame count|Latency|underruns' | head -24 || true
+    ;;
+  *)
+    die "unknown command: $cmd (see the header of $0)"
+    ;;
+esac

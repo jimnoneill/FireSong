@@ -1,4 +1,4 @@
-import { MicRack, type MicRackPort, type TapListener } from '@/audio/mic-rack';
+import { MicRack, type MicRackPort, type RackSlotStatus, type TapListener } from '@/audio/mic-rack';
 import { SlotLatency } from '@/audio/slot-latency';
 import { getVoiceEngine } from '@/audio/voice-engine';
 import {
@@ -165,6 +165,11 @@ export class RemoteMics {
 
   isBound(captureId: string): boolean {
     return this.bindings.has(captureId);
+  }
+
+  /** Live rack state of a slot: level, gate, feedback guard, echo. */
+  slotStatus(slot: MicSlot): RackSlotStatus | null {
+    return this.rack?.status(slot) ?? null;
   }
 
   /** Sends a calibrated mouth-to-speaker latency for the mic's slot. */

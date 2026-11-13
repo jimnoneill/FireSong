@@ -28,6 +28,10 @@ const GUARD_INTERVAL_MS = 50;
 const GUARD_FFT_SIZE = 2048;
 const RAMP_SEC = 0.02;
 const MAX_ECHO_DELAY_SEC = 1;
+/** Latency follows the jitter buffer every 2 s; glide so the echo never clicks. */
+const ECHO_GLIDE_SEC = 0.1;
+/** Smaller latency moves leave the echo where it is. */
+const ECHO_RETUNE_MS = 10;
 
 /** Receives the slot's pre-FX, post-gate voice in 512-sample chunks. */
 export type TapListener = (samples: Float32Array, sampleRate: number) => void;
@@ -144,6 +148,7 @@ class SlotStrip {
   private source: MediaStreamAudioSourceNode | null = null;
   private releaseSink: (() => void) | null = null;
   private tap: TapListener | null = null;
+  private tapConnected = false;
   private monitored = false;
   private muted = false;
   private duckedUntil = 0;
@@ -176,6 +181,7 @@ class SlotStrip {
     this.releaseSink = this.sink(stream);
     this.source = this.engine.context.createMediaStreamSource(stream);
     this.source.connect(this.nodes.hpf);
+    this.syncTap();
   }
 
   detach(): void {
@@ -184,6 +190,7 @@ class SlotStrip {
     this.releaseSink?.();
     this.releaseSink = null;
     this.tracker.reset();
+    this.syncTap();
   }
 
   dispose(): void {
@@ -197,12 +204,8 @@ class SlotStrip {
   }
 
   setTap(listener: TapListener | null): void {
-    if (listener !== null && this.tap === null) {
-      this.nodes.gate.connect(this.nodes.chunker);
-    } else if (listener === null && this.tap !== null) {
-      this.nodes.gate.disconnect(this.nodes.chunker);
-    }
     this.tap = listener;
+    this.syncTap();
   }
 
   setMonitor(on: boolean): void {
@@ -219,7 +222,14 @@ class SlotStrip {
   }
 
   setLatency(latencyMs: number | null): void {
-    this.echo = echoSettingsFor(latencyMs);
+    const next = echoSettingsFor(latencyMs);
+    if (
+      next.late === this.echo.late &&
+      Math.abs(next.delayMs - this.echo.delayMs) < ECHO_RETUNE_MS
+    ) {
+      return;
+    }
+    this.echo = next;
     this.applyEcho();
   }
 
@@ -273,6 +283,20 @@ class SlotStrip {
     };
   }
 
+  /** Frames flow only while someone listens and the slot has audio. */
+  private syncTap(): void {
+    const wanted = this.tap !== null && this.source !== null;
+    if (wanted === this.tapConnected) {
+      return;
+    }
+    if (wanted) {
+      this.nodes.gate.connect(this.nodes.chunker);
+    } else {
+      this.nodes.gate.disconnect(this.nodes.chunker);
+    }
+    this.tapConnected = wanted;
+  }
+
   private applyFader(): void {
     const ducked = this.duckedUntil !== 0 ? dbToGain(FEEDBACK_DUCK_DB) : 1;
     ramp(this.nodes.fader.gain, this.muted ? 0 : ducked, this.engine.context);
@@ -280,7 +304,11 @@ class SlotStrip {
 
   private applyEcho(): void {
     const { context } = this.engine;
-    this.nodes.echoDelay.delayTime.setValueAtTime(this.echo.delayMs / 1000, context.currentTime);
+    this.nodes.echoDelay.delayTime.setTargetAtTime(
+      this.echo.delayMs / 1000,
+      context.currentTime,
+      ECHO_GLIDE_SEC,
+    );
     ramp(this.nodes.dry.gain, this.echo.dryGain, context);
     ramp(this.nodes.echoSend.gain, this.echo.wetGain, context);
   }

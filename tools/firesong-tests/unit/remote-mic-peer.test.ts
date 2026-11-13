@@ -169,7 +169,7 @@ describe('TvMicPeer', () => {
     ];
     await vi.advanceTimersByTimeAsync(2000);
     expect(events.onStats).toHaveBeenLastCalledWith({
-      jitterMs: 20,
+      jitterMs: null,
       jitterBufferTargetMs: 10,
       packetsReceived: 100,
       packetsLost: 2,

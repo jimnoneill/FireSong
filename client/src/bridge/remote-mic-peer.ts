@@ -13,6 +13,10 @@ const DISCONNECTED_RESTART_MS = 3000;
 const STATS_INTERVAL_MS = 2000;
 
 export type PeerStats = {
+  /**
+   * Mean jitter-buffer delay since the previous reading; `null` on the first
+   * one, whose cumulative average still holds the start-up buffering.
+   */
   jitterMs: number | null;
   jitterBufferTargetMs: number | null;
   packetsReceived: number;
@@ -58,6 +62,12 @@ const inboundAudio = (report: RTCStatsReport): Record<string, unknown> | null =>
     }
   }
   return null;
+};
+
+const meanTargetMs = (inbound: Record<string, unknown>): number | null => {
+  const target = numberField(inbound, 'jitterBufferTargetDelay');
+  const emitted = numberField(inbound, 'jitterBufferEmittedCount');
+  return target === null || emitted === null || emitted === 0 ? null : (target / emitted) * 1000;
 };
 
 const gatheringComplete = (pc: RTCPeerConnection, timeoutMs: number): Promise<void> =>
@@ -199,12 +209,9 @@ export class TvMicPeer implements PeerPort {
       jitterBufferDelay: numberField(inbound, 'jitterBufferDelay') ?? 0,
       jitterBufferEmittedCount: numberField(inbound, 'jitterBufferEmittedCount') ?? 0,
     };
-    const target = numberField(inbound, 'jitterBufferTargetDelay');
-    const emitted = numberField(inbound, 'jitterBufferEmittedCount');
     this.events.onStats({
-      jitterMs: jitterBufferDelayMs(this.counters, counters),
-      jitterBufferTargetMs:
-        target === null || emitted === null || emitted === 0 ? null : (target / emitted) * 1000,
+      jitterMs: this.counters === null ? null : jitterBufferDelayMs(this.counters, counters),
+      jitterBufferTargetMs: meanTargetMs(inbound),
       packetsReceived: numberField(inbound, 'packetsReceived') ?? 0,
       packetsLost: numberField(inbound, 'packetsLost') ?? 0,
     });

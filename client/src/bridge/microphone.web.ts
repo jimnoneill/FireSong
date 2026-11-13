@@ -11,7 +11,7 @@ import { dispatchMicFrame, subscribeMicSamples } from './microphone-samples';
  * consumers (`SampleRing`, `useMicPitch`) see the same chunk cadence in either
  * transport. Smaller chunks lower latency but increase main-thread wakeups.
  */
-const SAMPLE_CHUNK = 512;
+export const SAMPLE_CHUNK = 512;
 const DEFAULT_MONITOR_GAIN = 0.65;
 const MAX_MONITOR_GAIN = 2.0;
 
@@ -66,7 +66,7 @@ const enqueueCaptureOperation = <T>(operation: () => Promise<T>): Promise<T> => 
   return next;
 };
 
-const ensureWorkletUrl = (): string => {
+export const ensureWorkletUrl = (): string => {
   if (workletUrl !== null) {
     return workletUrl;
   }

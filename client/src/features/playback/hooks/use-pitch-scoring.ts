@@ -25,6 +25,19 @@ export type PitchScoringSource = {
   subscribe: (fn: TimeSubscriber) => () => void;
 };
 
+const referenceTracks = new WeakMap<AudioBuffer, ReferencePitchTrack>();
+
+/** Every player of a song scores against the same vocals; analyze them once. */
+const referenceTrackFor = (vocals: AudioBuffer): ReferencePitchTrack => {
+  const cached = referenceTracks.get(vocals);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const track = analyzeReferencePitches(vocals);
+  referenceTracks.set(vocals, track);
+  return track;
+};
+
 export function usePitchScoring(
   { isReady, duration, getReferenceBuffer, subscribe }: PitchScoringSource,
   micPitch: number | null,
@@ -61,7 +74,7 @@ export function usePitchScoring(
     bufferRef.current.reset();
 
     const reference = getReferenceBuffer();
-    const track = reference ? analyzeReferencePitches(reference) : null;
+    const track = reference ? referenceTrackFor(reference) : null;
     bufferRef.current.setOctaveAnchor(track?.octaveAnchorSemitone ?? null);
     referenceTrackRef.current = track;
     scoringRef.current = new PitchScoring(track?.singableTime ?? duration);

@@ -43,6 +43,7 @@ source scripts/firesong/devenv.sh          # node 24, pnpm (corepack), cargo, ad
 
 Checks:
 - in `client/`: `pnpm typecheck`, `lint`, `format:check` and `rules:check` (`pnpm --dir client …` from the repo root gets corepack's default pnpm, which refuses to run);
+- FireSong TV-voice tests, in their own package so upstream's manifest and lockfile stay untouched (run pnpm from inside the folder): `cd tools/firesong-tests && pnpm install --frozen-lockfile && pnpm test` (vitest unit tests), then `pnpm harness` (headless Chrome with fake-microphone WAVs from ffmpeg; set `FIRESONG_CHROME` if Chrome is not `/usr/bin/google-chrome`);
 - `cargo test --workspace --exclude Nightingale --locked`, then restore `client/src/types` (see `BASELINE.md`);
 - `cargo clippy --workspace --exclude Nightingale --all-targets --all-features --locked -- -D warnings`.
 
@@ -67,7 +68,7 @@ The work packages are those of design §9. "Key" is the worktree/branch key used
 | WP1b | `server` | Analyzer idle exit (`NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS`) | `app-core/src/analyzer/idle.rs`; *hook* `app-core/src/analyzer.rs` (`mod idle;` + 2 calls) |
 | WP2 | `server` | Phone listener (`NIGHTINGALE_REMOTE_BIND`), host token, secret redaction, pairing-token rotation | `client/src-server/src/host_auth.rs`, `client/src-server/src/firesong.rs`, `app-api/src/redact.rs`; *hooks* `main.rs`, `bootstrap.rs`, `app-api/src/lib.rs` (dispatch wrapper, one `CommandState` field), `remote.rs` (two `pub(crate)`), `app-core/src/remote_control.rs` (persist the first token). The TV-door Caddy config and Funnel steps are WP1's (`Caddyfile.tv`, `DEPLOY.md`). |
 | WP3 | `server` | `/rtc` signaling, slot registry, mic links, `remote-mics.json` | `client/src-server/src/rtc.rs`, `rtc/hub.rs`, `rtc/mic_store.rs`, tests in `client/src-server/tests/firesong.rs`; *hooks* `lib.rs` (module and route lines, host-token layer), `state.rs` (one field, `RemoteAddress::separate`) |
-| WP4 | `tv-voice` | TV socket, remote-mic adapter, MicRack, voice engine, test tools | `client/src/bridge/rtc-socket.ts`, `client/src/bridge/remote-mics.ts`, `client/src/audio/voice-engine.ts`, `client/src/audio/mic-rack.ts`, `tools/fakephone`, `tools/busrec`; *hooks* `microphone.ts`, `playback-mic-context.tsx`, `lib/pitch/constants.ts`, `use-pitch-scoring.ts`, `app.tsx` |
+| WP4 | `tv-voice` | TV socket, remote-mic adapter, MicRack, voice engine, test tools | `client/src/audio/*`, `client/src/bridge/{rtc-socket,remote-mic-peer,remote-mics,microphone.phone,firesong-launch}.ts`, `client/src/features/remote-mic/{opus-sdp.ts,remote-mics-host.tsx,use-remote-mic-latency.ts}`, `tools/fakephone`, `tools/firesong-tests` (unit tests; the harness records the engine output, the "busrec" of design §9); *hooks* `microphone.ts`, `microphone.web.ts` (two exports), `playback-mic-context.tsx`, `lib/pitch/constants.ts`, `use-pitch-scoring.ts`, `mic-latency-field.tsx` (slider max), `app.tsx`, i18n catalogs |
 | WP5 | `phone-page` | Phone `/m` page | `client/src/features/phone-mic/*`; *hook* `app.tsx` (route) |
 | WP6 | `firetv-apk` | Fire TV WebView app, `tvctl` | `firetv/`, `tools/tvctl`; *hook* `nav-input-context.tsx` (media keys) |
 | WP7 | integration | Cube run of the WP4 harness | none new |

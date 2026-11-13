@@ -1,0 +1,84 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  clampLatencyMs,
+  dbToGain,
+  ECHO_FIXED_DELAY_MS,
+  ECHO_LATE_WET_GAIN,
+  ECHO_WET_GAIN,
+  echoSettingsFor,
+  gainToDb,
+  GATE_MAX_THRESHOLD_DB,
+  GATE_MIN_THRESHOLD_DB,
+  gateThresholdFromBleed,
+} from '@/audio/voice-params';
+
+describe('echoSettingsFor (d_i = clamp(L_i, 90, 220), fixed 160 below 60)', () => {
+  it.each([
+    [null, 160],
+    [Number.NaN, 160],
+    [0, 160],
+    [59.9, 160],
+    [60, 90],
+    [89, 90],
+    [90, 90],
+    [150, 150],
+    [220, 220],
+  ])('latency %s ms gives a %s ms echo', (latency, delay) => {
+    const echo = echoSettingsFor(latency);
+    expect(echo.delayMs).toBe(delay);
+    expect(echo.late).toBe(false);
+    expect(echo.dryGain).toBe(1);
+    expect(echo.wetGain).toBe(ECHO_WET_GAIN);
+  });
+
+  it('keeps the fixed echo for unknown latency', () => {
+    expect(echoSettingsFor(null).delayMs).toBe(ECHO_FIXED_DELAY_MS);
+  });
+
+  it('raises the wet/dry ratio and flags a warning above 220 ms', () => {
+    const echo = echoSettingsFor(300);
+    expect(echo).toMatchObject({ delayMs: 220, late: true, wetGain: ECHO_LATE_WET_GAIN });
+    expect(echo.wetGain / echo.dryGain).toBeGreaterThan(ECHO_WET_GAIN);
+  });
+});
+
+describe('gate threshold learning (+12 dB over bleed)', () => {
+  it('returns null without readings', () => {
+    expect(gateThresholdFromBleed([])).toBeNull();
+    expect(gateThresholdFromBleed([Number.NaN, -1])).toBeNull();
+  });
+
+  it('puts the threshold 12 dB above the quiet percentile', () => {
+    const bleed = dbToGain(-54);
+    const readings = [...Array.from({ length: 16 }, () => bleed), 0.3, 0.3, 0.3, 0.3];
+    const threshold = gateThresholdFromBleed(readings);
+    expect(threshold).not.toBeNull();
+    expect(gainToDb(threshold ?? 0)).toBeCloseTo(-42, 5);
+  });
+
+  it('never gates normal singing even when the room is loud', () => {
+    const threshold = gateThresholdFromBleed([0.2, 0.25, 0.3]);
+    expect(gainToDb(threshold ?? 0)).toBeCloseTo(GATE_MAX_THRESHOLD_DB, 5);
+  });
+
+  it('keeps a floor for digital silence', () => {
+    const threshold = gateThresholdFromBleed([0, 0, 0]);
+    expect(gainToDb(threshold ?? 0)).toBeCloseTo(GATE_MIN_THRESHOLD_DB, 5);
+  });
+});
+
+describe('level helpers', () => {
+  it('round-trips dB and gain', () => {
+    for (const db of [-60, -12, -6, 0, 6]) {
+      expect(gainToDb(dbToGain(db))).toBeCloseTo(db, 9);
+    }
+    expect(gainToDb(0)).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  it('clamps latency into 0-1000 ms', () => {
+    expect(clampLatencyMs(-5)).toBe(0);
+    expect(clampLatencyMs(400)).toBe(400);
+    expect(clampLatencyMs(5000)).toBe(1000);
+  });
+});

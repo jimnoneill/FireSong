@@ -13,6 +13,11 @@ below.
 
 ## [Unreleased]
 
+### Features
+
+- Phones can now be wireless microphones on a FireSong TV: each phone sings as its own player, with a karaoke echo timed to that phone's delay.
+- The microphone latency setting now goes up to 800 ms, enough for wireless and network microphones.
+
 ## [1.4.1] - 2026-11-09
 
 ### Fixes

@@ -5,6 +5,7 @@
   "description": "FireSong-only tests: vitest unit tests for the TV voice engine and a headless Chrome harness.",
   "type": "module",
   "scripts": {
+    "e2e": "vitest run --config vitest.e2e.config.ts",
     "harness": "vitest run --config vitest.harness.config.ts",
     "test": "vitest run"
   },

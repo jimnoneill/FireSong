@@ -66,6 +66,7 @@ export function usePitchScoring(
     currentTime: 0,
   });
   const [score, setScore] = useState(0);
+  const [voicedRatio, setVoicedRatio] = useState(0);
 
   useEffect(() => {
     if (!isReady || duration <= 0) {
@@ -81,6 +82,7 @@ export function usePitchScoring(
 
     setSeries(bufferRef.current.snapshot());
     setScore(0);
+    setVoicedRatio(0);
   }, [isReady, duration, getReferenceBuffer]);
 
   useEffect(() => {
@@ -108,10 +110,11 @@ export function usePitchScoring(
       snapshot.currentTime = t;
       setSeries(snapshot);
       setScore(scoringRef.current.score());
+      setVoicedRatio(scoringRef.current.voicedRatio());
     };
 
     return subscribe(run);
   }, [getReferenceBuffer, isReady, latencyRef, micPitchRef, subscribe]);
 
-  return { series, score };
+  return { series, score, voicedRatio };
 }

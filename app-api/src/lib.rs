@@ -885,6 +885,13 @@ async fn dispatch_unredacted(state: CommandState, name: &str, payload: Value) ->
             Ok(Value::String(path.to_string_lossy().into_owned()))
         }
         "fetch_pixabay_videos" => fetch_pixabay_videos_cmd(events, payload),
+        "list_noraebang_clips" => {
+            let clips =
+                tokio::task::spawn_blocking(app_core::noraebang_clips::list_noraebang_clips)
+                    .await
+                    .map_err(blocking_task_err)?;
+            Ok(serde_json::to_value(clips).map_err(serde_err)?)
+        }
 
         // ── Vendor ───────────────────────────────────────────────────────
         "is_ready" => Ok(Value::Bool(app_core::is_ready())),

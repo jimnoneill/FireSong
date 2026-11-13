@@ -43,6 +43,7 @@ const EMPTY_RESULT: PlaybackPlayerResult = {
   profile: null,
   color: defaultPlayerColor(0),
   score: 0,
+  voicedRatio: 0,
 };
 
 type Props = {
@@ -168,7 +169,7 @@ function SoloResults({ result, board }: { result: PlaybackPlayerResult; board: S
   );
 }
 
-type ResultActionsProps = Pick<
+export type ResultActionsProps = Pick<
   Props,
   | 'open'
   | 'nextPending'
@@ -366,7 +367,7 @@ function NextSongSetup({
   );
 }
 
-function ResultActions({
+export function ResultActions({
   open,
   multiplayer,
   nextPending,

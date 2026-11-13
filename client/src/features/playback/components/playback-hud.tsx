@@ -379,6 +379,8 @@ type PlaybackHudProps = {
   config: AppConfig | null;
   position?: PlaybackHudPosition;
   windowControls?: boolean;
+  /** Hide the live score (noraebang mode reveals it only at the end). */
+  hideScore?: boolean;
 };
 
 function PlaybackHudImpl({
@@ -387,6 +389,7 @@ function PlaybackHudImpl({
   config,
   position = 'top',
   windowControls = false,
+  hideScore = false,
 }: PlaybackHudProps) {
   useTranslation();
   const { duration, guideVolume, guideAvailable } = usePlaybackTransportState();
@@ -482,7 +485,7 @@ function PlaybackHudImpl({
         </div>
 
         <div className={`flex min-w-0 items-end ${rightHudFlowClass} ${rightHudOffset}`}>
-          <div className={`flex ${rightHudFlowClass}`}>
+          <div className={`flex ${rightHudFlowClass}`} hidden={hideScore}>
             {multiplayer ? (
               <MultiplayerScores players={players} />
             ) : (

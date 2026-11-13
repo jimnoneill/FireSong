@@ -10,6 +10,7 @@ mod lrc;
 mod lyrics;
 pub mod media_server;
 pub mod nge_format;
+pub mod noraebang_clips;
 mod playback;
 mod playback_queue;
 mod playback_session;

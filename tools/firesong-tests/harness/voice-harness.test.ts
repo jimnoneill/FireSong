@@ -35,6 +35,7 @@ type Harness = {
   frameLevels(captureId: string): number[];
   pitches(captureId: string): (number | null)[];
   clearPitches(captureId: string): void;
+  jitterMs(micId: string): number | null;
   slotStatus(slot: number): {
     attached: boolean;
     feedbackHz: number | null;
@@ -320,6 +321,9 @@ describe('TV voice engine, one phone at 440 Hz', () => {
       ((second?.packetsSent ?? 0) - (first?.packetsSent ?? 0)) /
       (((second?.at ?? 0) - (first?.at ?? 0)) / 1000);
     console.info('[440 Hz] phone packets/s', packetsPerSec.toFixed(1));
+    // The TV's munged answer (a=ptime:10) sets the phone's Opus frame size;
+    // without it Chrome sends 20 ms frames (about 50 packets/s).
+    expect(packetsPerSec).toBeGreaterThan(90);
 
     // Pause or song change: capture stops (unbind), the stream stays up.
     await tv.evaluate(() => window.harness.setPlayers([]));
@@ -388,6 +392,15 @@ describe('latency-locked echo', () => {
       throw new Error('echo delay kept moving during the recording');
     };
 
+    const jitter: (number | null)[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      jitter.push(await tv.evaluate((id) => window.harness.jitterMs(id), micId));
+      await sleep(1000);
+    }
+    console.info(
+      '[echo] TV jitter-buffer delay after join, every 1 s (ms):',
+      jitter.map((value) => (value === null ? '-' : Math.round(value))).join(' '),
+    );
     const delays: number[] = [];
     for (const latency of [150, 205, 40]) {
       const { lag, delayMs, effectiveMs } = await measure(latency);

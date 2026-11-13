@@ -135,6 +135,7 @@ const harness = {
     pitches[captureId] = [];
   },
   slotStatus: (slot: 1 | 2 | 3 | 4) => remoteMics.slotStatus(slot),
+  jitterMs: (micId: string) => remoteMics.jitterMs(micId),
   engine: () => {
     const { context } = getVoiceEngine();
     return {

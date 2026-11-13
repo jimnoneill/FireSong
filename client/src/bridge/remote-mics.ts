@@ -167,6 +167,11 @@ export class RemoteMics {
     return this.bindings.has(captureId);
   }
 
+  /** Latest jitter-buffer delay of a mic's stream, in milliseconds. */
+  jitterMs(micId: string): number | null {
+    return this.latencies.get(micId)?.currentJitterMs() ?? null;
+  }
+
   /** Live rack state of a slot: level, gate, feedback guard, echo. */
   slotStatus(slot: MicSlot): RackSlotStatus | null {
     return this.rack?.status(slot) ?? null;
@@ -286,6 +291,7 @@ export class RemoteMics {
       return;
     }
     existing?.close();
+    this.latencyFor(micId).resetJitter();
     const peer = this.deps.createPeer({
       micId,
       iceServers: this.iceServers,

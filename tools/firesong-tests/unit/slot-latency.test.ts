@@ -33,34 +33,48 @@ describe('SlotLatency', () => {
     expect(latency.currentJitterMs()).toBe(40);
   });
 
-  it('follows the jitter-buffer drift since the calibration', () => {
+  it('adds the jitter-buffer excess over the connection baseline', () => {
     const latency = new SlotLatency();
-    latency.observeJitter(30);
     expect(latency.setCalibrated(180)).toBe(true);
+    expect(latency.effectiveMs()).toBe(180);
+    latency.observeJitter(30);
     expect(latency.effectiveMs()).toBe(180);
     latency.observeJitter(55);
     expect(latency.effectiveMs()).toBe(205);
     latency.observeJitter(20);
-    expect(latency.effectiveMs()).toBe(170);
+    expect(latency.effectiveMs()).toBe(180);
+    latency.observeJitter(32);
+    expect(latency.effectiveMs()).toBe(192);
   });
 
-  it('re-anchors on a new calibration and ignores repeats', () => {
+  it('settles back to the calibration after start-up buffering', () => {
     const latency = new SlotLatency();
     latency.setCalibrated(150);
-    latency.observeJitter(40);
+    for (const jitter of [362, 134, 61, 39, 39]) {
+      latency.observeJitter(jitter);
+    }
     expect(latency.effectiveMs()).toBe(150);
-    latency.observeJitter(60);
-    expect(latency.setCalibrated(150)).toBe(false);
-    expect(latency.effectiveMs()).toBe(170);
-    expect(latency.setCalibrated(200)).toBe(true);
+  });
+
+  it('a persisted calibration survives a reconnect with a new baseline', () => {
+    const latency = new SlotLatency();
+    latency.setCalibrated(150);
+    latency.observeJitter(20);
+    latency.resetJitter();
+    expect(latency.currentJitterMs()).toBeNull();
+    latency.observeJitter(300);
+    expect(latency.effectiveMs()).toBe(150);
+    latency.observeJitter(40);
+    latency.observeJitter(90);
     expect(latency.effectiveMs()).toBe(200);
+    expect(latency.setCalibrated(150)).toBe(false);
   });
 
   it('clamps into 0-1000 ms', () => {
     const latency = new SlotLatency();
-    latency.observeJitter(500);
-    latency.setCalibrated(10);
+    latency.setCalibrated(900);
     latency.observeJitter(0);
-    expect(latency.effectiveMs()).toBe(0);
+    latency.observeJitter(400);
+    expect(latency.effectiveMs()).toBe(1000);
   });
 });

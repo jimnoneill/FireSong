@@ -21,12 +21,14 @@ export const jitterBufferDelayMs = (
 
 /**
  * One slot's mouth-to-speaker latency `L_i`. The calibrated value (beep test,
- * persisted per mic on the server) is the anchor; between calibrations it
- * follows the change in jitter-buffer delay since the calibration was seen.
+ * persisted per mic on the server) is taken as the steady-state latency, when
+ * the jitter buffer sits at its lowest level for the connection. Whenever the
+ * buffer holds more than that (start-up, Wi-Fi trouble), the excess adds to
+ * the latency, so it follows the jitter buffer between calibrations.
  */
 export class SlotLatency {
   private calibratedMs: number | null = null;
-  private referenceJitterMs: number | null = null;
+  private baselineJitterMs: number | null = null;
   private jitterMs: number | null = null;
 
   /** Returns true when the calibrated value changed. */
@@ -35,13 +37,18 @@ export class SlotLatency {
       return false;
     }
     this.calibratedMs = latencyMs;
-    this.referenceJitterMs = this.jitterMs;
     return true;
+  }
+
+  /** A new connection has its own jitter buffer, so its own baseline. */
+  resetJitter(): void {
+    this.baselineJitterMs = null;
+    this.jitterMs = null;
   }
 
   observeJitter(jitterMs: number): void {
     this.jitterMs = jitterMs;
-    this.referenceJitterMs ??= jitterMs;
+    this.baselineJitterMs = Math.min(this.baselineJitterMs ?? jitterMs, jitterMs);
   }
 
   /** `null` until the slot has been calibrated. */
@@ -49,11 +56,11 @@ export class SlotLatency {
     if (this.calibratedMs === null) {
       return null;
     }
-    const drift =
-      this.jitterMs !== null && this.referenceJitterMs !== null
-        ? this.jitterMs - this.referenceJitterMs
+    const excess =
+      this.jitterMs !== null && this.baselineJitterMs !== null
+        ? this.jitterMs - this.baselineJitterMs
         : 0;
-    return clampLatencyMs(this.calibratedMs + drift);
+    return clampLatencyMs(this.calibratedMs + excess);
   }
 
   currentJitterMs(): number | null {

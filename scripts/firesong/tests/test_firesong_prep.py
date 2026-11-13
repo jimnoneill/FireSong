@@ -10,6 +10,7 @@ No real GPU, NFS mount, systemd unit or server is touched.
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import hashlib
 import io
@@ -408,6 +409,8 @@ class FakeNightingale:
         self.own_vram = 0  # MiB held by the simulated analyzer
         self.analyzing_seen = 0
         self.ready = True
+        self.playback = {"active": False}
+        self.play_queue: list[dict] = []
 
     # ---- library
     def add_song(self, item_id: str, title: str, analyzed=False, playlists=()):
@@ -488,7 +491,9 @@ class FakeNightingale:
                 self.tick()
                 return {"entries": dict(self.queue)}
             if name == "load_playback_queue":
-                return []
+                return list(self.play_queue)
+            if name == "load_playback_status":
+                return dict(self.playback)
             if name == "enqueue":
                 n = 0
                 for h in payload["target"]["hashes"]:
@@ -685,6 +690,34 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(prep.run(["Party Mix"]), fp.EXIT_OK)
         self.assertEqual(self.restarts, 2)  # once to release while reserved, once at the end
         self.assertNotIn("cancel_analysis", self.names())
+
+    def test_with_idle_exit_prep_never_restarts_the_server(self):
+        self.settings = dataclasses.replace(self.settings, idle_exit_secs=300)
+        prep = self.prep(batch=2, release="wait")
+        self.assertEqual(prep.run(["Party Mix"]), fp.EXIT_OK)
+        self.assertEqual(self.restarts, 0)
+        self.assertIn("load_analysis_queue", self.names())
+
+    def test_cli_waits_for_the_idle_exit_when_it_is_configured(self):
+        args = fp.build_parser().parse_args(["prep", "Party Mix"])
+        self.assertEqual(fp.release_mode(args, self.settings), "restart")
+        self.assertEqual(fp.release_mode(args, dataclasses.replace(self.settings, idle_exit_secs=300)), "wait")
+        keep = fp.build_parser().parse_args(["prep", "Party Mix", "--keep-running"])
+        self.assertEqual(fp.release_mode(keep, self.settings), "none")
+
+    def test_no_restart_while_a_song_plays_or_the_play_queue_has_songs(self):
+        self.fake.playback = {"active": True}
+        prep = self.prep(batch=2)
+        self.assertEqual(prep.run(["Party Mix"]), fp.EXIT_OK)
+        self.assertEqual(self.restarts, 0)
+        self.fake.playback = {"active": False}
+        self.fake.play_queue = [{"song": {"file_hash": "f" * 32}}]
+        self.fake.own_vram = 9000
+        self.assertFalse(prep.restart_server("test"))
+        self.assertEqual(self.restarts, 0)
+        self.fake.play_queue = []
+        self.assertTrue(prep.restart_server("test"))
+        self.assertEqual(self.restarts, 1)
 
     def test_no_wait_exits_3(self):
         gpu = FakeGpu(self.fake)

@@ -17,8 +17,12 @@ prep (default)
   4. Keeps the cache under FIRESONG_SONG_CACHE_MAX_GB: before each batch it
      evicts the least recently used finished songs that are not in the
      playlists being prepped or in the play queue.
-  5. When done, restarts the server once if its idle analyzer still holds
-     VRAM (--keep-running skips that; WP1b makes it unnecessary).
+  5. When done, makes sure the idle analyzer holds no VRAM. With
+     NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS > 0 (WP1b) it waits for the
+     analyzer's idle exit; otherwise it restarts the server once
+     (--keep-running skips both). It never restarts the server while a song
+     is playing or the play queue has songs: that would drop the queue and
+     every phone mic.
 
 Other subcommands: status, evict, gpu-check, configure, self-test.
 
@@ -148,6 +152,7 @@ class Settings:
     models_dir: Path | None
     vendor_dir: Path | None
     env_file: Path | None = None
+    idle_exit_secs: int = 0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], env_file: Path | None = None) -> "Settings":
@@ -191,7 +196,15 @@ class Settings:
             models_dir=opt_path("FIRESONG_MODELS_DIR"),
             vendor_dir=opt_path("FIRESONG_VENDOR_DIR"),
             env_file=env_file,
+            idle_exit_secs=_seconds(env.get("NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS", "")),
         )
+
+
+def _seconds(value: str) -> int:
+    try:
+        return max(0, int(float(value)))
+    except ValueError:
+        return 0
 
 
 # --------------------------------------------------------------------------
@@ -821,7 +834,7 @@ class PrepOptions:
     retries: int = 1
     song_timeout: float = 45 * 60
     pause_between: float = 0.0
-    release: str = "restart"  # restart | none
+    release: str = "restart"  # restart | wait (for the analyzer's idle exit) | none
     scan: bool = True
     scan_timeout: float = 900.0
     song_estimate: int = 0
@@ -884,7 +897,7 @@ class Prep:
     def release_gpu(self, st: GpuStatus, reason: str, mid_song: bool = False) -> None:
         """Make sure FireSong's analyzer holds no VRAM. A cancelled in-flight
         song already kills the analyzer; an idle one keeps its CUDA context
-        until the server restarts (no idle exit before WP1b)."""
+        until its idle exit (WP1b) or a server restart."""
         if mid_song:
             deadline = self.now() + 10
             while self.now() < deadline:
@@ -895,17 +908,40 @@ class Prep:
                     return
         if st.own == 0:
             return
+        if self.o.release == "wait":
+            self.log.info(f"GPU guard: idle analyzer holds {st.own / GIB:.1f} GiB ({reason}); its idle "
+                          f"exit frees it within {self.s.idle_exit_secs} s")
+            return
         if self.o.release != "restart":
             self.log.warn(f"GPU guard: idle analyzer still holds {st.own / GIB:.1f} GiB ({reason}); "
                           "--keep-running set, not restarting the server")
             return
         self.restart_server(f"idle analyzer holds {st.own / GIB:.1f} GiB ({reason})")
 
+    def party_in_progress(self) -> str | None:
+        """Why a server restart would hurt a party now, or None. The play queue
+        and the phone-mic slots live only in the server's memory."""
+        try:
+            status = self.api.cmd("load_playback_status") or {}
+            queued = self.api.cmd("load_playback_queue") or []
+        except ApiError as e:
+            return f"the playback state is unknown ({e})"
+        if isinstance(status, dict) and status.get("active"):
+            return "a song is playing"
+        if isinstance(queued, list) and queued:
+            return f"the play queue has {len(queued)} song(s)"
+        return None
+
     def restart_server(self, why: str) -> bool:
         unit = self.s.unit
         if self.o.dry_run:
             self.log.info(f"[dry-run] would restart {unit}: {why}")
             return True
+        busy = self.party_in_progress()
+        if busy:
+            self.log.warn(f"not restarting {unit} ({why}): {busy}. Restart it after the party, "
+                          "or set NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS so the analyzer frees the GPU itself")
+            return False
         active = self.runner(["systemctl", "--user", "is-active", unit])
         if (active.stdout or "").strip() != "active":
             self.log.warn(f"cannot free the analyzer's GPU memory: {unit} is not an active user unit; "
@@ -1173,12 +1209,29 @@ class Prep:
 
     def finish(self) -> None:
         """Free the idle analyzer's CUDA context before the party."""
+        if self.o.release == "wait":
+            self.wait_for_idle_exit()
+            return
         if self.o.release != "restart":
             return
         st = self.probe.query()
         if st.own > 0 and not any(entry_state(v)[0] in ("queued", "analyzing")
                                   for v in queue_entries(self.api).values()):
             self.restart_server(f"prep finished; idle analyzer holds {st.own / GIB:.1f} GiB")
+
+    def wait_for_idle_exit(self) -> None:
+        if self.o.dry_run:
+            return
+        deadline = self.now() + self.s.idle_exit_secs + 30
+        st = self.probe.query()
+        while st.own > 0 and self.now() < deadline:
+            self.sleep(max(self.o.poll, 1.0))
+            st = self.probe.query()
+        if st.own > 0:
+            self.log.warn(f"the idle analyzer still holds {st.own / GIB:.1f} GiB "
+                          f"{self.s.idle_exit_secs + 30} s after prep finished; check firesong.service")
+        else:
+            self.log.info("the analyzer released the GPU (idle exit)")
 
 
 # --------------------------------------------------------------------------
@@ -1350,10 +1403,18 @@ def cmd_prep(settings: Settings, args, log: Log) -> int:
         batch=args.batch, poll=args.poll, resume_after=args.resume_after,
         lookahead=dt.timedelta(minutes=args.lookahead), no_wait=args.no_wait, limit=args.limit,
         retries=args.retries, song_timeout=args.song_timeout * 60, pause_between=args.pause_between,
-        release="none" if args.keep_running else "restart", scan=not args.no_scan,
+        release=release_mode(args, settings), scan=not args.no_scan,
         song_estimate=int(args.song_estimate_mb * MIB) if args.song_estimate_mb else 0,
         dry_run=args.dry_run)
     return Prep(settings, api, GpuProbe(settings), log, opts).run(args.playlist)
+
+
+def release_mode(args, settings: Settings) -> str:
+    """How prep frees the idle analyzer's VRAM: never (--keep-running), by
+    waiting for its idle exit when one is configured, else by a restart."""
+    if args.keep_running:
+        return "none"
+    return "wait" if settings.idle_exit_secs > 0 else "restart"
 
 
 def cmd_configure(settings: Settings, args, log: Log) -> int:
@@ -1401,7 +1462,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--song-estimate-mb", type=float, default=0.0,
                     help="cache space to reserve per song (default: median of cached songs, 60 MiB when empty)")
     sp.add_argument("--keep-running", action="store_true",
-                    help="never restart the server to free the idle analyzer's VRAM")
+                    help="never free the idle analyzer's VRAM (no restart, no waiting for its idle exit)")
     sp.set_defaults(func=cmd_prep)
 
     ss = sub.add_parser("status", help="mount, cache, GPU and server state (read-only)")

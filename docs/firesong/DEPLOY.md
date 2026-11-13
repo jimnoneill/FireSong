@@ -141,7 +141,7 @@ What `prep` does, in order:
 4. **Batches.** It enqueues `--batch` songs at a time (default 3) and follows them until each is analysed or failed. A failed song is retried once (`--retries`). Songs are tracked by their Plex id, because the analyzer re-keys a Plex song's hash to its content hash once it has downloaded it.
 5. **GPU guard** (below), checked every `--poll` seconds (default 5).
 6. **Cache cap** (below), checked before every batch and once at the end.
-7. **Release the GPU.** When the queue has drained and the idle analyzer still holds a CUDA context, prep restarts `firesong.service` once. `--keep-running` skips that. WP1b (analyzer idle exit) will make the restart unnecessary.
+7. **Release the GPU.** With `NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS` above 0 (the env example sets 300), prep never restarts the server: it waits up to that long plus 30 s for the analyzer's idle exit and reports the result. Without it, prep restarts `firesong.service` once when the queue has drained and the idle analyzer still holds a CUDA context. Either way it never restarts while a song is playing or the play queue has songs, because the queue and every phone-mic slot live only in the server's memory; it logs a warning instead. `--keep-running` skips all of this.
 
 Exit codes: 0 done; 1 some songs failed; 2 mount or config guard refused; 3 GPU busy with `--no-wait`; 4 the cache cap cannot be met; 5 server unreachable or analyzer not set up.
 

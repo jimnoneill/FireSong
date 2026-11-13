@@ -65,9 +65,9 @@ const withTimeout = async (task: Promise<unknown>, ms: number): Promise<void> =>
 };
 
 /**
- * Microphone capture plus the level tap behind the meter. The audio context
- * only analyses the input; its output is a silent gain node, so the phone
- * never plays the singer's voice back.
+ * Microphone capture plus the level tap behind the meter. The analyser is a
+ * dead end (browsers pull it without a destination), so the phone never
+ * plays the singer's voice back.
  */
 export class BrowserMicMedia implements MicMediaPort {
   private track: MediaStreamTrack | null = null;
@@ -197,10 +197,6 @@ export class BrowserMicMedia implements MicMediaPort {
       this.analyser = context.createAnalyser();
       this.analyser.fftSize = ANALYSER_FFT_SIZE;
       this.samples = new Float32Array(ANALYSER_FFT_SIZE);
-      const silence = context.createGain();
-      silence.gain.value = 0;
-      this.analyser.connect(silence);
-      silence.connect(context.destination);
     }
     this.source?.disconnect();
     this.source = context.createMediaStreamSource(stream);

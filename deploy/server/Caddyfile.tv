@@ -16,7 +16,6 @@
 #   peer, so a spoofed X-Forwarded-For does not help). Everyone else gets the
 #   connection closed without a response. The server additionally requires
 #   the host-token cookie (docs/firesong/PROTOCOL.md section 2.2).
-
 {
 	# No admin API: nothing else on the server machine should be able to reconfigure this
 	# proxy. Restart the process to reload.

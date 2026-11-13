@@ -67,7 +67,7 @@ The work packages are those of design §9. "Key" is the worktree/branch key used
 | WP3 | `server` | `/rtc` signaling, slot registry, mic links | `client/src-server/src/rtc.rs`; *hooks* `lib.rs` (route lines), `state.rs` (one field) |
 | WP4 | `tv-voice` | TV socket, remote-mic adapter, MicRack, voice engine, test tools | `client/src/bridge/rtc-socket.ts`, `client/src/bridge/remote-mics.ts`, `client/src/audio/voice-engine.ts`, `client/src/audio/mic-rack.ts`, `tools/fakephone`, `tools/busrec`; *hooks* `microphone.ts`, `playback-mic-context.tsx`, `lib/pitch/constants.ts`, `use-pitch-scoring.ts`, `app.tsx` |
 | WP5 | `phone-page` | Phone `/m` page | `client/src/features/phone-mic/*`; *hook* `app.tsx` (route) |
-| WP6 | `firetv-apk` | Fire TV WebView app, `tvctl` | `firetv/`, `tools/tvctl`; *hook* `nav-input-context.tsx` (media keys) |
+| WP6 | `firetv-apk` | Fire TV WebView app, `tvctl`, spike S1 probe | `android/firesong-tv/` (app, `probe/`, `branding/`), `tools/tvctl`. No client hook: the app translates remote keys into the keys the client already reads (see `android/firesong-tv/README.md`) |
 | WP7 | integration | Cube run of the WP4 harness | none new |
 | WP8 | `noraebang` | Clip pool, lyric bar, score curve, reveal and fanfare, `song-result` | `app-core/src/noraebang_clips.rs`, `client/src/features/noraebang/*`, `scripts/noraebang-clips/`; *hooks* `backgrounds.rs`, `schemas.ts`, `theme.ts`, `use-pixabay-slots.ts`, `playback-inner.tsx`, `result.tsx`, `state.ts` |
 | WP9, WP10 | later | Travel rig, home dress rehearsal | `deploy/server/travel-rig.sh`, `docs/party-runbook.md` |

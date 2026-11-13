@@ -2,9 +2,12 @@ mod backgrounds;
 mod bootstrap;
 mod commands;
 mod events;
+pub mod firesong;
+mod host_auth;
 mod jukebox;
 mod media;
 mod remote;
+mod rtc;
 mod state;
 mod static_files;
 mod ws;
@@ -38,7 +41,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/asset", get(media::handle_asset))
         .route("/media/:hash/:kind", get(media::handle_hashed))
         .route("/ws", any(ws::handle_upgrade))
+        .merge(firesong::tv_routes())
         .fallback(static_files::handle)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            host_auth::require_host,
+        ))
         .with_state(state)
 }
 
@@ -50,6 +58,7 @@ pub fn remote_router(state: AppState) -> Router {
         .route("/api/cmd/:name", post(commands::handle_remote_cmd))
         .route("/api/asset", get(media::handle_remote_asset))
         .route("/ws", any(ws::handle_upgrade))
+        .merge(firesong::phone_routes())
         .fallback(static_files::handle)
         .layer(middleware::from_fn_with_state(
             state.clone(),

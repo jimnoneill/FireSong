@@ -1,0 +1,289 @@
+//! FireSong additions to the self-hosted server (docs/firesong/PROTOCOL.md):
+//! the phone listener, the host token on the full listener, `/rtc`, the
+//! per-slot phone links and pairing-token rotation.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::{Arc, PoisonError, RwLock};
+
+use app_core::remote_mic::{
+    slot_color, IceServer, MicLink, MicLinks, MIC_PAGE_PATH, RTC_PATH, SLOT_COUNT,
+};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    routing::{any, get, post},
+    Json, Router,
+};
+
+pub use crate::rtc::Timings;
+use crate::rtc::{self, Hub, MicStore};
+use crate::state::{AppState, RemoteAddress};
+
+/// How the server was started; everything [`start`] needs from `main`.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// `NIGHTINGALE_BIND`: the full listener.
+    pub bind: SocketAddr,
+    /// `NIGHTINGALE_REMOTE_BIND`: the phone listener, if any.
+    pub remote_bind: Option<SocketAddr>,
+    /// `NIGHTINGALE_REMOTE_URL`: the origin phones load `/m` and `/q` from.
+    pub remote_url: Option<String>,
+}
+
+/// Runtime settings for the FireSong routes. [`start`] builds one from the
+/// environment; tests build their own.
+#[derive(Debug, Clone, Default)]
+pub struct Config {
+    /// The value the full listener requires; `None` refuses every request.
+    pub host_token: Option<String>,
+    /// Where `firesong/remote-mics.json` lives; `None` keeps it in memory.
+    pub data_dir: Option<PathBuf>,
+    /// `FIRESONG_ICE_SERVERS`, handed to both ends in `assign` and `ready`.
+    pub ice_servers: Vec<IceServer>,
+    /// Origins besides the request's own host that may open `/rtc`: the
+    /// pinned phone origin and `FIRESONG_RTC_ORIGINS`.
+    pub allowed_origins: Vec<String>,
+    pub timings: Timings,
+}
+
+/// The one FireSong field on `AppState`.
+#[derive(Clone, Default)]
+pub(crate) struct FireSong {
+    settings: Arc<RwLock<Settings>>,
+    hub: Arc<Hub>,
+}
+
+#[derive(Default)]
+struct Settings {
+    host_token: Option<String>,
+    allowed_origins: Vec<String>,
+    timings: Timings,
+}
+
+impl FireSong {
+    pub(crate) fn host_token(&self) -> Option<String> {
+        self.settings
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .host_token
+            .clone()
+    }
+
+    pub(crate) fn hub(&self) -> Arc<Hub> {
+        self.hub.clone()
+    }
+
+    pub(crate) fn timings(&self) -> Timings {
+        self.settings
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .timings
+    }
+
+    pub(crate) fn origin_allowed(&self, headers: &HeaderMap) -> bool {
+        let settings = self.settings.read().unwrap_or_else(PoisonError::into_inner);
+        rtc::origin_matches(headers, &settings.allowed_origins)
+    }
+}
+
+/// Applies `config` to `state`. Call before serving: slots already taken stay,
+/// but the persisted mic data is reloaded from `data_dir`.
+pub fn configure(state: &AppState, config: Config) {
+    let Config {
+        host_token,
+        data_dir,
+        ice_servers,
+        allowed_origins,
+        timings,
+    } = config;
+    let store = data_dir.map_or_else(MicStore::in_memory, |dir| {
+        MicStore::load(dir.join("firesong").join("remote-mics.json"))
+    });
+    state
+        .firesong
+        .hub
+        .configure(ice_servers, timings.reservation, store);
+    *state
+        .firesong
+        .settings
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = Settings {
+        host_token,
+        allowed_origins,
+        timings,
+    };
+}
+
+/// Phone links point at the phone listener. With a separate one, the request
+/// that asked (the TV door) says nothing about where phones connect.
+pub fn phone_address(options: &Options) -> RemoteAddress {
+    match options.remote_bind {
+        Some(remote_bind) => RemoteAddress::separate(remote_bind, options.remote_url.clone()),
+        None => RemoteAddress::new(options.bind, options.remote_url.clone()),
+    }
+}
+
+/// Loads the host token, reads the FireSong environment, configures `state`
+/// and starts the phone listener when `NIGHTINGALE_REMOTE_BIND` is set.
+pub async fn start(state: &AppState, options: &Options) -> Result<(), String> {
+    if options.remote_bind == Some(options.bind) {
+        return Err("NIGHTINGALE_REMOTE_BIND must differ from NIGHTINGALE_BIND".into());
+    }
+    check_phone_origin(options);
+
+    let data_dir = app_core::default_nightingale_dir();
+    let token_path = crate::host_auth::token_path(&data_dir);
+    let host_token = {
+        let path = token_path.clone();
+        tokio::task::spawn_blocking(move || crate::host_auth::load_or_create(&path))
+            .await
+            .map_err(|error| format!("host token: {error}"))??
+    };
+    tracing::info!(path = %token_path.display(), "full listener requires the FireSong host token");
+
+    let config = Config {
+        host_token: Some(host_token),
+        data_dir: Some(data_dir),
+        ice_servers: ice_servers_from_env()?,
+        allowed_origins: allowed_origins(options),
+        timings: Timings::default(),
+    };
+    let state_for_load = state.clone();
+    tokio::task::spawn_blocking(move || configure(&state_for_load, config))
+        .await
+        .map_err(|error| format!("FireSong setup: {error}"))?;
+
+    if let Some(remote_bind) = options.remote_bind {
+        serve_phones(state.clone(), remote_bind).await?;
+    }
+    Ok(())
+}
+
+async fn serve_phones(state: AppState, bind: SocketAddr) -> Result<(), String> {
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .map_err(|error| format!("failed to bind phone listener {bind}: {error}"))?;
+    tracing::info!(addr = %bind, "FireSong phone listener (remote router + /rtc)");
+    tokio::spawn(async move {
+        let app = crate::remote_router(state).into_make_service();
+        if let Err(error) = axum::serve(listener, app).await {
+            tracing::error!("phone listener error: {error}");
+        }
+    });
+    Ok(())
+}
+
+/// Phones need a secure context for the microphone, so `/m` links should be
+/// https (or localhost during development).
+fn check_phone_origin(options: &Options) {
+    if options.remote_bind.is_none() {
+        return;
+    }
+    match options.remote_url.as_deref() {
+        None => tracing::warn!(
+            "NIGHTINGALE_REMOTE_URL is unset; phone links fall back to the LAN address over http"
+        ),
+        Some(url) if !is_secure_origin(url) => tracing::warn!(
+            url,
+            "NIGHTINGALE_REMOTE_URL is not https; phones cannot use the microphone from it"
+        ),
+        Some(_) => {}
+    }
+}
+
+fn is_secure_origin(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return true;
+    }
+    rtc::origin_authority(&lower).is_some_and(|authority| {
+        let host = authority
+            .rsplit_once(':')
+            .map_or(authority.as_str(), |(host, _)| host);
+        matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    })
+}
+
+fn allowed_origins(options: &Options) -> Vec<String> {
+    let extra = std::env::var("FIRESONG_RTC_ORIGINS").unwrap_or_default();
+    options
+        .remote_url
+        .iter()
+        .cloned()
+        .chain(
+            extra
+                .split(',')
+                .map(str::trim)
+                .filter(|origin| !origin.is_empty())
+                .map(str::to_owned),
+        )
+        .collect()
+}
+
+fn ice_servers_from_env() -> Result<Vec<IceServer>, String> {
+    match std::env::var("FIRESONG_ICE_SERVERS") {
+        Ok(raw) if !raw.trim().is_empty() => serde_json::from_str(&raw).map_err(|error| {
+            format!("FIRESONG_ICE_SERVERS is not a JSON IceServer array: {error}")
+        }),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// `/rtc` (TV role), the phone links and token rotation; host token required.
+pub(crate) fn tv_routes() -> Router<AppState> {
+    Router::new()
+        .route(RTC_PATH, any(rtc::tv_upgrade))
+        .route("/api/firesong/mic-links", get(handle_mic_links))
+        .route(
+            "/api/firesong/rotate-pairing-token",
+            post(handle_rotate_pairing_token),
+        )
+}
+
+/// `/rtc` (phone role); pairing token required.
+pub(crate) fn phone_routes() -> Router<AppState> {
+    Router::new().route(RTC_PATH, any(rtc::mic_upgrade))
+}
+
+async fn handle_mic_links(State(state): State<AppState>, headers: HeaderMap) -> Json<MicLinks> {
+    Json(mic_links(&state, &headers))
+}
+
+/// New pairing token: every printed or shown link stops working and every
+/// phone is disconnected (`slot-lost {kicked}`). Returns the new links.
+async fn handle_rotate_pairing_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<MicLinks>, (StatusCode, &'static str)> {
+    let fresh = app_core::RemoteControl::default();
+    let to_save = fresh.clone();
+    tokio::task::spawn_blocking(move || to_save.save())
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "token rotation failed"))?;
+    *state.remote.write().unwrap_or_else(PoisonError::into_inner) = fresh;
+    let kicked = state.firesong.hub().kick_all();
+    tracing::info!(kicked, "pairing token rotated");
+    Ok(Json(mic_links(&state, &headers)))
+}
+
+fn mic_links(state: &AppState, headers: &HeaderMap) -> MicLinks {
+    let base = state.remote_base(headers);
+    let control = state.remote.read().unwrap_or_else(PoisonError::into_inner);
+    let slots = (1..=SLOT_COUNT)
+        .filter_map(|slot| {
+            let color = slot_color(slot)?;
+            let url = base
+                .as_deref()
+                .map(|base| format!("{base}{MIC_PAGE_PATH}?t={}&slot={slot}", control.token));
+            let qr_svg = control.info_with_url(url.clone()).qr_svg;
+            Some(MicLink {
+                slot,
+                color,
+                url,
+                qr_svg,
+            })
+        })
+        .collect();
+    MicLinks { slots }
+}

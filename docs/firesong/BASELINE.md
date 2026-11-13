@@ -50,3 +50,16 @@ These are the same checks after `app-core/src/remote_mic.rs`, the generated `cli
 | `ProtocolSchemasMatchRust` mutation check (7 deliberate schema/type drifts, each typechecked and reverted) | **7/7 caught** by `tsc` |
 
 No new failures.
+
+## After the server work packages (`fs/server`: WP2, WP3, WP1b)
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --exclude Nightingale --locked` | **pass**: app-api 4 (new `redact` tests), app-core 78 (77 before + 1 analyzer idle-exit test), server 15 (new `tests/firesong.rs`), xtask 0 |
+| `cargo test -p server --locked --test firesong`, 6 runs in a row | **pass** each time, 0.7-1.3 s |
+| `cargo fmt --all --check` | **pass** |
+| `cargo clippy --workspace --exclude Nightingale --all-targets --all-features --locked -- -D warnings` | **pass** |
+| `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm rules:check` (in `client/`) | **pass** (no client source changes) |
+| `cargo test --workspace --locked` (Tauri crate included) | **FAIL, pre-existing**: the same GTK `-sys` build scripts as row 8. The Tauri crate's calls into `server` and `app-api` (`remote_router`, `AppState::new`, `RemoteAddress::new`, `dispatch`) keep their signatures. |
+
+Mutation check of the new server tests: removing the host-token layer, disabling the `save_config` secret restore, skipping the `resumeKey` check, and stamping offers with the wrong slot each made at least one test fail.

@@ -46,13 +46,16 @@ New HTTP routes:
 |---|---|---|
 | `GET /rtc` (WebSocket upgrade) | both | §4 onwards |
 | `GET /m?t=<pairing token>&slot=<1-4>` | remote | the SPA's `index.html` through the static fallback. `require_token` turns `?t=` into the pairing cookie. |
-| `GET /api/firesong/mic-links` | full | `MicLinks` JSON (§3.1) |
+| `GET /api/firesong/mic-links` | full | `MicLinks` JSON (§1.1) |
+| `POST /api/firesong/rotate-pairing-token` | full | `MicLinks` JSON with the new token (§2.1) |
 
 ### 1.1 Mic links
 
 `GET /api/firesong/mic-links` returns `{ "slots": MicLink[4] }`. Slots 1-4 are listed in order, and each entry is `{ slot, color, url, qrSvg }`:
 - `url` is `<base>/m?t=<pairing token>&slot=<n>`. `<base>` is chosen the same way as for `/api/remote`, so `NIGHTINGALE_REMOTE_URL` wins when it is set.
 - `url` and `qrSvg` are `null` when the server knows no base that a phone can reach.
+- With a separate phone listener, the request's `Host` names the TV door, not the phone door, so it is never used. Without `NIGHTINGALE_REMOTE_URL` the base is `http://<lan-ip>:<phone port>` when the phone listener is not loopback-only, otherwise `null`. Startup logs a warning when `NIGHTINGALE_REMOTE_URL` is unset or is not https (phones need a secure context for the microphone; `http://localhost` is fine for development).
+- `/api/remote` (the `/q` QR) follows the same rule.
 - The QR comes from the same SVG builder as `/api/remote` (`RemoteControl::info_with_url`).
 - The TV idle screen shows the four codes, each in its slot colour.
 
@@ -63,17 +66,18 @@ New HTTP routes:
 - The token is stored in `<data>/remote-control.json` and is 32 lowercase hex characters.
 - A phone can present it three ways: the cookie `nightingale_remote`, the header `x-nightingale-token`, or the query `?t=`. A valid `?t=` sets the cookie (`Path=/; HttpOnly; SameSite=Lax`).
 - QR links are `…/m?t=<token>&slot=N`. The phone must stay in a **Safari tab**, because a Home Screen web app has its own cookie jar and would lose the cookie.
-- Rotate the token before every party.
+- Rotate the token before every party: `POST /api/firesong/rotate-pairing-token` on the full listener (host token required). It writes a new token to `remote-control.json`, frees every slot (each connected phone gets `slot-lost {kicked}` and close 4410, the TV gets `slot-lost {kicked}` and a `roster`), and returns the new `MicLinks`. Old links and cookies get `401` from then on. Open `/q` queue pages keep their `/ws` event stream until they reload, but their commands are refused. With the server stopped, deleting `remote-control.json` also rotates it.
+- A token generated on first start is written to `remote-control.json` at once, so it survives restarts.
 - Test clients can open `wss://<phone-origin>/rtc?t=<token>` directly.
 
 ### 2.2 Host token (full listener; new, WP2 `client/src-server/src/host_auth.rs`)
 
 | Item | Value |
 |---|---|
-| Storage | `<data>/firesong/host-token`, where `<data>` = `NIGHTINGALE_DATA_PATH`. The file holds 32 lowercase hex characters (128 random bits), mode `0600`, surrounding whitespace ignored. The server creates it atomically (temp file + rename) on first start if it is missing. To rotate, delete the file and restart. |
+| Storage | `<data>/firesong/host-token`, where `<data>` = `NIGHTINGALE_DATA_PATH`. The file holds 32 lowercase hex characters (128 random bits), mode `0600`, surrounding whitespace ignored. The server creates it atomically (temp file + rename) on first start if it is missing. A file that exists but is malformed stops startup (it is never overwritten). To rotate, delete the file and restart. |
 | Cookie | `firesong_host=<token>; Path=/; HttpOnly; SameSite=Strict`, plus `; Secure` when the request arrived over HTTPS (`x-forwarded-proto: https`) |
 | Header | `x-firesong-host-token: <token>`, for tools and tests |
-| Query bootstrap | `?host=<token>` on any `GET` sets the cookie. For a top-level navigation (`Accept` contains `text/html`), the server answers `303` to the same URL with `host` removed, so the token does not stay in history. |
+| Query bootstrap | `?host=<token>` on any `GET` sets the cookie. For a top-level navigation (`Accept` contains `text/html`), the server answers `303` to the same URL with `host` removed (other query parameters kept), so the token does not stay in history. A wrong `?host=` is ignored when a valid header or cookie is also present. |
 | Comparison | constant time, the same as `remote::constant_time_eq` |
 | Failure | `401`, body `host token required`, no other detail |
 | Exempt paths | `/favicon.png`, `/favicon.ico`, `/apple-touch-icon.png` (the same list as the remote router) |
@@ -86,7 +90,7 @@ How the operator's browser gets it: open `<tv-origin>/?host=<t>` once.
 Cookie notes:
 - WebSocket upgrades from the same origin carry the cookie.
 - `SameSite=Strict` (host) and `SameSite=Lax` (pairing) keep a cross-site page from opening `/rtc` with them (cross-site WebSocket hijacking).
-- WP3 should also reject an upgrade whose `Origin` host differs from the request's `Host` (or `X-Forwarded-Host`), once it has checked what Caddy and Funnel forward.
+- `/rtc` rejects (`403`) an upgrade whose `Origin` authority (scheme `http`/`https`, default ports ignored) matches none of: the request's `Host`, the first `X-Forwarded-Host`, `NIGHTINGALE_REMOTE_URL`, or an entry of `FIRESONG_RTC_ORIGINS`. `Origin: null` is rejected. A request without `Origin` is not from a browser and is allowed (the listener's token check still applies). Listing the phone origin keeps phones working even if a proxy rewrites `Host`.
 
 ### 2.3 Secrets
 
@@ -96,7 +100,10 @@ The following must never appear in logs, error frames, `/api/bootstrap` or `load
 - `resumeKey`;
 - Plex, Jellyfin and Navidrome credentials.
 
-The redaction of `load_config`, `/api/bootstrap` and `plex_*` is WP2's job. `save_config` keeps the stored secret when it receives the redaction marker.
+Redaction (WP2, `app-api/src/redact.rs`, applied in `app_api::dispatch` and `/api/bootstrap`):
+- Every command result and `/api/bootstrap` replace each non-empty string under a key named `access_token` or `password` with the marker `__redacted__` (`app_api::REDACTED_SECRET`). The field stays, because the client's schemas require it; an empty secret stays empty. Check a response with the secret's value, not the key name: `grep -c <token>` must be 0.
+- `save_config` with the marker in `library_source` keeps the stored secret when the incoming source has the stored source's kind and identity (Plex: `base_url`, `machine_id`, `client_id`; Jellyfin: `base_url`, `user_id`, `device_id`; Navidrome: `base_url`, `username`). A marker for any other source keeps the stored `library_source` unchanged.
+- `plex_poll_pin`, `plex_manual_login`, `jellyfin_login` and `navidrome_login` keep the secrets they return in a server-side stash (30 minutes, at most 32 entries, each handed out once). `set_library_source` with the marker takes the secret from the stash, or from the stored source with the same identity; otherwise it answers `400` ("sign in again").
 
 Logging rules:
 - SDP and ICE candidates contain LAN addresses, so they are logged only at `trace` level.
@@ -114,7 +121,9 @@ Logging rules:
 | `FIRESONG_SONG_CACHE` | deploy tooling only (WP1) | none | the NFS mount, e.g. `/mnt/firesong-cache` | Song prep **refuses to run** unless this path is a mounted filesystem (`mountpoint -q`). |
 | `FIRESONG_SONG_CACHE_MAX_GB` | deploy tooling only (WP1) | `36` | `36` | LRU eviction of finished songs keeps the cache below this (the volume has a hard 40 GB cap). |
 | `FIRESONG_CLIP_DIR` | server (WP8, `noraebang_clips.rs`) | `<data>/noraebang/clips` | default | Must be a real directory (not a symlink) inside `local_media_roots`, and outside the videos dir, whose files Pixabay eviction deletes. |
-| `FIRESONG_ICE_SERVERS` | server (WP3) | `[]` | unset | JSON array of `IceServer` handed out in `assign` and `ready`. Leave empty on the LAN; add coturn only if spike S7 fails. |
+| `FIRESONG_ICE_SERVERS` | server (WP3) | `[]` | unset | JSON array of `IceServer` handed out in `assign` and `ready`. Leave empty on the LAN; add coturn only if spike S7 fails. Invalid JSON stops startup. |
+| `FIRESONG_RTC_ORIGINS` | server (WP3) | unset | unset | Comma-separated extra origins allowed to open `/rtc` (§2.2). Escape hatch if a proxy rewrites `Host`; normally not needed. |
+| `NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS` | app-core analyzer (WP1b) | unset (server kept) | `300` | Stops the analyzer `server.py` after this many seconds unused with an empty queue, releasing its GPU memory; the next job restarts it. |
 | `CUDA_VISIBLE_DEVICES` | analyzer child (inherits the server's env) | all GPUs | the RTX 4090's GPU UUID, from the git-ignored env file | **Never** the RTX PRO 6000: the vendor picks cu126 wheels from the first `nvidia-smi` line, and those have no sm_120 kernels. |
 | `CUDA_DEVICE_ORDER` | analyzer child | driver default | `PCI_BUS_ID` | Makes indices match `nvidia-smi`. |
 | `NIGHTINGALE_LIBRARY_PATH` | server (upstream) | unset | **must stay unset** | When set, it re-pins a folder library over Plex on every start. |
@@ -128,8 +137,10 @@ Logging rules:
 - **Stamping.** Inbound phone frames never carry `slot` or `micId`. On frames relayed to the TV, the server stamps both from its registry, and any client-sent values are dropped.
 - **Binary frames** give `bad-frame`.
 - **Limits** (constants in `remote_mic.rs`): frame 64 KiB, SDP 32 KiB, candidate 1 KiB, `diag` 8 KiB of serialised JSON, name 1-32 characters with no control characters, song title 200 characters, `latencyMs` 0-1000, `displayScore` 0-100, `rawScore` 0-1000.
-- **Rate limit.** Each socket has a token bucket with a burst of 40 frames, refilled at 20 frames/s. Going over gives `rate-limited` and the socket is closed.
-- **Handshake.** The first frame must be `hello`. Any other frame first gives `no-hello`, and so does no `hello` within 5 s; the socket is then closed. A second `hello` gives `bad-hello`.
+- **Rate limit.** Each socket has a token bucket with a burst of 40 frames, refilled at 20 frames/s. Text and binary frames count; WebSocket pings and pongs do not. Going over gives `rate-limited` and the socket is closed.
+- **Transport cap.** Frames up to 256 KiB reach the decoder, so anything over the 64 KiB frame limit gets `too-large`; larger frames are dropped by the WebSocket layer.
+- **Outbound queue.** Each socket queues at most 256 frames. A client that stops reading is closed with 1011.
+- **Handshake.** The first frame must be `hello`. Any other frame first (including binary or unparsable frames) gives `no-hello`, and so does no `hello` within 5 s; the socket is then closed. A malformed `hello` gives `bad-hello` (phone) or `no-hello` (TV), and a wrong `v` gives `version`. A second `hello` gives `bad-hello`.
 - **Keepalive.**
   - The server sends a WebSocket ping every 5 s and closes (4408) a socket that has received nothing, not even a pong, for 15 s.
   - Browsers cannot see WebSocket pings, so clients also send `ping {t}` every 5 s and get `pong {t}` back. A client that has had no `pong` for 10 s closes the socket and reconnects.
@@ -155,7 +166,9 @@ An `error {code, message?}` frame is sent first. For fatal codes the server then
 
 Other closes:
 - 4409 after `slot-lost {replaced}`;
-- 4410 after `slot-lost {kicked}`;
+- 4410 after `slot-lost {kicked}` (a TV `kick`, or pairing-token rotation);
+- 4408 when nothing (not even a pong) arrived for 15 s, without an `error` frame;
+- 1011 when the client stopped reading its queue;
 - 1000 after `bye`.
 
 **Client reconnect policy** (phone and TV):
@@ -289,7 +302,8 @@ After a server restart the registry is empty. Returning phones therefore go thro
 | TV `kick {slot}` | entry removed | `slot-lost {kicked}`, close 4410 | `slot-lost {kicked}` + `roster`. With no entry: `unknown-slot`. |
 | Phone `mute` | `muted`, `mutedBy = mic` | — | `mute {slot, muted, by: mic}` + `roster` |
 | TV `mute` | `muted`, `mutedBy = tv` | `mute {muted, by: tv}` | `roster` |
-| TV `latency` | `latencyMs`, `latencyMethod`, persisted | — | `roster`. With no entry: `unknown-slot`. |
+| TV `latency` | `latencyMs`, `latencyMethod`, persisted (with the entry's `name`) | — | `roster`. With no entry: `unknown-slot`. |
+| TV `mute` with no entry | — | — | `unknown-slot` |
 
 ### 6.3 Relay
 

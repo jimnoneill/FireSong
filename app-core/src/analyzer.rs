@@ -20,6 +20,8 @@ use crate::lyrics::{fetch_lrclib_lyrics, write_lyrics_file};
 use crate::song::{Song, SongOrigin, TranscriptSource, compute_file_hash, read_transcript_meta};
 use crate::source::{MediaSource, active_source};
 
+mod idle;
+
 // ─── Analysis queue (persisted to disk) ──────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -313,6 +315,7 @@ fn spawn_server() -> Result<ServerProcess, NightingaleError> {
 fn ensure_server(
     guard: &mut MutexGuard<'_, Option<ServerProcess>>,
 ) -> Result<(), NightingaleError> {
+    idle::touch();
     if guard.is_some() {
         return Ok(());
     }
@@ -815,6 +818,7 @@ fn spawn_worker() {
                     None => {
                         state.worker_running = false;
                         state.active_hash = None;
+                        idle::touch();
                         return;
                     }
                 }

@@ -18,6 +18,8 @@
   "common.states.off": "Off",
   "common.states.on": "On",
   "firesong.remoteMic.deviceName": "Slot {{slot}} · {{name}}",
+  "firesong.remoteMic.latencyNotSaved": "The TV is not connected to the phone mics, so the result was not saved.",
+  "firesong.remoteMic.latencySaved": "Phone mic latency saved for this phone: {{value1}} ms",
   "firesong.remoteMic.noPhoneMic": "No phone mic is connected.",
   "firesong.remoteMic.reconnecting": "{{device}} (reconnecting)",
   "languages.arabic": "Arabic",

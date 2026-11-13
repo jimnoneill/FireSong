@@ -4,6 +4,7 @@ import type { MicRackPort, TapListener } from '@/audio/mic-rack';
 import { DEFAULT_ECHO_MIX, type EchoMix } from '@/audio/voice-params';
 import type { PeerEvents, PeerInit, PeerPort } from '@/bridge/remote-mic-peer';
 import { RemoteMics, type RemoteMicsDeps } from '@/bridge/remote-mics';
+import { phoneCalibration } from '@/features/remote-mic/calibration';
 import type { ServerToTv, TvSlot, TvToServer } from '@/features/remote-mic/protocol';
 import type { MicSampleFrame } from '@/types/MicSampleFrame';
 
@@ -326,6 +327,18 @@ describe('host actions and lifecycle', () => {
     ]);
     push({ type: 'mute', slot: 3, muted: true, by: 'tv' });
     expect(rack.muted.get(3)).toBe(true);
+  });
+
+  it("turns a phone's beep test into its scoring and echo latency", async () => {
+    const { mics, push, sent, rack } = await started();
+    push(roster(slot(3, { state: 'connected', micId: MIC_A })));
+    expect(mics.getSnapshot().latencyMs.has(MIC_A)).toBe(false);
+    expect(phoneCalibration(mics, `remote:${MIC_A}`, 0.1824)).toBe('saved');
+    expect(sent).toEqual([{ type: 'latency', slot: 3, latencyMs: 182, method: 'beep' }]);
+    // The server stores it and echoes it in the roster (PROTOCOL.md §5.2).
+    push(roster(slot(3, { state: 'connected', micId: MIC_A, latencyMs: 182, latencyMethod: 'beep' })));
+    expect(mics.getSnapshot().latencyMs.get(MIC_A)).toBe(182);
+    expect(rack.latencies.get(3)).toBe(182);
   });
 
   it('records server errors', async () => {

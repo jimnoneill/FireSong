@@ -18,6 +18,8 @@
   "common.states.off": "关闭",
   "common.states.on": "开启",
   "firesong.remoteMic.deviceName": "槽位 {{slot}} · {{name}}",
+  "firesong.remoteMic.latencyNotSaved": "电视未连接手机麦克风，结果未保存。",
+  "firesong.remoteMic.latencySaved": "已为此手机麦克风保存延迟：{{value1}} ms",
   "firesong.remoteMic.noPhoneMic": "没有已连接的手机麦克风。",
   "firesong.remoteMic.reconnecting": "{{device}}（正在重新连接）",
   "languages.arabic": "阿拉伯语",

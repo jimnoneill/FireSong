@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 
 import { measureMicLatencySec } from '@/features/microphone/lib/latency-test';
+import { latencyTestDeviceId, savePhoneMicLatency } from '@/features/remote-mic/calibration';
 import { t } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
 import { Field } from '@/shared/components/ui/field';
@@ -42,10 +43,22 @@ export function MicLatencyField({
     setMeasuring(true);
     onMeasuringChange?.(true);
     try {
-      const measured = await measureMicLatencySec(selectedMicId);
-      onLatencyChange(measured);
+      const deviceId = latencyTestDeviceId(selectedMicId);
+      const measured = await measureMicLatencySec(deviceId);
+      const phone = savePhoneMicLatency(deviceId, measured);
+      if (phone === 'failed') {
+        throw new Error(t('firesong.remoteMic.latencyNotSaved'));
+      }
+      if (phone === 'local') {
+        onLatencyChange(measured);
+      }
       toast.success(
-        t('settings.micLatencyField.micLatencyMeasuredMs', { value1: Math.round(measured * 1000) }),
+        t(
+          phone === 'saved'
+            ? 'firesong.remoteMic.latencySaved'
+            : 'settings.micLatencyField.micLatencyMeasuredMs',
+          { value1: Math.round(measured * 1000) },
+        ),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

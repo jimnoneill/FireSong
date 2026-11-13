@@ -18,6 +18,8 @@
   "common.states.off": "Aus",
   "common.states.on": "An",
   "firesong.remoteMic.deviceName": "Platz {{slot}} · {{name}}",
+  "firesong.remoteMic.latencyNotSaved": "Der Fernseher ist nicht mit den Handy-Mikrofonen verbunden, daher wurde das Ergebnis nicht gespeichert.",
+  "firesong.remoteMic.latencySaved": "Latenz für dieses Handy-Mikrofon gespeichert: {{value1}} ms",
   "firesong.remoteMic.noPhoneMic": "Kein Handy-Mikrofon ist verbunden.",
   "firesong.remoteMic.reconnecting": "{{device}} (verbindet erneut)",
   "languages.arabic": "Arabisch",

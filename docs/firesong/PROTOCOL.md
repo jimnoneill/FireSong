@@ -387,6 +387,8 @@ The file is `<data>/firesong/remote-mics.json`. It is written atomically (temp f
 
 **Per-slot latency for scoring.** `playback-mic-context.tsx` takes a player's latency from the remote-mics registry (`roster.latencyMs / 1000`) when the player's `microphoneId` is a remote id. Otherwise it uses the global `mic_latency_compensation_sec`. WP4 raises the clamp `MAX_MIC_LATENCY_COMPENSATION_SEC` to 0.8 s. The same calibrated value sets the slot's echo delay `d_i = clamp(L_i, 90, 220) ms` (design §3).
 
+**Calibrating a phone.** The settings beep test (`MicLatencyField`) is the calibration. When the tested device is a phone (on the TV: the chosen phone, or the solo singer's phone when none is chosen), the result goes to that phone through `latency {slot, latencyMs, method: 'beep'}` instead of the global slider (`features/remote-mic/calibration.ts`). The server stores it per `micId` and echoes it in the roster, which sets that phone's scoring offset, echo delay and jitter baseline. A local device still writes the global value. If the TV seat is not connected the test reports that nothing was saved.
+
 **Upstream publication.** `QueuePlaybackListener` already publishes the host's device list through `set_remote_microphones`. The phone queue page (`/q`) can therefore assign singers to phone mics with no extra code. That upstream name, "remote microphones", means "the host's devices listed for remotes". It is not the FireSong phone-mic feature, so FireSong code says "phone mic" or "remote mic", never `RemoteMicrophone`.
 
 ### 8.1 TV voice engine (WP4)

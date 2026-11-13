@@ -5,7 +5,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.media.AudioAttributes
@@ -112,19 +111,6 @@ class MainActivity : Activity() {
 
     // ---- lifecycle -----------------------------------------------------------
 
-    override fun attachBaseContext(newBase: Context) {
-        // Optional density override, to give the page a larger CSS viewport
-        // (e.g. 240 dpi -> 1280x720 CSS px on a 1080p screen). See README.
-        val dpi = Prefs.load(newBase).uiDensity
-        if (dpi in TvConfig.MIN_DENSITY..TvConfig.MAX_DENSITY) {
-            val cfg = Configuration(newBase.resources.configuration)
-            cfg.densityDpi = dpi
-            super.attachBaseContext(newBase.createConfigurationContext(cfg))
-        } else {
-            super.attachBaseContext(newBase)
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -150,15 +136,10 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val outcome = applyConfigureIntent(intent)
-        when {
-            outcome == ConfigureOutcome.DENSITY_CHANGED -> recreate()
-            outcome == ConfigureOutcome.APPLIED -> {
-                WebView.setWebContentsDebuggingEnabled(devtoolsEnabled())
-                loadTarget("configure")
-            }
-            // A plain launcher start while running keeps the page as it is.
-            else -> Unit
+        // A plain launcher start while running keeps the page as it is.
+        if (applyConfigureIntent(intent)) {
+            WebView.setWebContentsDebuggingEnabled(devtoolsEnabled())
+            loadTarget("configure")
         }
     }
 
@@ -197,20 +178,12 @@ class MainActivity : Activity() {
 
     // ---- configuration -------------------------------------------------------
 
-    private enum class ConfigureOutcome { NONE, APPLIED, DENSITY_CHANGED }
-
     private fun devtoolsEnabled(): Boolean = settings.devtools ?: BuildConfig.DEBUG
 
     private fun readExtras(intent: Intent): ConfigExtras? {
         val b = intent.extras ?: return null
-        val keys = setOf("url", "host_token", "leaf_pin", "ui_density", "devtools", "clear", "reload")
+        val keys = setOf("url", "host_token", "leaf_pin", "devtools", "clear", "reload")
         if (b.keySet().none { it in keys }) return null
-        @Suppress("DEPRECATION")
-        val density = when (val v = b.get("ui_density")) {
-            is Int -> v
-            is String -> v.trim().toIntOrNull() ?: -1
-            else -> null
-        }
         @Suppress("DEPRECATION")
         val devtools = when (val v = b.get("devtools")) {
             is Boolean -> v
@@ -221,31 +194,33 @@ class MainActivity : Activity() {
             url = b.getString("url"),
             hostToken = b.getString("host_token"),
             leafPin = b.getString("leaf_pin"),
-            uiDensity = density,
             devtools = devtools,
             clear = b.getBoolean("clear", false),
         )
     }
 
-    private fun applyConfigureIntent(intent: Intent?): ConfigureOutcome {
-        intent ?: return ConfigureOutcome.NONE
-        val extras = readExtras(intent) ?: return ConfigureOutcome.NONE
+    /** Applies a `.Configure` intent; true when the page should (re)load. */
+    private fun applyConfigureIntent(intent: Intent?): Boolean {
+        intent ?: return false
+        val extras = readExtras(intent) ?: return false
+        // Consume the extras: an activity recreate re-delivers this intent, and
+        // it must not be applied a second time over newer settings.
+        intent.replaceExtras(Bundle())
         if (intent.component?.className != CONFIGURE_ALIAS) {
             Log.w(TAG, "configuration extras ignored: send them to org.firesong.tv/.Configure (adb shell only)")
-            return ConfigureOutcome.NONE
+            return false
         }
         return when (val r = TvConfig.apply(settings, extras, BuildConfig.DEFAULT_TV_URL, BuildConfig.ALLOW_CLEARTEXT)) {
             is ConfigResult.Rejected -> {
                 Log.e(TAG, "configure: ${r.reason}")
-                ConfigureOutcome.NONE
+                false
             }
             is ConfigResult.Ok -> {
-                val densityChanged = r.settings.uiDensity != settings.uiDensity
                 settings = r.settings
                 Prefs.save(this, settings)
                 r.notes.forEach { Log.i(TAG, "configure: $it") }
                 if (r.notes.isEmpty()) Log.i(TAG, "configure: reload")
-                if (densityChanged) ConfigureOutcome.DENSITY_CHANGED else ConfigureOutcome.APPLIED
+                true
             }
         }
     }
@@ -278,7 +253,7 @@ class MainActivity : Activity() {
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, false)
         // Keep the renderer at foreground priority while visible (the Cube has 2 GB).
         wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
-        wv.addJavascriptInterface(FsProbe(this) { settings.uiDensity }, FsProbe.JS_NAME)
+        wv.addJavascriptInterface(FsProbe(this), FsProbe.JS_NAME)
         wv.webViewClient = Client()
         wv.webChromeClient = Chrome()
         root.addView(wv, 0, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))

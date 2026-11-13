@@ -98,13 +98,12 @@ class TvConfigTest {
         assertTrue(r is ConfigResult.Rejected)
     }
 
-    @Test fun densityBoundsAndClear() {
-        assertEquals(240, ok(TvConfig.apply(TvSettings(), ConfigExtras(uiDensity = 240), "", false)).uiDensity)
-        assertEquals(0, ok(TvConfig.apply(TvSettings(uiDensity = 240), ConfigExtras(uiDensity = 0), "", false)).uiDensity)
-        assertTrue(TvConfig.apply(TvSettings(), ConfigExtras(uiDensity = 50), "", false) is ConfigResult.Rejected)
-        assertTrue(TvConfig.apply(TvSettings(), ConfigExtras(uiDensity = -1), "", false) is ConfigResult.Rejected)
-        val cleared = ok(TvConfig.apply(TvSettings(url = tv, hostToken = token, boundOrigin = "https://tv.example.lan:64443", uiDensity = 240), ConfigExtras(clear = true), "", false))
+    @Test fun clearResetsEverythingAndDevtoolsIsStored() {
+        val cleared = ok(TvConfig.apply(TvSettings(url = tv, hostToken = token, boundOrigin = "https://tv.example.lan:64443", devtools = true), ConfigExtras(clear = true), "", false))
         assertEquals(TvSettings(), cleared)
+        assertEquals(false, ok(TvConfig.apply(TvSettings(), ConfigExtras(devtools = false), "", false)).devtools)
+        val clearThenSet = ok(TvConfig.apply(TvSettings(url = tv), ConfigExtras(clear = true, url = "https://other.lan/"), "", false))
+        assertEquals("https://other.lan/", clearThenSet.url)
     }
 
     @Test fun effectiveUrlFallsBackToBuildDefault() {

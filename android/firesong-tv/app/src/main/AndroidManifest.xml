@@ -42,8 +42,8 @@
         </activity>
 
         <!--
-            Settings entry point (url, host_token, leaf_pin, ui_density, devtools,
-            clear, reload). WRITE_SECURE_SETTINGS is held by `adb shell` but cannot
+            Settings entry point (url, host_token, leaf_pin, devtools, clear,
+            reload). WRITE_SECURE_SETTINGS is held by `adb shell` but cannot
             be held by ordinary apps, so no other app on the TV can point FireSong
             at another origin or read the host token through a cookie.
         -->

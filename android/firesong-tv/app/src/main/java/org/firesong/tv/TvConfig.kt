@@ -18,8 +18,6 @@ data class TvSettings(
     val hostToken: String? = null,
     val boundOrigin: String? = null,
     val leafPins: List<String> = emptyList(),
-    /** 0 = the display's own density; otherwise an override in dpi (120..640). */
-    val uiDensity: Int = 0,
     /** null = the build default (debug builds on, release off). */
     val devtools: Boolean? = null,
 )
@@ -29,7 +27,6 @@ data class ConfigExtras(
     val url: String? = null,
     val hostToken: String? = null,
     val leafPin: String? = null,
-    val uiDensity: Int? = null,
     val devtools: Boolean? = null,
     val clear: Boolean = false,
 )
@@ -102,9 +99,6 @@ object TvConfig {
     private val TOKEN = Regex("^[A-Za-z0-9._~-]{16,256}$")
     private val CERT_SHA256_HEX = Regex("^[0-9a-f]{64}$")
     private val SPKI_PIN = Regex("^sha256/[A-Za-z0-9+/]{43}=$")
-
-    const val MIN_DENSITY = 120
-    const val MAX_DENSITY = 640
 
     fun isValidToken(token: String): Boolean = TOKEN.matches(token)
 
@@ -200,15 +194,6 @@ object TvConfig {
                 next = next.copy(leafPins = normalized, boundOrigin = origin)
                 notes += "${normalized.size} leaf pin(s) set for $origin"
             }
-        }
-
-        if (extras.uiDensity != null) {
-            val d = extras.uiDensity
-            if (d != 0 && (d < MIN_DENSITY || d > MAX_DENSITY)) {
-                return ConfigResult.Rejected("ui_density rejected: use 0 or $MIN_DENSITY..$MAX_DENSITY")
-            }
-            next = next.copy(uiDensity = d)
-            notes += if (d == 0) "ui density: display default" else "ui density override: $d dpi"
         }
 
         if (extras.devtools != null) {

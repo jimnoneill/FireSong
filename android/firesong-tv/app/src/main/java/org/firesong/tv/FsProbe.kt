@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.os.Build
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import org.json.JSONObject
@@ -14,16 +15,16 @@ import org.json.JSONObject
  * (design §5). Read-only, no secrets. Exposed only while the WebView shows the
  * configured TV origin, because cross-origin navigations are blocked.
  */
-class FsProbe(context: Context, private val uiDensityOverride: () -> Int) {
+class FsProbe(context: Context) {
     private val app = context.applicationContext
 
     @JavascriptInterface
-    fun info(): String = collect(app, uiDensityOverride()).toString()
+    fun info(): String = collect(app).toString()
 
     companion object {
         const val JS_NAME = "FSPROBE"
 
-        fun collect(ctx: Context, uiDensityOverride: Int): JSONObject {
+        fun collect(ctx: Context): JSONObject {
             val audio = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val pm = ctx.packageManager
             val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -60,7 +61,10 @@ class FsProbe(context: Context, private val uiDensityOverride: () -> Int) {
                     put("heightPx", dm.heightPixels)
                     put("densityDpi", dm.densityDpi)
                     put("density", dm.density.toDouble())
-                    put("uiDensityOverride", uiDensityOverride)
+                    // The HDMI mode can be larger than the UI (4K panel, 1080p UI).
+                    @Suppress("DEPRECATION")
+                    val mode = (ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.mode
+                    put("modePx", "${mode.physicalWidth}x${mode.physicalHeight}@${mode.refreshRate}")
                 })
                 put("memory", JSONObject().apply {
                     put("availMB", mem.availMem / (1024 * 1024))

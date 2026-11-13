@@ -51,7 +51,8 @@ start_http() {
 cleanup() {
   set +e
   note "cleanup"
-  if "$TVCTL" status 2>/dev/null | grep -q 'resumed:  org.firesong.tv'; then "$TVCTL" home; fi
+  # (no `status | grep -q` here: under pipefail grep's early exit fails the pipe)
+  "$TVCTL" home
   for p in "${REVERSED[@]}"; do "$TVCTL" unreverse "$p" >/dev/null 2>&1; done
   "$TVCTL" undevtools "$CDP_PORT" >/dev/null 2>&1
   [ -n "$LOGCAT_PID" ] && kill "$LOGCAT_PID" 2>/dev/null
@@ -82,6 +83,8 @@ SERVERS+=("$!")
 SERVERS+=("$!")
 sleep 1
 
+note "wake the screen (a key sent while asleep or dreaming only wakes it)"
+"$TVCTL" wake | tee -a "$NOTES" || die "could not wake the Cube"
 note "install $APK"
 "$TVCTL" install "$APK" | tee -a "$NOTES"
 for p in "$HTTP_PORT" "$TLS_PORT" "$STRANGER_PORT"; do "$TVCTL" reverse "$p" >/dev/null; REVERSED+=("$p"); done
@@ -91,10 +94,11 @@ sleep 1
 
 # 1. probe over http://localhost (adb reverse): a secure context, no certificates
 note "step 1: probe over http://localhost:$HTTP_PORT"
-"$TVCTL" configure --url "http://localhost:$HTTP_PORT/probe.html" --ui-density 0 --devtools on
+"$TVCTL" configure --url "http://localhost:$HTTP_PORT/probe.html" --devtools on
 wait_count 'FSPROBE-S1-DONE' 1 90 || true
 sleep 1
 "$TVCTL" screencap "$OUT/s1-probe-http.png" | tee -a "$NOTES"
+"$TVCTL" info > "$OUT/info-after-probe.txt" 2>&1 || true
 
 # 2. remote keys -> DOM keys (Back must become Escape, Play/Pause a space)
 note "step 2: keys 19 20 21 22 23 85 126 127 90 89 82 4"
@@ -114,9 +118,11 @@ note "exit prompt logged: $(count 'exit prompt shown'); Escape events during lon
 "$TVCTL" key 4
 sleep 1
 
-# 4. DevTools: the WP6 acceptance triple, the browser version, then a renderer crash
+# 4. DevTools: a real screenshot (adb screencap is black over the WebView), the
+#    WP6 acceptance triple, the browser version, then a renderer crash
 note "step 4: DevTools + renderer crash"
 if "$TVCTL" devtools "$CDP_PORT" >> "$NOTES" 2>&1; then
+  "$PY" "$HERE/cdp.py" shot "$OUT/s1-probe-http-cdp.png" | tee -a "$NOTES" || true
   "$PY" "$HERE/cdp.py" version | tee "$OUT/cdp-version.json" | tee -a "$NOTES" || true
   "$PY" "$HERE/cdp.py" eval '[isSecureContext, typeof AudioWorkletNode, typeof RTCPeerConnection]' | tee -a "$NOTES" || true
   gone_before="$(count 'renderer gone')"; ready_before="$(count 'page ready')"
@@ -165,20 +171,18 @@ t0=$(date +%s)
 if wait_count 'page ready' $(( ready_before + 1 )) 40; then note "recovered without input in $(( $(date +%s) - t0 )) s"; fi
 wait_count 'FSPROBE-S1-DONE' $(( $(count 'FSPROBE-S1-DONE') + 1 )) 60 || true
 
-# 8. density override (CSS viewport experiment)
-note "step 8: ui_density 240"
-done_before="$(count 'FSPROBE-S1-DONE')"
-"$TVCTL" configure --ui-density 240
-wait_count 'FSPROBE-S1-DONE' $(( done_before + 1 )) 60 || true
-"$TVCTL" screencap "$OUT/s1-density240.png" >/dev/null
-
-# 9. reset to the build default, then leave through the exit prompt
-note "step 9: clear settings and exit"
+# 8. reset to the build default, then leave through the exit prompt
+note "step 8: clear settings and exit"
 "$TVCTL" configure --clear
 sleep 3
 "$TVCTL" longkey 4
 sleep 2
-"$TVCTL" key 22 23 2>/dev/null || true
+"$TVCTL" screencap "$OUT/s1-exit-prompt-final.png" >/dev/null
+# Focus starts on "Stay"; Fire OS lays the buttons out as [Exit] [Stay].
+"$TVCTL" key 21 2>/dev/null || true
+sleep 1
+"$TVCTL" screencap "$OUT/s1-exit-prompt-final-left.png" >/dev/null
+"$TVCTL" key 23 2>/dev/null || true
 sleep 2
 note "resumed after exit: $("$TVCTL" status | awk '/resumed:/ {print $2}')"
 note "done"

@@ -5,9 +5,12 @@
     python3 cdp.py eval  'JS expression'     # prints the JSON value
     python3 cdp.py crash                     # Page.crash (renderer-loss test)
     python3 cdp.py version                   # Browser version string
+    python3 cdp.py shot OUT.png              # Page.captureScreenshot (adb screencap
+                                             # is all black while the WebView shows)
 
 Needs the websocket-client package.
 """
+import base64
 import json
 import os
 import sys
@@ -47,6 +50,12 @@ def main() -> None:
         if cmd == "eval":
             res = call(ws, "Runtime.evaluate", {"expression": sys.argv[2], "returnByValue": True, "awaitPromise": True})
             print(json.dumps(res.get("result", {}).get("result", {}).get("value", res)))
+        elif cmd == "shot":
+            res = call(ws, "Page.captureScreenshot", {"format": "png"})
+            data = base64.b64decode(res["result"]["data"])
+            with open(sys.argv[2], "wb") as f:
+                f.write(data)
+            print(f"wrote {sys.argv[2]} ({len(data)} bytes)")
         elif cmd == "crash":
             ws.send(json.dumps({"id": 1, "method": "Page.crash", "params": {}}))
             print("crash sent")

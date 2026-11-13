@@ -182,6 +182,7 @@ async function run() {
     await watch(vs, 'unmuted mp4 play() without gesture');
     vs.muted = true;
     vs.pause();
+    vm.pause();
   });
 
   await step('wakelock', async () => {

@@ -10,12 +10,13 @@
 #   idle                   exit 0 when the TV is free (launcher, dream or FireSong in front)
 #   install [APK]          adb install -r (default: the debug build); TV must be idle
 #   configure [opts]       send settings to org.firesong.tv/.Configure (TV must be idle):
-#        --url URL  --token-file FILE  --leaf-pin PINS  --ui-density DPI
+#        --url URL  --token-file FILE  --no-token  --leaf-pin PINS
 #        --devtools on|off  --clear  --reload
 #   launch                 start FireSong (TV must be idle)
 #   stop                   force-stop FireSong (only org.firesong.tv)
 #   home                   press HOME, only while FireSong is in front
-#   key CODE...            input keyevent, only while FireSong is in front
+#   wake                   wake the Cube from screensaver/sleep (KEYCODE_WAKEUP), only when idle
+#   key CODE...            input keyevent, only while FireSong is in front and the screen is on
 #   longkey CODE           input keyevent --longpress, only while FireSong is in front
 #   screencap OUT.png      save a screenshot
 #   logcat [ARGS]          FireSong, FireSongJS and chromium lines (adb logcat args pass through)
@@ -76,6 +77,12 @@ require_front() {
     "$PKG"/*) ;;
     *) die "FireSong is not in front ($(resumed)); refusing to send keys" ;;
   esac
+  # A key sent while asleep or dreaming only wakes the device.
+  [ "$(wakefulness)" = "Awake" ] || die "screen is not awake ($(wakefulness)); run: tvctl wake"
+}
+
+wakefulness() {
+  adbs shell dumpsys power 2>/dev/null | sed -n -E 's/.*mWakefulness=([A-Za-z]+).*/\1/p' | head -1
 }
 
 webview_pid() {
@@ -116,7 +123,6 @@ case "$cmd" in
           args+=(--es host_token "$tok"); shift 2 ;;
         --no-token) args+=(--es host_token "''"); shift ;;
         --leaf-pin) args+=(--es leaf_pin "'$2'"); shift 2 ;;
-        --ui-density) args+=(--ei ui_density "$2"); shift 2 ;;
         --devtools) case "$2" in on|true|1) args+=(--ez devtools true) ;; *) args+=(--ez devtools false) ;; esac; shift 2 ;;
         --clear) args+=(--ez clear true); shift ;;
         --reload) args+=(--ez reload true); shift ;;
@@ -136,6 +142,15 @@ case "$cmd" in
   stop)
     adbs shell am force-stop "$PKG"
     ;;
+  wake)
+    require_idle
+    if [ "$(wakefulness)" != "Awake" ]; then
+      adbs shell input keyevent KEYCODE_WAKEUP
+      for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(wakefulness)" = "Awake" ] && break; sleep 1; done
+    fi
+    echo "wakefulness: $(wakefulness)"
+    [ "$(wakefulness)" = "Awake" ]
+    ;;
   home)
     # Only leave FireSong; never press keys while someone uses another app.
     case "$(resumed)" in
@@ -146,7 +161,10 @@ case "$cmd" in
   key)
     [ $# -gt 0 ] || die "key: give one or more key codes"
     require_front
-    for k in "$@"; do adbs shell input keyevent "$k"; done
+    for k in "$@"; do
+      require_front
+      adbs shell input keyevent "$k"
+    done
     ;;
   longkey)
     [ $# -eq 1 ] || die "longkey: give one key code"

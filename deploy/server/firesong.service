@@ -1,0 +1,48 @@
+# FireSong server: systemd USER unit template for the server machine.
+#
+# Render and install (does not enable or start anything):
+#   scripts/firesong/server-install.sh unit
+# which substitutes @RELEASE_ROOT@ (default /mnt/fast/firesong) and writes
+# ~/.config/systemd/user/firesong.service. Then, by hand:
+#   systemctl --user daemon-reload
+#   systemctl --user start firesong          # enable only if it should start at login
+#
+# Both listeners bind loopback (see firesong.env); Caddy (TV) and Tailscale
+# Funnel (phones) are the only ways in. docs/firesong/DEPLOY.md is the runbook.
+
+[Unit]
+Description=FireSong karaoke server (Nightingale fork): TV and phone listeners on loopback
+Documentation=https://github.com/rzru/nightingale
+# Give up after 5 failed starts in 5 minutes instead of looping on a missing
+# NFS mount or a bad env file; `systemctl --user reset-failed firesong` clears it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Host-specific values: copy of deploy/server/firesong.env.example.
+EnvironmentFile=%h/.config/firesong/firesong.env
+# The server loads a `.env` from its working directory (dotenvy), so run it from
+# the release root, which holds none, never from a source checkout.
+WorkingDirectory=@RELEASE_ROOT@
+# Refuses to start when the data dir is on NFS, the song cache that config.json
+# points at is not mounted, a listener is not loopback, the GPU pin is wrong,
+# or NIGHTINGALE_LIBRARY_PATH is set.
+ExecStartPre=@RELEASE_ROOT@/current/preflight.sh
+ExecStart=@RELEASE_ROOT@/current/server
+Restart=on-failure
+RestartSec=5s
+# The server stops the analyzer child on SIGTERM; systemd then kills whatever is
+# left in the cgroup, so no orphaned python keeps a CUDA context.
+TimeoutStopSec=20s
+# Vendor downloads and the analyzer need more than the default 1024 fds.
+LimitNOFILE=65536
+NoNewPrivileges=yes
+UMask=0027
+# Analysis is batch work; keep the desktop and other services responsive.
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=default.target

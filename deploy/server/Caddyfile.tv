@@ -1,0 +1,53 @@
+# FireSong TV door: LAN HTTPS for the Fire TV app, in front of the server's
+# full router on loopback.
+#
+# Run it as the server machine user (port 64443 needs no root):
+#   caddy run --adapter caddyfile --config deploy/server/Caddyfile.tv \
+#             --envfile ~/.config/firesong/firesong.env
+#
+# Every {$VAR} comes from that env file (deploy/server/firesong.env.example), so
+# this template holds no host-specific values.
+#
+# - TLS comes from Caddy's own internal CA. Its root certificate is
+#   {$FIRESONG_CADDY_STORAGE}/pki/authorities/local/root.crt; the Fire TV app
+#   pins it (firetv/ res/raw/firesong_lan_ca). Keep that directory: a new CA
+#   means rebuilding the app.
+# - Only the Cube, the server machine itself and loopback get through (remote_ip is the TCP
+#   peer, so a spoofed X-Forwarded-For does not help). Everyone else gets the
+#   connection closed without a response. The server additionally requires
+#   the host-token cookie (docs/firesong/PROTOCOL.md section 2.2).
+
+{
+	# No admin API: nothing else on the server machine should be able to reconfigure this
+	# proxy. Restart the process to reload.
+	admin off
+	# Never try to add the CA to the system trust store (that needs root).
+	skip_install_trust
+	# Port 80 belongs to another service on the server machine: no HTTP->HTTPS redirect listener.
+	auto_https disable_redirects
+	storage file_system {$FIRESONG_CADDY_STORAGE:/mnt/fast/firesong/caddy}
+	pki {
+		ca local {
+			name "FireSong LAN CA"
+		}
+	}
+}
+
+https://{$FIRESONG_LAN_IP}:{$FIRESONG_TV_PORT:64443}, https://127.0.0.1:{$FIRESONG_TV_PORT:64443} {
+	bind {$FIRESONG_LAN_IP} 127.0.0.1
+	tls internal
+
+	@outsider not remote_ip {$FIRESONG_CUBE_IP} {$FIRESONG_LAN_IP} 127.0.0.1
+	abort @outsider
+
+	# WebSockets (/ws, /rtc) upgrade automatically, and Range requests for
+	# /media/<hash>/<kind> pass through. X-Forwarded-Proto: https is set by
+	# Caddy, which is what makes the host cookie Secure.
+	reverse_proxy {$NIGHTINGALE_BIND:127.0.0.1:64448} {
+		# Stems and clips stream; do not buffer them.
+		flush_interval -1
+	}
+
+	# Deliberately no access log: request lines would record `?host=<token>`
+	# and headers would record x-firesong-host-token (PROTOCOL.md section 2.3).
+}

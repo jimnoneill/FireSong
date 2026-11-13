@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MicRackPort, TapListener } from '@/audio/mic-rack';
+import { DEFAULT_ECHO_MIX, type EchoMix } from '@/audio/voice-params';
 import type { PeerEvents, PeerInit, PeerPort } from '@/bridge/remote-mic-peer';
 import { RemoteMics, type RemoteMicsDeps } from '@/bridge/remote-mics';
 import type { ServerToTv, TvSlot, TvToServer } from '@/features/remote-mic/protocol';
@@ -21,6 +22,7 @@ class FakeRack implements MicRackPort {
   readonly latencies = new Map<number, number | null>();
   readonly muted = new Map<number, boolean>();
   readonly streams = new Map<number, MediaStream>();
+  readonly mixes: EchoMix[] = [];
 
   attach(slot: 1 | 2 | 3 | 4, stream: MediaStream) {
     this.calls.push(`attach:${slot}`);
@@ -50,6 +52,9 @@ class FakeRack implements MicRackPort {
   }
   setLatency(slot: number, latencyMs: number | null) {
     this.latencies.set(slot, latencyMs);
+  }
+  setEchoMix(mix: EchoMix) {
+    this.mixes.push(mix);
   }
   learnGateFloor(slot: number) {
     this.calls.push(`learn:${slot}`);
@@ -95,7 +100,11 @@ const roster = (...active: TvSlot[]): ServerToTv => ({
   slots: ([1, 2, 3, 4] as const).map((n) => active.find((s) => s.slot === n) ?? slot(n)),
 });
 
+const settings = { monitorAlways: false, mix: DEFAULT_ECHO_MIX };
+
 const setup = (monitorAlways = false) => {
+  settings.monitorAlways = monitorAlways;
+  settings.mix = DEFAULT_ECHO_MIX;
   const rack = new FakeRack();
   const sent: TvToServer[] = [];
   const peers: FakePeer[] = [];
@@ -126,7 +135,8 @@ const setup = (monitorAlways = false) => {
     dispatchFrame: (captureId, frame) => frames.push([captureId, frame]),
     devicesChanged: deviceChanges,
     label: (entry) => `Slot ${entry.slot} · ${entry.name ?? entry.color}${entry.state === 'reserved' ? ' (reconnecting)' : ''}`,
-    monitorAlways: () => monitorAlways,
+    monitorAlways: () => settings.monitorAlways,
+    echoMix: () => settings.mix,
   };
   const mics = new RemoteMics(deps);
   return {
@@ -340,3 +350,39 @@ describe('host actions and lifecycle', () => {
     vi.useRealTimers();
   });
 });
+
+describe('noraebang seams (PROTOCOL.md §12)', () => {
+  it('applies the echo preset at start and again when the settings change', async () => {
+    const { mics, push, rack } = await started(false);
+    expect(rack.mixes).toEqual([DEFAULT_ECHO_MIX]);
+    push(roster(slot(2, { state: 'connected', micId: MIC_A })));
+    expect(rack.monitors.get(2)).toBe(false);
+
+    const hall = { wet: 0.42, feedback: 0.5, lowpassHz: 3000, reverbSend: 0.32 };
+    settings.mix = hall;
+    settings.monitorAlways = true;
+    mics.refreshSettings();
+    expect(rack.mixes.at(-1)).toEqual(hall);
+    expect(rack.monitors.get(2)).toBe(true);
+  });
+
+  it('maps phone-mic device ids to roster slots for the reveal', async () => {
+    const { mics, push } = await started();
+    push(roster(slot(3, { state: 'connected', micId: MIC_B })));
+    expect(mics.slotForMicrophone(`remote:${MIC_B}`)).toBe(3);
+    expect(mics.slotForMicrophone(`remote:${MIC_A}`)).toBeNull();
+    expect(mics.slotForMicrophone('default')).toBeNull();
+  });
+
+  it('sends song-result through the TV socket', async () => {
+    const { mics, sent } = await started();
+    const frame = {
+      type: 'song-result' as const,
+      title: 'Song',
+      results: [{ slot: 1, displayScore: 91, rawScore: 640, tier: 'excellent' as const, rank: 1 }],
+    };
+    expect(mics.sendSongResult(frame)).toBe(true);
+    expect(sent.at(-1)).toEqual(frame);
+  });
+});
+

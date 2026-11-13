@@ -1,11 +1,18 @@
 import { MicRack, type MicRackPort, type RackSlotStatus, type TapListener } from '@/audio/mic-rack';
 import { SlotLatency } from '@/audio/slot-latency';
 import { getVoiceEngine } from '@/audio/voice-engine';
+import type { EchoMix } from '@/audio/voice-params';
+import {
+  linkNoraebang,
+  noraebangMonitorAlways,
+  presetEchoMix,
+} from '@/features/remote-mic/noraebang-link';
 import {
   isMicSlot,
   MIC_SLOTS,
   parseServerToTv,
   PROTOCOL_VERSION,
+  parseRemoteMicDeviceId,
   remoteMicDeviceId,
   type IceCandidate,
   type IceServer,
@@ -62,7 +69,10 @@ export type RemoteMicsDeps = {
   dispatchFrame: (captureId: string, frame: MicSampleFrame) => void;
   devicesChanged: () => void;
   label: (slot: TvSlot) => string;
+  /** Monitor every slot with a phone, whatever the bindings say (noraebang mode). */
   monitorAlways: () => boolean;
+  /** Echo and reverb levels for every slot (the echo preset). */
+  echoMix: () => EchoMix;
 };
 
 type Binding = { micId: string; monitor: boolean };
@@ -167,6 +177,26 @@ export class RemoteMics {
     return this.bindings.has(captureId);
   }
 
+  /** Re-reads `monitorAlways` and `echoMix`, after the noraebang settings change. */
+  refreshSettings(): void {
+    this.rack?.setEchoMix(this.deps.echoMix());
+    this.syncSlots();
+  }
+
+  /** The roster slot of a `remote:<micId>` device id, or `null` (local, unknown, empty). */
+  slotForMicrophone(deviceId: string): MicSlot | null {
+    const micId = parseRemoteMicDeviceId(deviceId);
+    if (micId === null) {
+      return null;
+    }
+    return this.roster.find((entry) => entry.micId === micId)?.slot ?? null;
+  }
+
+  /** Sends the score reveal's per-slot results to the phones (PROTOCOL.md §5.3). */
+  sendSongResult(frame: Extract<TvToServer, { type: 'song-result' }>): boolean {
+    return this.socket?.send(frame) ?? false;
+  }
+
   /** Latest jitter-buffer delay of a mic's stream, in milliseconds. */
   jitterMs(micId: string): number | null {
     return this.latencies.get(micId)?.currentJitterMs() ?? null;
@@ -195,7 +225,10 @@ export class RemoteMics {
   }
 
   private async open(): Promise<void> {
-    this.rack ??= await this.deps.rack();
+    if (this.rack === null) {
+      this.rack = await this.deps.rack();
+      this.rack.setEchoMix(this.deps.echoMix());
+    }
     if (this.starts === 0 || this.socket !== null) {
       return;
     }
@@ -490,7 +523,8 @@ export const remoteMics = new RemoteMics({
   dispatchFrame: dispatchMicFrame,
   devicesChanged: notifyDeviceChange,
   label: slotLabel,
-  monitorAlways: () => fireSongLaunch().noraebang,
+  monitorAlways: noraebangMonitorAlways,
+  echoMix: presetEchoMix,
 });
 
 /**
@@ -501,5 +535,10 @@ export const startRemoteMics = (): (() => void) => {
   if (isTauri || !fireSongLaunch().tv) {
     return () => undefined;
   }
-  return remoteMics.start();
+  const release = remoteMics.start();
+  const unlink = linkNoraebang(remoteMics);
+  return () => {
+    unlink();
+    release();
+  };
 };

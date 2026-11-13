@@ -49,6 +49,30 @@ export const gainToDb = (gain: number): number =>
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
+/**
+ * Echo and reverb levels chosen by the echo preset (noraebang settings,
+ * `features/noraebang/echo.ts`). The delay never comes from the preset: it
+ * stays locked to the slot's latency.
+ */
+export type EchoMix = {
+  /** Echo send level for a slot within the latency budget. */
+  wet: number;
+  feedback: number;
+  lowpassHz: number;
+  reverbSend: number;
+};
+
+export const DEFAULT_ECHO_MIX: EchoMix = {
+  wet: ECHO_WET_GAIN,
+  feedback: ECHO_FEEDBACK,
+  lowpassHz: ECHO_LOWPASS_HZ,
+  reverbSend: REVERB_SEND,
+};
+
+/** A late slot's wet level is raised by the same ratio as the default mix. */
+const LATE_WET_RATIO = ECHO_LATE_WET_GAIN / ECHO_WET_GAIN;
+const MAX_WET_GAIN = 0.6;
+
 export type EchoSettings = {
   /** `d_i`, the slot's echo delay. */
   delayMs: number;
@@ -63,22 +87,25 @@ export type EchoSettings = {
  * an even echo train at 0, L, 2L. An unknown or very low latency gets a fixed
  * 160 ms echo; a latency above the range raises the wet/dry ratio.
  */
-export const echoSettingsFor = (latencyMs: number | null): EchoSettings => {
+export const echoSettingsFor = (
+  latencyMs: number | null,
+  mix: EchoMix = DEFAULT_ECHO_MIX,
+): EchoSettings => {
   if (latencyMs === null || !Number.isFinite(latencyMs) || latencyMs < ECHO_LOW_LATENCY_MS) {
-    return { delayMs: ECHO_FIXED_DELAY_MS, dryGain: 1, wetGain: ECHO_WET_GAIN, late: false };
+    return { delayMs: ECHO_FIXED_DELAY_MS, dryGain: 1, wetGain: mix.wet, late: false };
   }
   if (latencyMs > ECHO_MAX_DELAY_MS) {
     return {
       delayMs: ECHO_MAX_DELAY_MS,
       dryGain: ECHO_LATE_DRY_GAIN,
-      wetGain: ECHO_LATE_WET_GAIN,
+      wetGain: Math.min(MAX_WET_GAIN, mix.wet * LATE_WET_RATIO),
       late: true,
     };
   }
   return {
     delayMs: clamp(latencyMs, ECHO_MIN_DELAY_MS, ECHO_MAX_DELAY_MS),
     dryGain: 1,
-    wetGain: ECHO_WET_GAIN,
+    wetGain: mix.wet,
     late: false,
   };
 };

@@ -41,6 +41,17 @@ describe('echoSettingsFor (d_i = clamp(L_i, 90, 220), fixed 160 below 60)', () =
     expect(echo).toMatchObject({ delayMs: 220, late: true, wetGain: ECHO_LATE_WET_GAIN });
     expect(echo.wetGain / echo.dryGain).toBeGreaterThan(ECHO_WET_GAIN);
   });
+
+  it('takes the wet level from the echo preset but keeps the delay latency-locked', () => {
+    const hall = { wet: 0.42, feedback: 0.5, lowpassHz: 3000, reverbSend: 0.32 };
+    expect(echoSettingsFor(150, hall)).toMatchObject({ delayMs: 150, wetGain: 0.42, late: false });
+    expect(echoSettingsFor(null, hall)).toMatchObject({ delayMs: 160, wetGain: 0.42 });
+    const late = echoSettingsFor(300, hall);
+    expect(late).toMatchObject({ delayMs: 220, late: true });
+    expect(late.wetGain).toBeGreaterThan(0.42);
+    expect(late.wetGain).toBeLessThanOrEqual(0.6);
+    expect(echoSettingsFor(150, { ...hall, wet: 0 }).wetGain).toBe(0);
+  });
 });
 
 describe('gate threshold learning (+12 dB over bleed)', () => {

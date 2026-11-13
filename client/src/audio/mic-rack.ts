@@ -8,8 +8,7 @@ import {
   COMPRESSOR_RATIO,
   COMPRESSOR_THRESHOLD_DB,
   dbToGain,
-  ECHO_FEEDBACK,
-  ECHO_LOWPASS_HZ,
+  DEFAULT_ECHO_MIX,
   echoSettingsFor,
   FEEDBACK_DUCK_DB,
   FEEDBACK_NOTCH_DB,
@@ -19,7 +18,7 @@ import {
   GATE_MIN_THRESHOLD_DB,
   gateThresholdFromBleed,
   HPF_HZ,
-  REVERB_SEND,
+  type EchoMix,
   type EchoSettings,
 } from './voice-params';
 
@@ -57,6 +56,8 @@ export type MicRackPort = {
   setMonitor(slot: MicSlot, on: boolean): void;
   setMuted(slot: MicSlot, muted: boolean): void;
   setLatency(slot: MicSlot, latencyMs: number | null): void;
+  /** Echo and reverb levels of every slot (the echo preset); delays stay latency-locked. */
+  setEchoMix(mix: EchoMix): void;
   learnGateFloor(slot: MicSlot): void;
   status(slot: MicSlot): RackSlotStatus | null;
 };
@@ -91,6 +92,9 @@ type StripNodes = {
   dry: GainNode;
   echoSend: GainNode;
   echoDelay: DelayNode;
+  echoLowpass: BiquadFilterNode;
+  echoFeedback: GainNode;
+  reverbSend: GainNode;
 };
 
 const buildStrip = (engine: VoiceEngine): StripNodes => {
@@ -126,11 +130,11 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
   const echoDelay = context.createDelay(MAX_ECHO_DELAY_SEC);
   const echoLowpass = context.createBiquadFilter();
   echoLowpass.type = 'lowpass';
-  echoLowpass.frequency.value = ECHO_LOWPASS_HZ;
+  echoLowpass.frequency.value = DEFAULT_ECHO_MIX.lowpassHz;
   const echoFeedback = context.createGain();
-  echoFeedback.gain.value = ECHO_FEEDBACK;
+  echoFeedback.gain.value = DEFAULT_ECHO_MIX.feedback;
   const reverbSend = context.createGain();
-  reverbSend.gain.value = REVERB_SEND;
+  reverbSend.gain.value = DEFAULT_ECHO_MIX.reverbSend;
 
   hpf.connect(gate);
   gate.connect(analyser);
@@ -141,7 +145,21 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
   echoDelay.connect(engine.bus);
   monitor.connect(reverbSend).connect(engine.reverbSend);
 
-  return { hpf, gate, chunker, analyser, fader, notch, monitor, dry, echoSend, echoDelay };
+  return {
+    hpf,
+    gate,
+    chunker,
+    analyser,
+    fader,
+    notch,
+    monitor,
+    dry,
+    echoSend,
+    echoDelay,
+    echoLowpass,
+    echoFeedback,
+    reverbSend,
+  };
 };
 
 class SlotStrip {
@@ -152,6 +170,8 @@ class SlotStrip {
   private monitored = false;
   private muted = false;
   private duckedUntil = 0;
+  private mix: EchoMix = DEFAULT_ECHO_MIX;
+  private latencyMs: number | null = null;
   private echo: EchoSettings = echoSettingsFor(null);
   private gateThreshold = dbToGain(GATE_MIN_THRESHOLD_DB);
   private levelRms = 0;
@@ -222,7 +242,8 @@ class SlotStrip {
   }
 
   setLatency(latencyMs: number | null): void {
-    const next = echoSettingsFor(latencyMs);
+    this.latencyMs = latencyMs;
+    const next = echoSettingsFor(latencyMs, this.mix);
     if (
       next.late === this.echo.late &&
       Math.abs(next.delayMs - this.echo.delayMs) < ECHO_RETUNE_MS
@@ -230,6 +251,16 @@ class SlotStrip {
       return;
     }
     this.echo = next;
+    this.applyEcho();
+  }
+
+  setMix(mix: EchoMix): void {
+    this.mix = mix;
+    this.echo = echoSettingsFor(this.latencyMs, mix);
+    const { context } = this.engine;
+    ramp(this.nodes.echoFeedback.gain, mix.feedback, context);
+    ramp(this.nodes.echoLowpass.frequency, mix.lowpassHz, context);
+    ramp(this.nodes.reverbSend.gain, mix.reverbSend, context);
     this.applyEcho();
   }
 
@@ -339,6 +370,7 @@ class SlotStrip {
 export class MicRack implements MicRackPort {
   private readonly strips = new Map<MicSlot, SlotStrip>();
   private guardTimer: number | null = null;
+  private mix: EchoMix = DEFAULT_ECHO_MIX;
 
   private constructor(
     private readonly engine: VoiceEngine,
@@ -388,6 +420,13 @@ export class MicRack implements MicRackPort {
     this.strip(slot).setLatency(latencyMs);
   }
 
+  setEchoMix(mix: EchoMix): void {
+    this.mix = mix;
+    for (const strip of this.strips.values()) {
+      strip.setMix(mix);
+    }
+  }
+
   learnGateFloor(slot: MicSlot): void {
     this.strip(slot).learnGateFloor();
   }
@@ -400,6 +439,9 @@ export class MicRack implements MicRackPort {
     let strip = this.strips.get(slot);
     if (strip === undefined) {
       strip = new SlotStrip(this.engine, buildStrip(this.engine), this.sink);
+      if (this.mix !== DEFAULT_ECHO_MIX) {
+        strip.setMix(this.mix);
+      }
       this.strips.set(slot, strip);
       this.startGuard();
     }

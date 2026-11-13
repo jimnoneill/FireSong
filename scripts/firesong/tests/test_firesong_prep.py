@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -410,6 +411,7 @@ class FakeNightingale:
         self.analyzing_seen = 0
         self.ready = True
         self.playback = {"active": False}
+        self.playing_reads = 0  # load_playback_status reads that still see a song playing
         self.play_queue: list[dict] = []
 
     # ---- library
@@ -493,6 +495,9 @@ class FakeNightingale:
             if name == "load_playback_queue":
                 return list(self.play_queue)
             if name == "load_playback_status":
+                if self.playing_reads > 0:
+                    self.playing_reads -= 1
+                    return {"active": True}
                 return dict(self.playback)
             if name == "enqueue":
                 n = 0
@@ -753,6 +758,59 @@ class EndToEndTests(unittest.TestCase):
         self.assertLessEqual(usage.walk_bytes, 40 * fp.MIB)
         party = [self.fake.songs[i] for i in self.fake.playlists["plex:900"][1]]
         self.assertTrue(all(s["is_analyzed"] for s in party))
+
+    def old_songs(self, n=20):
+        """A 40 MiB cap already full of n old finished songs from outside the playlist."""
+        self.settings.cap_bytes = 40 * fp.MIB
+        self.fake.song_mb = 2
+        old = []
+        for i in range(n):
+            h = h64(f"old{i}")
+            write_size(self.song_dir / f"{h}_vocals.mp3", fp.MIB // 2, mtime=1000 + i)
+            write_size(self.song_dir / f"{h}_instrumental.mp3", fp.MIB // 2, mtime=1000 + i)
+            write_size(self.song_dir / f"{h}_transcript.json", 100, mtime=1000 + i)
+            write_size(self.song_dir / "sources" / f"{h}.flac", fp.MIB, mtime=1000 + i)
+            old.append(h)
+        return old
+
+    def evicted(self):
+        return [c[1]["target"]["hashes"][0] for c in self.fake.calls if c[0] == "delete_song_cache"]
+
+    def test_nothing_is_evicted_while_a_song_plays(self):
+        # The server does not say which song is on screen; it may be any cached one.
+        self.old_songs()
+        self.fake.playback = {"active": True}
+        prep = self.prep(batch=3, song_estimate=4 * fp.MIB)
+        self.assertEqual(prep.run(["Party Mix"]), fp.EXIT_CACHE)
+        self.assertEqual(self.evicted(), [])
+        self.assertNotIn("enqueue", self.names())
+
+    def test_eviction_waits_for_the_song_to_end(self):
+        old = self.old_songs()
+        self.fake.playing_reads = 5
+        prep = self.prep(batch=3, song_estimate=4 * fp.MIB)
+        self.assertEqual(prep.run(["Party Mix"]), fp.EXIT_OK)
+        self.assertEqual(self.fake.playing_reads, 0)
+        self.assertEqual(self.evicted(), old[: len(self.evicted())])
+        self.assertTrue(self.evicted())
+
+    def test_songs_played_in_the_last_hours_are_kept(self):
+        old = self.old_songs()
+        recent = old[:4]
+        (self.data / "profiles.json").write_text(json.dumps({"scores": [
+            {"song_hash": h, "played_at": int(time.time()) - 600, "score": 500, "profile": "p"} for h in recent]}))
+        self.settings.cap_bytes = 4 * fp.MIB  # would take all but two songs
+        prep = self.prep()
+        self.assertFalse(prep.make_room(0, set(), set()))
+        self.assertEqual(len(self.evicted()), 16)
+        self.assertFalse(set(self.evicted()) & set(recent))
+
+    def test_evict_command_refuses_while_a_song_plays(self):
+        self.old_songs()
+        self.fake.playback = {"active": True}
+        prep = self.prep()
+        self.assertFalse(prep.make_room(0, set(), set(), wait=False))
+        self.assertEqual(self.evicted(), [])
 
     def test_cache_full_of_protected_songs_stops(self):
         self.settings.cap_bytes = 10 * fp.MIB

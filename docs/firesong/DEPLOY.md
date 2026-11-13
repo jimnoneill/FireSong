@@ -170,13 +170,14 @@ Never delete or edit another job's reservation file.
 
 - **Usage.** The cache counts as the larger of the volume's `statvfs` usage and the sum of the files under the mount. The cap is the smaller of `FIRESONG_SONG_CACHE_MAX_GB` (36 GB, decimal) and 90% of the volume.
 - **Room before each batch.** Before each batch, prep needs room for the new songs. It estimates each song at the median size of the cached songs, or 60 MiB while the cache is empty; `--song-estimate-mb` overrides that.
-- **What can be evicted.** Only finished songs (with a transcript) that are not in the playlists being prepped, not in the play queue and not queued for analysis. The least recently used go first.
+- **What can be evicted.** Only finished songs (with a transcript) that are not in the playlists being prepped, not in the play queue, not queued for analysis and not sung (scored) in the last 3 hours. The least recently used go first.
+- **Never while a song plays.** A song leaves the play queue when it starts, and the server does not say which song is on screen, so nothing is evicted while one is playing: prep waits up to 15 minutes for it to end, then stops with exit 4; `evict` refuses at once. Run it again between songs.
 - **"Last used"** is the latest of three times: when prep last touched the song (`<data>/firesong/song-cache-lru.json`), when it was last scored (`profiles.json`), and when its files last changed.
 - **How eviction works.** It goes through the server's `delete_song_cache`, so the library marks the song unanalysed. Prep then removes the downloaded original (`songs/sources/<hash>.*`), which the server keeps and Plex can serve again. Covers stay.
 - **Partial songs** (stems with no transcript) are the analyzer's resume state and are never evicted.
 - **When it cannot fit.** If the protected songs alone exceed the cap, prep stops with exit 4. Analyse fewer songs, or raise the cap if the volume allows.
 
-`$P evict [--dry-run] [--target-gb N] [--keep-playlist NAME]` runs the same eviction on its own. It refuses when the server is down, because deleting files behind the server's back would leave the library pointing at missing stems.
+`$P evict [--dry-run] [--target-gb N] [--keep-playlist NAME]` runs the same eviction on its own. It refuses while a song is playing and when the server is down, because deleting files behind the server's back would leave the library pointing at missing stems.
 
 ## 4. The Fire TV Cube from the server machine
 

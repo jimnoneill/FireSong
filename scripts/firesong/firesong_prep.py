@@ -16,7 +16,9 @@ prep (default)
      transcripts are kept, so nothing is lost.
   4. Keeps the cache under FIRESONG_SONG_CACHE_MAX_GB: before each batch it
      evicts the least recently used finished songs that are not in the
-     playlists being prepped or in the play queue.
+     playlists being prepped, in the play queue, or sung in the last 3 hours.
+     It evicts nothing while a song is playing (the server does not say which
+     song is on screen), waiting up to 15 minutes for it to end.
   5. When done, makes sure the idle analyzer holds no VRAM. With
      NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS > 0 (WP1b) it waits for the
      analyzer's idle exit; otherwise it restarts the server once
@@ -65,6 +67,10 @@ DEFAULT_RESERVATIONS = Path.home() / ".config" / "gpu-reservations"
 NFS_TYPES = ("nfs", "nfs4")
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 
+
+# Songs sung this recently are not evicted; eviction waits this long for a song to end.
+RECENT_PLAY_SECS = 3 * 3600
+EVICT_WAIT_SECS = 15 * 60
 
 class GuardError(Exception):
     """A safety guard refused to let prep run."""
@@ -1006,11 +1012,41 @@ class Prep:
             self.log.info(f"evicted {g.hash} ({g.bytes / MIB:.0f} MiB)")
         return freed
 
-    def make_room(self, n_songs: int, protected: set[str], busy: set[str]) -> bool:
+    def recently_played(self) -> set[str]:
+        since = time.time() - RECENT_PLAY_SECS
+        return {h for h, t in played_at(self.s.data_path).items() if t >= since}
+
+    def playback_idle(self, wait: bool) -> bool:
+        """True when no song is playing, waiting up to EVICT_WAIT_SECS if
+        asked. Nothing is evicted while one plays: the playing song left the
+        play queue when it started, and the server does not say which it is."""
+        deadline = self.now() + (EVICT_WAIT_SECS if wait else 0)
+        noted = False
+        while True:
+            try:
+                status = self.api.cmd("load_playback_status") or {}
+            except ApiError as e:
+                self.log.warn(f"eviction skipped: the playback state is unknown ({e})")
+                return False
+            if not (isinstance(status, dict) and status.get("active")):
+                return True
+            if self.now() >= deadline:
+                return False
+            if not noted:
+                self.log.info("a song is playing; eviction waits for it to end")
+                noted = True
+            self.sleep(max(self.o.poll, 1.0))
+
+    def make_room(self, n_songs: int, protected: set[str], busy: set[str], wait: bool = True) -> bool:
         usage = self.usage()
         cap = self.effective_cap(usage)
         need = n_songs * self.estimate(usage)
+        protected = protected | self.recently_played()
         victims, projected = plan_eviction(usage, cap, need, protected, busy, self.last_used_fn())
+        if victims and not self.playback_idle(wait):
+            self.log.error(f"cache {usage.used / GB:.1f} GB of {cap / GB:.1f} GB cap: eviction postponed "
+                           "because a song is playing; run prep or evict again between songs")
+            return False
         if victims:
             self.log.info(f"cache {usage.used / GB:.1f} GB of {cap / GB:.1f} GB cap; evicting "
                           f"{len(victims)} least recently used song(s) to fit {n_songs} more")
@@ -1129,7 +1165,7 @@ class Prep:
         # Estimates can be low: settle the cap now that the songs are on disk.
         if rc != EXIT_CACHE:
             self.make_room(0, {s.hash for s in final.values()} | play_queue_hashes(self.api),
-                           set(queue_entries(self.api)))
+                           set(queue_entries(self.api)), wait=False)
         analysed = sum(1 for s in final.values() if s.analyzed)
         self.log.info(f"done: {analysed}/{len(final)} playlist songs analysed; "
                       f"{len(failed)} failed, {len(pending)} not attempted")
@@ -1379,7 +1415,7 @@ def cmd_evict(settings: Settings, args, log: Log) -> int:
         menu = api.cmd("load_library_menu_items") or {}
         ids = [p[0] for p in resolve_playlists(menu, args.keep_playlist)]
         protected |= {s.hash for s in list_playlist_songs(api, ids).values()}
-    ok = prep.make_room(0, protected, set(queue_entries(api)))
+    ok = prep.make_room(0, protected, set(queue_entries(api)), wait=False)
     usage = prep.usage()
     log.info(f"cache now {usage.used / GB:.2f} GB (cap {prep.effective_cap(usage) / GB:.1f} GB)")
     return EXIT_OK if ok else EXIT_CACHE

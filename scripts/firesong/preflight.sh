@@ -82,11 +82,18 @@ is_loopback_bind() {
 }
 
 # --- 1. placeholders and forbidden variables ---------------------------------
+# Values the server or its analyzer read must be real; the rest (Cube, Caddy,
+# owner steps) only matter to the tooling, so they just warn.
 while IFS='=' read -r name value; do
   case "$value" in
-    *"<"*">"*) fail "$name still holds a placeholder ($value); fill in ~/.config/firesong/firesong.env" ;;
+    *"<"*">"*)
+      case "$name" in
+        NIGHTINGALE_*|CUDA_*|FIRESONG_SONG_*|FIRESONG_MODELS_DIR|FIRESONG_VENDOR_DIR|UV_CACHE_DIR)
+          fail "$name still holds a placeholder ($value); fill in ~/.config/firesong/firesong.env" ;;
+        *) warn "$name still holds a placeholder ($value)" ;;
+      esac ;;
   esac
-done < <(env | grep -E '^(NIGHTINGALE_|FIRESONG_|CUDA_)[A-Z0-9_]*=' | sort)
+done < <(env | grep -E '^(NIGHTINGALE_|FIRESONG_|CUDA_|UV_CACHE_DIR)[A-Z0-9_]*=' | sort)
 
 if [ -n "${NIGHTINGALE_LIBRARY_PATH:-}" ]; then
   fail "NIGHTINGALE_LIBRARY_PATH is set; it re-pins a folder library over Plex on every start. Unset it."

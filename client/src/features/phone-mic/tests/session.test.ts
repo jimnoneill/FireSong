@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { PhoneMicSession } from '@/features/phone-mic/lib/session';
+import { CONNECT_TIMEOUT_MS, PhoneMicSession } from '@/features/phone-mic/lib/session';
 import { CLIENT_TIMEOUT_CLOSE, PONG_TIMEOUT_MS } from '@/features/phone-mic/lib/signaling';
 import { createRig, RESUME_KEY, settle, type Rig } from '@/features/phone-mic/tests/fakes';
 import { CLOSE_CODE, MIC_IDENTITY_STORAGE_KEY, type MicSlot } from '@/features/remote-mic/protocol';
@@ -120,6 +120,31 @@ void test('a rejected answer starts a fresh session after a second', async () =>
     rig.sockets.last.ofType('offer').map((frame) => frame.sdp),
     ['offer-1', 'offer-2'],
   );
+});
+
+void test('an answered session that never connects starts over', async () => {
+  const [rig] = await joined();
+  assign(rig);
+  await settle();
+  rig.sockets.last.deliver({ type: 'answer', sdp: 'stale-answer' });
+  await settle();
+
+  rig.clock.advance(CONNECT_TIMEOUT_MS - 1);
+  assert.equal(rig.sockets.last.ofType('offer').length, 1);
+  rig.clock.advance(1);
+  await settle();
+  assert.deepEqual(rig.sockets.last.ofType('offer').at(-1), {
+    type: 'offer',
+    sdp: 'offer-2',
+    restart: false,
+  });
+
+  rig.sockets.last.deliver({ type: 'answer', sdp: 'good-answer' });
+  await settle();
+  rig.peer.emit('connected');
+  rig.clock.advance(CONNECT_TIMEOUT_MS * 2);
+  await settle();
+  assert.equal(rig.sockets.opened.flatMap((socket) => socket.ofType('offer')).length, 2);
 });
 
 void test('ICE failure and TV restart requests send restart offers', async () => {

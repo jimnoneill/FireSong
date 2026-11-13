@@ -65,6 +65,8 @@ const DIAG_INTERVAL_MS = 15_000;
 /** iOS unmutes a capture track shortly after the page is shown again. */
 const VISIBLE_SETTLE_MS = 500;
 const ANSWER_RETRY_MS = 1_000;
+/** An answered session that is still not connected after this starts over. */
+export const CONNECT_TIMEOUT_MS = 8_000;
 
 const INITIAL_SNAPSHOT: PhoneMicSnapshot = {
   stage: 'idle',
@@ -108,6 +110,7 @@ export class PhoneMicSession {
   private recoveryPending = false;
   private recovering = false;
   private diagTimer: number | null = null;
+  private connectTimer: number | null = null;
   private lastError: string | null = null;
 
   private readonly ports: PhoneMicPorts;
@@ -305,6 +308,7 @@ export class PhoneMicSession {
       this.detach(this.startPeer());
       return;
     }
+    this.clearConnectTimer();
     this.ports.peer.close();
     this.stopDiag();
     this.update({ link: 'waiting-tv' });
@@ -330,6 +334,7 @@ export class PhoneMicSession {
   }
 
   private async startPeer(): Promise<void> {
+    this.clearConnectTimer();
     this.update({ link: 'connecting' });
     const sdp = await this.ports.peer.open(this.iceServers);
     if (sdp !== null) {
@@ -351,7 +356,9 @@ export class PhoneMicSession {
 
   private async handleAnswer(sdp: string): Promise<void> {
     const outcome = await this.ports.peer.acceptAnswer(sdp);
-    if (outcome === 'failed') {
+    if (outcome === 'applied') {
+      this.armConnectTimer();
+    } else if (outcome === 'failed') {
       this.ports.timers.setTimeout(() => {
         if (this.tvConnected && this.snapshot.stage === 'joined') {
           this.detach(this.startPeer());
@@ -363,6 +370,7 @@ export class PhoneMicSession {
   private handlePeerState(state: PeerLinkState): void {
     switch (state) {
       case 'connected':
+        this.clearConnectTimer();
         this.update({ link: 'live' });
         this.startDiag();
         return;
@@ -376,6 +384,27 @@ export class PhoneMicSession {
         return;
       case 'idle':
         return;
+    }
+  }
+
+  /**
+   * Answers carry no offer id, so an answer to a superseded offer can land on
+   * the current one; a session that never connects is renegotiated from scratch.
+   */
+  private armConnectTimer(): void {
+    this.clearConnectTimer();
+    this.connectTimer = this.ports.timers.setTimeout(() => {
+      this.connectTimer = null;
+      if (this.tvConnected && this.snapshot.stage === 'joined' && this.snapshot.link !== 'live') {
+        this.detach(this.startPeer());
+      }
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer !== null) {
+      this.ports.timers.clearTimeout(this.connectTimer);
+      this.connectTimer = null;
     }
   }
 
@@ -483,6 +512,7 @@ export class PhoneMicSession {
 
   private release(): void {
     this.stopDiag();
+    this.clearConnectTimer();
     this.tvConnected = false;
     this.recoveryPending = false;
     this.ports.peer.close();

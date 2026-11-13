@@ -64,6 +64,9 @@ export const MAX_CANDIDATE_BYTES = 1_024;
 export const MAX_DIAG_BYTES = 8_192;
 export const MAX_NAME_CHARS = 32;
 export const MAX_LATENCY_MS = 1_000;
+export const MAX_TITLE_CHARS = 200;
+export const MAX_DISPLAY_SCORE = 100;
+export const MAX_RAW_SCORE = 1_000;
 
 export const CLOSE_CODE = {
   badRequest: 4400,

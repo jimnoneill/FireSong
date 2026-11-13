@@ -1,0 +1,19 @@
+{
+  "name": "firesong-webtest",
+  "version": "0.0.0",
+  "private": true,
+  "description": "FireSong unit and component tests for client code. React and every client dependency come from client/node_modules; this package only adds the test runner.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "happy-dom": "20.14.6",
+    "vite": "8.0.3",
+    "vitest": "4.1.12"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "packageManager": "pnpm@11.2.2"
+}

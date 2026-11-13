@@ -7,7 +7,7 @@
 #
 # Commands
 #   status                 adb state, resumed activity, WebView, FireSong version
-#   idle                   exit 0 when the TV is free (launcher, dream or FireSong in front)
+#   idle                   exit 0 when the TV is idle: the Amazon launcher is in front
 #   install [APK]          adb install -r (default: the debug build); TV must be idle
 #   configure [opts]       send settings to org.firesong.tv/.Configure (TV must be idle):
 #        --url URL  --token-file FILE  --no-token  --leaf-pin PINS
@@ -15,7 +15,8 @@
 #   launch                 start FireSong (TV must be idle)
 #   stop                   force-stop FireSong (only org.firesong.tv)
 #   home                   press HOME, only while FireSong is in front
-#   wake                   wake the Cube from screensaver/sleep (KEYCODE_WAKEUP), only when idle
+#   wake                   wake the Cube from screensaver/sleep (KEYCODE_WAKEUP), only over the
+#                          launcher or FireSong
 #   key CODE...            input keyevent, only while FireSong is in front and the screen is on
 #   longkey CODE           input keyevent --longpress, only while FireSong is in front
 #   screencap OUT.png      save a screenshot
@@ -25,9 +26,12 @@
 #                          forward LOCALPORT (9222) to FireSong's WebView DevTools socket
 #   info                   dumpsys webviewupdate, meminfo org.firesong.tv, audio flinger summary
 #
-# Safety rules (owner's): never touches the adb key, never uninstalls or
-# modifies other apps, and only installs/launches while the TV is idle. Press
-# HOME and remove reverses/forwards when done.
+# Safety rules (owner's): never touches the adb key (and refuses to run adb
+# without it, which would create a new unapproved key), never uninstalls or
+# modifies other apps, and only installs, configures or launches while the TV
+# is idle on the launcher (not while FireSong itself is in front: that would
+# kill or reload a running party). Press HOME and remove reverses/forwards
+# when done.
 set -euo pipefail
 
 PKG=org.firesong.tv
@@ -47,6 +51,8 @@ die() { echo "tvctl: $*" >&2; exit 1; }
 if [ "${1:-}" = "-s" ]; then SERIAL="${2:-}"; shift 2; fi
 [ -n "$SERIAL" ] || die "no device: pass -s <ip:5555> or set FIRESONG_CUBE_SERIAL"
 [ -x "$ADB" ] || die "adb not found ($ADB)"
+ADB_KEY_DIR="${ANDROID_USER_HOME:-$HOME/.android}"
+[ -s "$ADB_KEY_DIR/adbkey" ] || die "$ADB_KEY_DIR/adbkey is missing or empty. Running adb now would create a NEW key that the Cube has not approved. Restore the original key first; do not let adb regenerate it."
 
 adbs() { "$ADB" -s "$SERIAL" "$@"; }
 
@@ -57,13 +63,20 @@ resumed() {
     grep -m1 -E '^\s*m?ResumedActivity' | sed -E 's/.* ([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+).*/\1/' || true
 }
 
+# Idle means the launcher is in front, nothing else (the owner's rule).
 is_idle() {
-  local r
-  r="$(resumed)"
-  case "$r" in
+  case "$(resumed)" in
+    com.amazon.tv.launcher/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Waking is fine over the launcher, over FireSong, or when nothing is resumed
+# while the Cube sleeps or dreams.
+can_wake() {
+  case "$(resumed)" in
     com.amazon.tv.launcher/*|"$PKG"/*) return 0 ;;
-    "") # nothing resumed (asleep or dreaming over the launcher)
-      adbs shell dumpsys power 2>/dev/null | grep -q -E 'mWakefulness=(Asleep|Dozing|Dreaming)' ;;
+    "") adbs shell dumpsys power 2>/dev/null | grep -q -E 'mWakefulness=(Asleep|Dozing|Dreaming)' ;;
     *) return 1 ;;
   esac
 }
@@ -145,7 +158,7 @@ case "$cmd" in
     adbs shell am force-stop "$PKG"
     ;;
   wake)
-    require_idle
+    can_wake || die "TV is busy ($(resumed)); not waking it"
     if [ "$(wakefulness)" != "Awake" ]; then
       adbs shell input keyevent KEYCODE_WAKEUP
       for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(wakefulness)" = "Awake" ] && break; sleep 1; done

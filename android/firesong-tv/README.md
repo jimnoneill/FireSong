@@ -30,7 +30,7 @@ Release builds are signed with the debug key, as FirePlay does: the app is sidel
 
 ## Install and configure (from the host)
 
-`tools/tvctl` wraps adb with the owner's TV rules: it installs and configures only while the TV is idle (launcher, screensaver or FireSong in front), sends keys only while FireSong is in front and awake, and never touches other apps or the adb key.
+`tools/tvctl` wraps adb with the owner's TV rules: it installs, configures and launches only while the TV is idle on the Amazon launcher (not while FireSong is in front, which would kill or reload a running party), sends keys only while FireSong is in front and awake, never touches other apps, and refuses to run adb when `~/.android/adbkey` is missing (adb would create a new key the Cube has not approved).
 
 ```sh
 export FIRESONG_CUBE_SERIAL=<cube-lan-ip>:5555        # or scripts/firesong/devenv.local.sh

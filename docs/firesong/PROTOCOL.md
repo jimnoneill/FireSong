@@ -117,9 +117,12 @@ Logging rules:
 | `NIGHTINGALE_REMOTE_BIND` | server (new, WP2) | unset (no phone listener) | `127.0.0.1:64449` | Phone listener. Must differ from `NIGHTINGALE_BIND`. |
 | `NIGHTINGALE_REMOTE_URL` | server (upstream) | unset (LAN detection) | `<phone-origin>`, the Funnel `https://<host>.<tailnet>.ts.net:8443` | Base of every phone link (`/q` and `/m`). Pinning it means the QR is never downgraded to http. |
 | `NIGHTINGALE_DATA_PATH` | app-core (upstream) | `~/.nightingale` | a **local** disk directory, e.g. `/mnt/fast/firesong/data` | Holds `config.json`, `songs.json`, profiles, the SQLite library DB, `remote-control.json`, `firesong/host-token` and `firesong/remote-mics.json`. Never point it at NFS: SQLite locking is unsafe there. |
-| `config.json` → `cache_paths.songs` | app-core (upstream config) | `<data>/cache` | the song-cache mount (`FIRESONG_SONG_CACHE`) | Stems and transcripts. Deploy tooling writes this value; no code hardcodes the path. |
-| `FIRESONG_SONG_CACHE` | deploy tooling only (WP1) | none | the NFS mount, e.g. `/mnt/firesong-cache` | Song prep **refuses to run** unless this path is a mounted filesystem (`mountpoint -q`). |
-| `FIRESONG_SONG_CACHE_MAX_GB` | deploy tooling only (WP1) | `36` | `36` | LRU eviction of finished songs keeps the cache below this (the volume has a hard 40 GB cap). |
+| `config.json` → `cache_paths.songs` | app-core (upstream config) | `<data>/cache` | `<FIRESONG_SONG_CACHE>/songs` (`FIRESONG_SONG_DIR` overrides) | Stems, transcripts and downloaded Plex originals (`songs/sources/`). `party-prep.py configure` writes it, together with `cache_paths.models`/`vendor` from `FIRESONG_MODELS_DIR`/`FIRESONG_VENDOR_DIR` and `auto_analyze: false`; no code hardcodes the path. |
+| `FIRESONG_SONG_CACHE` | deploy tooling (WP1): `party-prep.py`, `preflight.sh` | none | the NFS mount, e.g. `/mnt/firesong-cache` | Song prep **refuses to run** unless this path is a live NFS mount (read from `/proc/self/mountinfo`). The unit's preflight refuses to start the server when `cache_paths.songs` points inside it and it is not mounted. |
+| `FIRESONG_SONG_CACHE_MAX_GB` | deploy tooling only (WP1) | `36` | `36` | LRU eviction of finished songs keeps the cache below this many GB (10^9 bytes; also never above 90% of the volume, which has a hard 40 GB cap). |
+| `FIRESONG_GPU_MIN_FREE_GB` | deploy tooling only (WP1) | `6` | `6` | Prep yields the GPU when less than this many GiB are free, not counting FireSong's own analyzer. |
+| `UV_CACHE_DIR` | analyzer setup (uv, inherits the server's env) | `~/.cache/uv` | `/mnt/staging1/firesong/uv-cache` | Keeps wheel downloads off the boot disk. |
+| Other `FIRESONG_*` | deploy tooling only | | see `deploy/server/firesong.env.example` | Cube address/serial, LAN IP and TV port for Caddy, Caddy storage, NFS server for the owner steps. Documented in [`DEPLOY.md`](DEPLOY.md). |
 | `FIRESONG_CLIP_DIR` | server (WP8, `noraebang_clips.rs`) | `<data>/noraebang/clips` | default | Must be a real directory (not a symlink) inside `local_media_roots`, and outside the videos dir, whose files Pixabay eviction deletes. |
 | `FIRESONG_ICE_SERVERS` | server (WP3) | `[]` | unset | JSON array of `IceServer` handed out in `assign` and `ready`. Leave empty on the LAN; add coturn only if spike S7 fails. Invalid JSON stops startup. |
 | `FIRESONG_RTC_ORIGINS` | server (WP3) | unset | unset | Comma-separated extra origins allowed to open `/rtc` (§2.2). Escape hatch if a proxy rewrites `Host`; normally not needed. |
@@ -443,5 +446,5 @@ sequenceDiagram
 1. Edit `app-core/src/remote_mic.rs`. A wire change bumps `PROTOCOL_VERSION`; additive optional fields do not.
 2. Run `cargo test -p app-core --locked remote_mic`. This runs the tests and regenerates `client/src/types/firesong/*.ts`.
 3. Restore the upstream generated files, which `cargo test` reformats: `git checkout -- $(git diff --name-only -- client/src/types | grep -v /firesong/)`.
-4. Update the zod schemas and constants in `protocol.ts`, then run `pnpm --dir client typecheck` (the `ProtocolSchemasMatchRust` check) and `pnpm --dir client lint`.
+4. Update the zod schemas and constants in `protocol.ts`, then run `pnpm typecheck` (the `ProtocolSchemasMatchRust` check) and `pnpm lint` from `client/`.
 5. Update this page in the same commit.

@@ -29,6 +29,7 @@ Audio never goes through the server machine or the internet. Only page loads and
 | Design (owner's plan, not in the repo) | Architecture, latency budget, HTTPS strategy, spikes S0-S8 and work packages WP0-WP12 |
 | [`PROTOCOL.md`](PROTOCOL.md) | The shared contract: listeners, auth, env vars, `/rtc` messages, slot registry, WebRTC rules, remote mics in the `MicrophoneAdapter` |
 | [`BASELINE.md`](BASELINE.md) | Check results at upstream HEAD, and the failures that already existed (the Tauri crate cannot build on the server machine) |
+| [`DEPLOY.md`](DEPLOY.md) | Runbook for the server machine: owner one-time steps, build and install, song prep (GPU guard, cache cap), the Fire TV Cube helper, party checklist |
 
 ## Working on FireSong (agents and humans on the server machine)
 
@@ -37,15 +38,15 @@ git -C ~/FireSong worktree add ~/wt-firesong-<key> -b fs/<key> <base-branch>
 cd ~/wt-firesong-<key>
 source scripts/firesong/devenv.sh          # node 24, pnpm (corepack), cargo, adb, HUSKY=0,
                                             # CARGO_TARGET_DIR=/mnt/fast/firesong/target-<key>
-pnpm --dir client install --frozen-lockfile
+(cd client && pnpm install --frozen-lockfile)   # from client/: corepack reads the pinned pnpm there
 ```
 
 Checks:
-- `pnpm --dir client typecheck`, `lint`, `format:check` and `rules:check`;
+- in `client/`: `pnpm typecheck`, `lint`, `format:check` and `rules:check` (`pnpm --dir client …` from the repo root gets corepack's default pnpm, which refuses to run);
 - `cargo test --workspace --exclude Nightingale --locked`, then restore `client/src/types` (see `BASELINE.md`);
 - `cargo clippy --workspace --exclude Nightingale --all-targets --all-features --locked -- -D warnings`.
 
-Host-specific values (Cube address, Funnel origin, GPU UUID, tokens) go in git-ignored files: `scripts/firesong/devenv.local.sh`, `deploy/server/*.env`. Commit only the `*.example` files.
+Host-specific values (Cube address, Funnel origin, GPU UUID, tokens) go in git-ignored files: `scripts/firesong/devenv.local.sh`, `deploy/server/*.env`, and outside the repo the deployed `~/.config/firesong/firesong.env`. Commit only the `*.example` files.
 
 ## Fork rules
 
@@ -62,9 +63,9 @@ The work packages are those of design §9. "Key" is the worktree/branch key used
 |---|---|---|---|
 | — | `base` | Toolchain, baseline, shared contract | `scripts/firesong/devenv.sh`, `docs/firesong/*`, `app-core/src/remote_mic.rs` (+ *hook* `pub mod remote_mic;` in `app-core/src/lib.rs`), generated `client/src/types/firesong/*`, `client/src/features/remote-mic/protocol.ts` |
 | WP0 | — | Cube access and facts | none (facts are in the owner's plan) |
-| WP1 | `deploy` | Bare-metal service, env, GPU pin, song prep, cache guard and LRU, Caddy/Funnel config | `deploy/server/firesong.service`, `deploy/server/env.example`, `deploy/server/Caddyfile.firesong`, `deploy/server/funnel.sh`, `scripts/firesong_prep.py` |
+| WP1 | `deploy` | Bare-metal service, env, GPU pin, song prep, cache guard and LRU, TV-door Caddy, Funnel steps (in DEPLOY.md), Cube helper | `deploy/server/{firesong.service,firesong-caddy.service,firesong.env.example,Caddyfile.tv}`, `scripts/firesong/{party-prep.py,firesong_prep.py,preflight.sh,build-release.sh,server-install.sh,cube.sh}`, `docs/firesong/DEPLOY.md` |
 | WP1b | `server` | Analyzer idle exit (`NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS`) | `app-core/src/analyzer/idle.rs`; *hook* `app-core/src/analyzer.rs` (`mod idle;` + 2 calls) |
-| WP2 | `server` | Phone listener (`NIGHTINGALE_REMOTE_BIND`), host token, secret redaction, pairing-token rotation | `client/src-server/src/host_auth.rs`, `client/src-server/src/firesong.rs`, `app-api/src/redact.rs`; *hooks* `main.rs`, `bootstrap.rs`, `app-api/src/lib.rs` (dispatch wrapper, one `CommandState` field), `remote.rs` (two `pub(crate)`), `app-core/src/remote_control.rs` (persist the first token) |
+| WP2 | `server` | Phone listener (`NIGHTINGALE_REMOTE_BIND`), host token, secret redaction, pairing-token rotation | `client/src-server/src/host_auth.rs`, `client/src-server/src/firesong.rs`, `app-api/src/redact.rs`; *hooks* `main.rs`, `bootstrap.rs`, `app-api/src/lib.rs` (dispatch wrapper, one `CommandState` field), `remote.rs` (two `pub(crate)`), `app-core/src/remote_control.rs` (persist the first token). The TV-door Caddy config and Funnel steps are WP1's (`Caddyfile.tv`, `DEPLOY.md`). |
 | WP3 | `server` | `/rtc` signaling, slot registry, mic links, `remote-mics.json` | `client/src-server/src/rtc.rs`, `rtc/hub.rs`, `rtc/mic_store.rs`, tests in `client/src-server/tests/firesong.rs`; *hooks* `lib.rs` (module and route lines, host-token layer), `state.rs` (one field, `RemoteAddress::separate`) |
 | WP4 | `tv-voice` | TV socket, remote-mic adapter, MicRack, voice engine, test tools | `client/src/bridge/rtc-socket.ts`, `client/src/bridge/remote-mics.ts`, `client/src/audio/voice-engine.ts`, `client/src/audio/mic-rack.ts`, `tools/fakephone`, `tools/busrec`; *hooks* `microphone.ts`, `playback-mic-context.tsx`, `lib/pitch/constants.ts`, `use-pitch-scoring.ts`, `app.tsx` |
 | WP5 | `phone-page` | Phone `/m` page | `client/src/features/phone-mic/*`; *hook* `app.tsx` (route) |

@@ -1,0 +1,24 @@
+# FireSong TV door: Caddy as a systemd USER unit (template).
+#
+# Rendered and installed (not enabled, not started) by:
+#   scripts/firesong/server-install.sh unit
+# which fills @CADDY@ (the caddy binary) and @RELEASE_ROOT@. Caddy is not part
+# of the release: install it first (docs/firesong/DEPLOY.md, "TV door").
+
+[Unit]
+Description=FireSong TV door (Caddy, LAN HTTPS with an internal CA, Fire TV allowlist)
+After=firesong.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@RELEASE_ROOT@
+ExecStart=@CADDY@ run --adapter caddyfile --config @RELEASE_ROOT@/current/Caddyfile.tv --envfile %h/.config/firesong/firesong.env
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

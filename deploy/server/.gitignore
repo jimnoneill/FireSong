@@ -1,0 +1,4 @@
+# Per-host values (LAN addresses, GPU UUID, tokens). Commit only *.example.
+*.env
+!*.env.example
+*.local

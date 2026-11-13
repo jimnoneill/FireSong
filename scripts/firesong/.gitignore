@@ -1,0 +1,4 @@
+# Per-host values (LAN addresses, adb serials, tokens). See *.example.
+devenv.local.sh
+*.env
+!*.env.example

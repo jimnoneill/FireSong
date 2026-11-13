@@ -1,0 +1,11 @@
+# Copy to scripts/firesong/devenv.local.sh (git-ignored) and fill in.
+# devenv.sh sources it last, so values here win.
+
+# adb serial of the Fire TV Cube (`<lan-ip>:5555`).
+export FIRESONG_CUBE_SERIAL="<cube-lan-ip>:5555"
+
+# Phone-facing HTTPS origin (Tailscale Funnel), used for NIGHTINGALE_REMOTE_URL.
+export FIRESONG_PHONE_ORIGIN="https://<host>.<tailnet>.ts.net:8443"
+
+# Song cache mount (must be a mounted filesystem before song prep runs).
+export FIRESONG_SONG_CACHE="<song-cache-mount>"

@@ -23,6 +23,9 @@ pub struct RemoteAddress {
     /// for deployments a LAN address cannot describe, e.g. a container port
     /// mapping or a reverse proxy forwarding to a loopback bind.
     base: Option<String>,
+    /// Phones connect to a listener other than the one the request came in on
+    /// (FireSong's phone listener), so the request's host names the wrong door.
+    separate: bool,
 }
 
 impl RemoteAddress {
@@ -33,6 +36,15 @@ impl RemoteAddress {
             base: base
                 .map(|base| base.trim().trim_end_matches('/').to_string())
                 .filter(|base| !base.is_empty()),
+            separate: false,
+        }
+    }
+
+    /// Phones use the listener at `bind`, not the one serving the request.
+    pub fn separate(bind: SocketAddr, base: Option<String>) -> Self {
+        Self {
+            separate: true,
+            ..Self::new(bind, base)
         }
     }
 }
@@ -42,7 +54,8 @@ pub struct AppState {
     pub commands: CommandState,
     pub events: Arc<EventBus>,
     pub(crate) jukebox: Arc<JukeboxStore>,
-    remote: Arc<RwLock<RemoteControl>>,
+    pub(crate) remote: Arc<RwLock<RemoteControl>>,
+    pub(crate) firesong: crate::firesong::FireSong,
     address: RemoteAddress,
     pub data_path_pinned: bool,
     pub library_pinned: bool,
@@ -65,6 +78,7 @@ impl AppState {
             events,
             jukebox: Arc::new(JukeboxStore::new()),
             remote: Arc::new(RwLock::new(remote)),
+            firesong: Default::default(),
             address,
             data_path_pinned,
             library_pinned,
@@ -110,9 +124,17 @@ impl AppState {
             })
     }
 
-    fn remote_base(&self, headers: &HeaderMap) -> Option<String> {
+    pub(crate) fn remote_base(&self, headers: &HeaderMap) -> Option<String> {
         if let Some(base) = self.address.base.clone() {
             return Some(base);
+        }
+
+        if self.address.separate {
+            return if self.address.loopback_only {
+                None
+            } else {
+                lan_url(Some(self.address.port))
+            };
         }
 
         let host = header(headers, "host")?;

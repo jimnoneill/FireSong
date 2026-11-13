@@ -1,3 +1,4 @@
+mod redact;
 mod vendor;
 
 use std::{
@@ -14,6 +15,8 @@ use app_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+pub use redact::{REDACTED_SECRET, redact_config};
 
 pub trait CommandRuntime: Send + Sync + 'static {
     fn emit(&self, name: &str, payload: Value);
@@ -40,6 +43,7 @@ pub struct CommandState {
     playback_progress: Arc<Mutex<PlaybackProgress>>,
     playback_options: Arc<Mutex<PlaybackOptions>>,
     remote_microphones: Arc<Mutex<Vec<RemoteMicrophone>>>,
+    secrets: Arc<redact::SecretStash>,
 }
 
 impl CommandState {
@@ -52,6 +56,7 @@ impl CommandState {
             playback_progress: Arc::new(Mutex::new(PlaybackProgress::default())),
             playback_options: Arc::new(Mutex::new(PlaybackOptions::default())),
             remote_microphones: Arc::new(Mutex::new(Vec::new())),
+            secrets: Arc::default(),
         }
     }
 
@@ -333,7 +338,15 @@ impl EventEmitter {
     }
 }
 
+/// Library credentials never leave through a result; see [`redact`].
 pub async fn dispatch(state: CommandState, name: &str, payload: Value) -> CmdResult {
+    let secrets = state.secrets.clone();
+    let payload = redact::restore_inbound(&secrets, name, payload)?;
+    let result = dispatch_unredacted(state, name, payload).await?;
+    Ok(redact::redact_outbound(&secrets, name, result))
+}
+
+async fn dispatch_unredacted(state: CommandState, name: &str, payload: Value) -> CmdResult {
     let events = EventEmitter(state.runtime.clone());
 
     match name {

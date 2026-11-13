@@ -29,6 +29,11 @@ struct Args {
     /// mapping or a proxy forwarding to a loopback bind.
     #[arg(long, env = "NIGHTINGALE_REMOTE_URL")]
     remote_url: Option<String>,
+
+    /// FireSong phone listener (queue page, `/m`, `/rtc` for phones). Must
+    /// differ from `--bind`. Equivalent to `NIGHTINGALE_REMOTE_BIND=...`.
+    #[arg(long, env = "NIGHTINGALE_REMOTE_BIND")]
+    remote_bind: Option<SocketAddr>,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -67,16 +72,26 @@ async fn main() -> Result<(), String> {
         pin_folder_library(library);
     }
 
+    let firesong = server::firesong::Options {
+        bind: args.bind,
+        remote_bind: args.remote_bind,
+        remote_url: args.remote_url.clone(),
+    };
     let events = Arc::new(EventBus::new());
     let commands = app_api::CommandState::new(events.clone());
     let state = AppState::new(
         commands,
         events,
         app_core::RemoteControl::load(),
-        server::RemoteAddress::new(args.bind, args.remote_url.clone()),
+        server::firesong::phone_address(&firesong),
         data.is_some(),
         library.is_some(),
     );
+
+    if let Err(e) = server::firesong::start(&state, &firesong).await {
+        tracing::error!("FireSong startup failed: {e}");
+        std::process::exit(1);
+    }
 
     let app = server::router(state);
 

@@ -21,7 +21,7 @@ pub(crate) struct Bootstrap {
 /// the web client awaits this once and seeds `window.__NIGHTINGALE_*` from
 /// the response before mounting React.
 pub(crate) async fn handle(State(state): State<AppState>) -> Json<Bootstrap> {
-    let config = AppConfig::load();
+    let config = app_api::redact_config(AppConfig::load());
     let songs_meta = SongsStore::load_meta();
     Json(Bootstrap {
         config,

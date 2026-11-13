@@ -15,6 +15,7 @@ mod playback_queue;
 mod playback_session;
 mod profile;
 mod remote_control;
+pub mod remote_mic;
 mod scanner;
 mod secret;
 mod song;

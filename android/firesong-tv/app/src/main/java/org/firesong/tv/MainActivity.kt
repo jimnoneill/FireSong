@@ -76,6 +76,8 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private val backoff = Backoff()
     private val backTracker = BackKeyTracker()
+    private val page = PageLifecycle()
+    private var loads = 0
     private var settings = TvSettings()
     private var targetUrl: String? = null
     private var mainFrameFailed = false
@@ -128,9 +130,15 @@ class MainActivity : Activity() {
             "density=${resources.displayMetrics.densityDpi}")
 
         WebView.setWebContentsDebuggingEnabled(devtoolsEnabled())
-        createWebView()
         registerNetworkCallback()
-        loadTarget("start")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (page.onStart() == PageLifecycle.Action.BUILD_AND_LOAD) {
+            createWebView()
+            loadTarget(if (loads++ == 0) "start" else "back in front")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -158,7 +166,20 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         abandonAudioFocus()
+        if (page.onStop(isChangingConfigurations) == PageLifecycle.Action.TEAR_DOWN) {
+            closePage()
+        }
         super.onStop()
+    }
+
+    /** Ends the page while FireSong is not in front: no song, voices or TV seat in the background. */
+    private fun closePage() {
+        handler.removeCallbacks(retryRunnable)
+        retryScheduled = false
+        pageLoaded = false
+        exitDialog?.dismiss()
+        destroyWebView()
+        Log.i(TAG, "not in front: page closed; it reloads when FireSong is opened again")
     }
 
     override fun onDestroy() {

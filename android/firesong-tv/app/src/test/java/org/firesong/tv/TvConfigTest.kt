@@ -117,4 +117,24 @@ class TvConfigTest {
         val r = TvConfig.apply(TvSettings(), ConfigExtras(url = tv, hostToken = token), "", false) as ConfigResult.Ok
         assertTrue(r.notes.none { it.contains(token) })
     }
+
+    @Test fun anOlderConfigureIntentNeverOverwritesNewerSettings() {
+        val local = "http://localhost:64490/?tv=1"
+        val smoke = ok(TvConfig.apply(TvSettings(), ConfigExtras(url = local, issuedMs = 1_000), "", allowCleartext = true))
+        assertEquals(1_000L, smoke.lastIssuedMs)
+        val party = ok(TvConfig.apply(smoke, ConfigExtras(url = tv, hostToken = token, issuedMs = 2_000), "", allowCleartext = true))
+        // Android can recreate the activity with the intent that first started it.
+        assertEquals(ConfigResult.Superseded, TvConfig.apply(party, ConfigExtras(url = local, issuedMs = 1_000), "", allowCleartext = true))
+        assertEquals(ConfigResult.Superseded, TvConfig.apply(party, ConfigExtras(url = tv, issuedMs = 2_000), "", allowCleartext = true))
+        assertEquals(3_000L, ok(TvConfig.apply(party, ConfigExtras(devtools = true, issuedMs = 3_000), "", allowCleartext = true)).lastIssuedMs)
+    }
+
+    @Test fun issuedTimeSurvivesClearAndIntentsWithoutOneStillApply() {
+        val cleared = ok(TvConfig.apply(TvSettings(url = tv, lastIssuedMs = 1_000), ConfigExtras(clear = true, issuedMs = 5_000), "", allowCleartext = false))
+        assertEquals(TvSettings(lastIssuedMs = 5_000), cleared)
+        val kept = ok(TvConfig.apply(cleared, ConfigExtras(url = tv), "", allowCleartext = false))
+        assertEquals(5_000L, kept.lastIssuedMs)
+        assertEquals(tv, kept.url)
+        assertTrue(TvConfig.apply(TvSettings(), ConfigExtras(url = tv, issuedMs = -1), "", allowCleartext = false) is ConfigResult.Rejected)
+    }
 }

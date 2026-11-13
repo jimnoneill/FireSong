@@ -20,6 +20,8 @@ data class TvSettings(
     val leafPins: List<String> = emptyList(),
     /** null = the build default (debug builds on, release off). */
     val devtools: Boolean? = null,
+    /** `issued_ms` of the newest `.Configure` intent applied; see [TvConfig.apply]. */
+    val lastIssuedMs: Long? = null,
 )
 
 /** Raw values from a `.Configure` intent. null means "not given". */
@@ -29,11 +31,16 @@ data class ConfigExtras(
     val leafPin: String? = null,
     val devtools: Boolean? = null,
     val clear: Boolean = false,
+    /** When the sender issued the intent (ms since the epoch; cube.sh and tvctl add it). */
+    val issuedMs: Long? = null,
 )
 
 sealed class ConfigResult {
     data class Ok(val settings: TvSettings, val notes: List<String>) : ConfigResult()
     data class Rejected(val reason: String) : ConfigResult()
+
+    /** Not newer than the last applied intent: Android re-delivers a start intent when it recreates the activity. */
+    object Superseded : ConfigResult()
 }
 
 object UrlPolicy {
@@ -132,7 +139,10 @@ object TvConfig {
 
     /**
      * Applies a `.Configure` intent to [current]. Never logs or returns the
-     * token itself; notes are safe to log.
+     * token itself; notes are safe to log. An intent issued no later than the
+     * newest one applied is [ConfigResult.Superseded]: after a process death
+     * Android can recreate the activity with the intent that first started
+     * it, which must not overwrite newer settings.
      */
     fun apply(
         current: TvSettings,
@@ -140,6 +150,10 @@ object TvConfig {
         buildDefault: String,
         allowCleartext: Boolean,
     ): ConfigResult {
+        if (extras.issuedMs != null) {
+            if (extras.issuedMs <= 0) return ConfigResult.Rejected("issued_ms rejected: not a time")
+            if (current.lastIssuedMs != null && extras.issuedMs <= current.lastIssuedMs) return ConfigResult.Superseded
+        }
         val notes = mutableListOf<String>()
         var next = if (extras.clear) {
             notes += "cleared stored settings"
@@ -147,6 +161,7 @@ object TvConfig {
         } else {
             current
         }
+        next = next.copy(lastIssuedMs = extras.issuedMs ?: current.lastIssuedMs)
 
         val oldUrl = effectiveUrl(next, buildDefault, allowCleartext)
         if (extras.url != null) {

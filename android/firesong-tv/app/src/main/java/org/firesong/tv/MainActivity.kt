@@ -124,7 +124,9 @@ class MainActivity : Activity() {
         overlayDetail = findViewById(R.id.overlay_detail)
 
         settings = Prefs.load(this)
-        applyConfigureIntent(intent)
+        // A recreated activity gets the intent that first started it again;
+        // newer settings arrived later through onNewIntent and are in Prefs.
+        if (savedInstanceState == null) applyConfigureIntent(intent)
         Log.i(TAG, "start: ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE}), " +
             "webview=${WebView.getCurrentWebViewPackage()?.let { "${it.packageName} ${it.versionName}" }}, " +
             "density=${resources.displayMetrics.densityDpi}")
@@ -217,6 +219,12 @@ class MainActivity : Activity() {
             leafPin = b.getString("leaf_pin"),
             devtools = devtools,
             clear = b.getBoolean("clear", false),
+            issuedMs = when (val v = b.get("issued_ms")) {
+                is Long -> v
+                is Int -> v.toLong()
+                is String -> v.trim().toLongOrNull()
+                else -> null
+            },
         )
     }
 
@@ -224,8 +232,8 @@ class MainActivity : Activity() {
     private fun applyConfigureIntent(intent: Intent?): Boolean {
         intent ?: return false
         val extras = readExtras(intent) ?: return false
-        // Consume the extras: an activity recreate re-delivers this intent, and
-        // it must not be applied a second time over newer settings.
+        // Consume the extras for this process; across a process death the
+        // savedInstanceState check in onCreate and issued_ms (TvConfig.apply) do it.
         intent.replaceExtras(Bundle())
         if (intent.component?.className != CONFIGURE_ALIAS) {
             Log.w(TAG, "configuration extras ignored: send them to org.firesong.tv/.Configure (adb shell only)")
@@ -234,6 +242,10 @@ class MainActivity : Activity() {
         return when (val r = TvConfig.apply(settings, extras, BuildConfig.DEFAULT_TV_URL, BuildConfig.ALLOW_CLEARTEXT)) {
             is ConfigResult.Rejected -> {
                 Log.e(TAG, "configure: ${r.reason}")
+                false
+            }
+            ConfigResult.Superseded -> {
+                Log.i(TAG, "configure: an older intent; keeping the newer settings")
                 false
             }
             is ConfigResult.Ok -> {

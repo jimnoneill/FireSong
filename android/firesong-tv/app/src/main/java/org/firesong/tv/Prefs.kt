@@ -15,6 +15,7 @@ object Prefs {
             boundOrigin = p.getString("bound_origin", null),
             leafPins = p.getString("leaf_pins", "").orEmpty().split(',').filter { it.isNotBlank() },
             devtools = if (p.contains("devtools")) p.getBoolean("devtools", false) else null,
+            lastIssuedMs = if (p.contains("last_issued_ms")) p.getLong("last_issued_ms", 0L) else null,
         )
     }
 
@@ -28,6 +29,7 @@ object Prefs {
         s.boundOrigin?.let { e.putString("bound_origin", it) }
         if (s.leafPins.isNotEmpty()) e.putString("leaf_pins", s.leafPins.joinToString(","))
         s.devtools?.let { e.putBoolean("devtools", it) }
+        s.lastIssuedMs?.let { e.putLong("last_issued_ms", it) }
         e.commit()
     }
 }

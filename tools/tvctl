@@ -129,6 +129,8 @@ case "$cmd" in
         *) die "configure: unknown option $1" ;;
       esac
     done
+    # The app ignores an intent issued before the newest one it applied.
+    args+=(--el issued_ms "$(date +%s%3N)")
     require_idle
     # Never echo the command: it may carry the host token.
     adbs "${args[@]}" >/dev/null

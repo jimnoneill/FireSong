@@ -241,7 +241,12 @@ cmd_launch() {
   fi
   note "launching $PKG${url:+ at $url}${token_file:+ (with host token)}"
   local target="$ACTIVITY"
-  [ -z "$extras" ] || target="$CONFIGURE_ACTIVITY"
+  if [ -n "$extras" ]; then
+    target="$CONFIGURE_ACTIVITY"
+    # The app ignores a .Configure intent issued before the newest one it
+    # applied, so a re-delivered old start intent cannot undo this one.
+    extras="$extras --el issued_ms $(date +%s%3N)"
+  fi
   # shellcheck disable=SC2086 # extras is pre-quoted for the device shell
   adb_ shell "am start -n $PKG/$target$extras" | tr -d '\r' | grep -v -i 'host_token' || true
 }
@@ -410,7 +415,7 @@ FAKE
   check "install firesong when idle" 0 "Success" install "$t/firesong.apk"
   check "install refuses other packages" 1 "only org.firesong.tv" install "$t/other.apk"
   check "launch passes url and token" 0 "Starting" launch --url "https://h:1/?tv=1&mode=noraebang" --host-token-file "$t/token"
-  if grep -q "org.firesong.tv/.Configure --es url 'https://h:1/?tv=1&mode=noraebang' --es host_token '0123456789abcdef0123456789abcdef'" "$t/calls"; then
+  if grep -q -E "org\.firesong\.tv/\.Configure --es url 'https://h:1/\?tv=1&mode=noraebang' --es host_token '0123456789abcdef0123456789abcdef' --el issued_ms [0-9]{13}\b" "$t/calls"; then
     pass=$((pass + 1)); echo "ok   launch quotes extras for the device shell"
   else
     failn=$((failn + 1)); echo "FAIL launch quotes extras for the device shell"; tail -n 3 "$t/calls"

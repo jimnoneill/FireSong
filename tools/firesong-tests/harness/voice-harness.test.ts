@@ -277,6 +277,10 @@ describe('TV voice engine, one phone at 440 Hz', () => {
     const micId = 'fakeA1234567';
     const phone = await joinPhone(browser, relay, micId, 1, tv);
     const deviceId = `remote:${micId}`;
+    const answer = relay.answers.at(-1) ?? '';
+    expect(answer).toMatch(/\r\na=recvonly\r\n/);
+    expect(answer).toMatch(/\r\na=ptime:10\r\n/);
+    expect(answer).toMatch(/a=fmtp:\d+ .*useinbandfec=1;usedtx=0;stereo=0;maxaveragebitrate=64000/);
 
     const devices = await tv.evaluate(() => window.harness.devices());
     expect(devices).toEqual([

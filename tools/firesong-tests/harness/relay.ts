@@ -30,6 +30,8 @@ export type Relay = {
   micOrigin: string;
   /** Every frame seen, as `<role>> <type>` or `<role>< <type>`. */
   log: string[];
+  /** SDP of every TV `answer`, in order. */
+  answers: string[];
   setLatency(slot: number, latencyMs: number): void;
   /** Drops a phone's socket without `bye`, like a Wi-Fi blip. */
   dropMic(slot: number): void;
@@ -52,6 +54,7 @@ export const startRelay = async (files: {
 }): Promise<Relay> => {
   const slots = new Map<number, Entry>();
   const log: string[] = [];
+  const answers: string[] = [];
   let tv: WebSocket | null = null;
 
   const sendTo = (socket: WebSocket | null, role: string, frame: Json) => {
@@ -194,6 +197,7 @@ export const startRelay = async (files: {
           }
           break;
         case 'answer':
+          answers.push(String(frame.sdp));
           sendTo(entry?.socket ?? null, 'mic', { type: 'answer', sdp: frame.sdp });
           break;
         case 'ice':
@@ -260,6 +264,7 @@ export const startRelay = async (files: {
     tvOrigin,
     micOrigin,
     log,
+    answers,
     setLatency(slot, latencyMs) {
       const entry = slots.get(slot);
       if (entry !== undefined) {

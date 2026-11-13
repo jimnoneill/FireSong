@@ -8,7 +8,7 @@ package org.firesong.tv
  * WebView, and the next start builds a new one and reloads the page.
  */
 class PageLifecycle {
-    enum class Action { NONE, BUILD_AND_LOAD, TEAR_DOWN }
+    enum class Action { NONE, BUILD_AND_LOAD, TEAR_DOWN, REBUILD_AND_LOAD, REBUILD_AND_RETRY }
 
     var started = false
         private set
@@ -27,5 +27,19 @@ class PageLifecycle {
         if (changingConfigurations || !built) return Action.NONE
         built = false
         return Action.TEAR_DOWN
+    }
+
+    /**
+     * The renderer died. In front it is replaced at once, or after a backoff
+     * once it has died [lossLimit] times recently. Not in front, the page is
+     * only dropped: reloading behind another app would compete with it for the
+     * Cube's memory, and the next start rebuilds the page anyway.
+     */
+    fun onRendererGone(recentLosses: Int, lossLimit: Int): Action {
+        if (!started) {
+            built = false
+            return Action.TEAR_DOWN
+        }
+        return if (recentLosses >= lossLimit) Action.REBUILD_AND_RETRY else Action.REBUILD_AND_LOAD
     }
 }

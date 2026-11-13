@@ -341,13 +341,19 @@ class MainActivity : Activity() {
         crashTimes.addLast(now)
         while (crashTimes.isNotEmpty() && now - crashTimes.first() > CRASH_WINDOW_MS) crashTimes.removeFirst()
         destroyWebView()
-        createWebView()
-        if (crashTimes.size >= CRASH_LIMIT) {
-            showOverlay(Overlay.CRASHED, getString(R.string.overlay_crashed_detail))
-            scheduleRetry("renderer lost ${crashTimes.size}x in 60 s")
-        } else {
-            showOverlay(Overlay.LOADING, getString(R.string.overlay_restarting_detail))
-            loadTarget("renderer restart")
+        when (page.onRendererGone(crashTimes.size, CRASH_LIMIT)) {
+            PageLifecycle.Action.REBUILD_AND_RETRY -> {
+                createWebView()
+                showOverlay(Overlay.CRASHED, getString(R.string.overlay_crashed_detail))
+                scheduleRetry("renderer lost ${crashTimes.size}x in 60 s")
+            }
+            PageLifecycle.Action.REBUILD_AND_LOAD -> {
+                createWebView()
+                showOverlay(Overlay.LOADING, getString(R.string.overlay_restarting_detail))
+                loadTarget("renderer restart")
+            }
+            PageLifecycle.Action.TEAR_DOWN -> Log.i(TAG, "renderer lost while not in front: page reloads on return")
+            PageLifecycle.Action.NONE, PageLifecycle.Action.BUILD_AND_LOAD -> Unit
         }
     }
 

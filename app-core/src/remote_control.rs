@@ -40,13 +40,20 @@ pub struct RemoteInfo {
 
 impl RemoteControl {
     pub fn load() -> Self {
-        let mut control = std::fs::read_to_string(path())
+        let stored = std::fs::read_to_string(path())
             .ok()
-            .and_then(|raw| serde_json::from_str::<Self>(&raw).ok())
-            .unwrap_or_default();
+            .and_then(|raw| serde_json::from_str::<Self>(&raw).ok());
+        // A token generated on first start must be written too, or it changes
+        // on the next restart and every QR shown before stops working.
+        let unsaved = stored
+            .as_ref()
+            .is_none_or(|control| control.token.is_empty());
+        let mut control = stored.unwrap_or_default();
 
         if control.token.is_empty() {
             control.token = new_token();
+        }
+        if unsaved {
             control.save();
         }
 

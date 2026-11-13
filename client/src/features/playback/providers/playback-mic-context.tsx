@@ -21,6 +21,7 @@ import {
 import { usePlaybackConfigPersist } from '@/features/playback/hooks/use-playback-config-persist';
 import { DEFAULT_MIC_LATENCY_COMPENSATION_SEC } from '@/features/playback/lib/pitch/constants';
 import type { PitchSeries } from '@/features/playback/lib/pitch/state';
+import { useSoloMicId } from '@/features/remote-mic/solo-mic';
 import { useRemoteMicLatencySec } from '@/features/remote-mic/use-remote-mic-latency';
 import { t } from '@/i18n';
 import { defaultPlayerColor, type PlayerColor } from '@/shared/player-colors';
@@ -311,7 +312,7 @@ export function PlaybackMicProvider({ config, players, children }: PlaybackMicPr
     () => ({ isReady, duration, getReferenceBuffer: getScoringBuffer, subscribe }),
     [duration, getScoringBuffer, isReady, subscribe],
   );
-  const configs = playerConfigs(sessionPlayers, selectedMicId);
+  const configs = playerConfigs(sessionPlayers, useSoloMicId(selectedMicId));
   const latencySec = latencyCompensation(config);
   const remoteMicLatencySec = useRemoteMicLatencySec();
   const playerInput = (index: number): PlayerMicInput => {

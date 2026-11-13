@@ -42,6 +42,8 @@ pnpm --dir client install --frozen-lockfile
 
 Checks:
 - `pnpm --dir client typecheck`, `lint`, `format:check` and `rules:check`;
+- FireSong client unit tests: `scripts/firesong/test-client.sh` (Node's built-in runner on `client/src/**/*.test.ts`, no extra dependencies);
+- phone page end to end: `scripts/firesong/e2e-phone-mic.sh` (builds the client, then headless Chrome with a fake microphone against a mock `/rtc` relay and a mock TV);
 - `cargo test --workspace --exclude Nightingale --locked`, then restore `client/src/types` (see `BASELINE.md`);
 - `cargo clippy --workspace --exclude Nightingale --all-targets --all-features --locked -- -D warnings`.
 
@@ -66,7 +68,7 @@ The work packages are those of design §9. "Key" is the worktree/branch key used
 | WP2 | `server` | Phone listener (`NIGHTINGALE_REMOTE_BIND`), host token, secret redaction, Caddy/Funnel config | `client/src-server/src/host_auth.rs`, `deploy/server/Caddyfile.firesong`, `deploy/server/funnel.sh`; *hooks* `main.rs`, `bootstrap.rs`, `app-api/src/lib.rs` |
 | WP3 | `server` | `/rtc` signaling, slot registry, mic links | `client/src-server/src/rtc.rs`; *hooks* `lib.rs` (route lines), `state.rs` (one field) |
 | WP4 | `tv-voice` | TV socket, remote-mic adapter, MicRack, voice engine, test tools | `client/src/bridge/rtc-socket.ts`, `client/src/bridge/remote-mics.ts`, `client/src/audio/voice-engine.ts`, `client/src/audio/mic-rack.ts`, `tools/fakephone`, `tools/busrec`; *hooks* `microphone.ts`, `playback-mic-context.tsx`, `lib/pitch/constants.ts`, `use-pitch-scoring.ts`, `app.tsx` |
-| WP5 | `phone-page` | Phone `/m` page | `client/src/features/phone-mic/*`; *hook* `app.tsx` (route) |
+| WP5 | `phone-page` | Phone `/m` page | `client/src/features/phone-mic/*`, `client/src/entry.ts`, `tools/phone-mic-e2e/`, `scripts/firesong/test-client.sh`, `scripts/firesong/e2e-phone-mic.sh`, `scripts/firesong/node-test/register.mjs`; *hook* `client/index.html` (script `src`); i18n keys `phoneMic.*` |
 | WP6 | `firetv-apk` | Fire TV WebView app, `tvctl` | `firetv/`, `tools/tvctl`; *hook* `nav-input-context.tsx` (media keys) |
 | WP7 | integration | Cube run of the WP4 harness | none new |
 | WP8 | `noraebang` | Clip pool, lyric bar, score curve, reveal and fanfare, `song-result` | `app-core/src/noraebang_clips.rs`, `client/src/features/noraebang/*`, `scripts/noraebang-clips/`; *hooks* `backgrounds.rs`, `schemas.ts`, `theme.ts`, `use-pixabay-slots.ts`, `playback-inner.tsx`, `result.tsx`, `state.ts` |

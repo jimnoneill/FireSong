@@ -45,7 +45,7 @@ New HTTP routes:
 | Route | Listener | Response |
 |---|---|---|
 | `GET /rtc` (WebSocket upgrade) | both | §4 onwards |
-| `GET /m?t=<pairing token>&slot=<1-4>` | remote | the SPA's `index.html` through the static fallback. `require_token` turns `?t=` into the pairing cookie. |
+| `GET /m?t=<pairing token>&slot=<1-4>` | remote | the SPA's `index.html` through the static fallback. `require_token` turns `?t=` into the pairing cookie. The entry script (`client/src/entry.ts`) loads only the phone bundle for `/m` (about 0.5 MB of JS instead of 2.2 MB, which matters because the server sends assets uncompressed); every other path loads the full client. The page then removes `t` from the address bar and keeps `slot`. |
 | `GET /api/firesong/mic-links` | full | `MicLinks` JSON (§3.1) |
 
 ### 1.1 Mic links
@@ -173,7 +173,7 @@ All messages are generated as TypeScript from the Rust enums. Optional fields (`
 
 | `type` | Fields | Notes |
 |---|---|---|
-| `hello` | `v: 1`, `micId`, `resumeKey?`, `slot?: 1-4`, `name?` | Must be first. `micId`: 8-64 characters of `[A-Za-z0-9_-]`, made once by the phone (`crypto.randomUUID()`) and kept in localStorage. `slot` is a preference: the QR's `slot`, or the slot from the last `assign`. `resumeKey` comes from the last `assign`. |
+| `hello` | `v: 1`, `micId`, `resumeKey?`, `slot?: 1-4`, `name?` | Must be first. `micId`: 8-64 characters of `[A-Za-z0-9_-]`, made once by the phone (`crypto.randomUUID()`) and kept in localStorage. `slot` is a preference, in this order: the slot this page load was assigned, the QR's `slot`, the slot saved by an earlier visit. `resumeKey` comes from the last `assign`. `name` is the optional singer name from the join card, trimmed, stripped of control characters and cut to 32 characters by the phone; the phone keeps it under the localStorage key `firesong.mic.name`. |
 | `offer` | `sdp`, `restart: boolean` | The phone is always the offerer. `restart: true` means an ICE restart of the current session. |
 | `ice` | `candidate: IceCandidate \| null` | Optional trickle. `null` means end-of-candidates. |
 | `mute` | `muted` | The phone's own mute toggle. |
@@ -326,6 +326,9 @@ The file is `<data>/firesong/remote-mics.json`. It is written atomically (temp f
 - **Topology.** One `RTCPeerConnection` per phone. The phone has one audio transceiver `sendonly`; the TV has `recvonly`. There is no data channel, because all signaling goes through `/rtc`. Media goes peer-to-peer over the LAN and never through the server machine.
 - **Phone capture.** `getUserMedia({audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1}})`, called from the "Join" tap. That is the same policy as `microphone.web.ts`.
 - **Opus.** Before `setLocalDescription`, the phone munges the Opus `fmtp` line to `minptime=10;useinbandfec=1;usedtx=0;stereo=0;maxaveragebitrate=64000` and adds `a=ptime:10`. Safari may ignore ptime; in that case keep 20 ms.
+  - libwebrtc configures the **sender's** encoder (frame size, FEC, DTX, channels, bitrate) from the codec parameters of the **remote** description. The phone is the sender, so it applies the same munging to the TV's answer before `setRemoteDescription`; munging only its own offer would leave the phone at 20 ms. Measured in headless Chrome 156: 100 packets/s with the answer munged.
+  - Fallback, for the offer and the answer alike: munged with `a=ptime:10`; if the browser rejects that, `a=ptime:20`; if it rejects that too, the browser's own SDP. The phone reports the level that stuck as `answerPtime` in `diag`.
+  - The TV may add the same parameters to its answer; the munging is idempotent.
 - **Offers.**
   - Non-trickle by default: the offerer waits for `iceGatheringState === 'complete'` (at most 2 s), then sends `offer`. The TV does the same before sending `answer`.
   - Trickle `ice` frames are still allowed both ways. A receiver must apply them with `addIceCandidate`, where `null` means end-of-candidates.
@@ -336,9 +339,11 @@ The file is `<data>/firesong/remote-mics.json`. It is written atomically (temp f
 - **When the TV asks for `restart`.** It sends `restart {slot}` when a connection is `failed`, or has been `disconnected` for more than 3 s.
 - **Phone recovery.**
   - `connectionState === 'failed'`: `restartIce()`, then `offer {restart: true}`.
-  - Track `ended` or `mute`, or `pageshow`: `getUserMedia` again and `sender.replaceTrack()`, with no renegotiation.
+  - An answered session that is not `connected` 8 s later is started over with a fresh `offer {restart: false}`. Answers carry no offer id, so an answer to a superseded offer can land on the current one.
+  - Track `ended`, or `mute` lasting more than 0.5 s, or `pageshow` from the back-forward cache: `getUserMedia` again and `sender.replaceTrack()`, with no renegotiation. While the page is hidden the phone only notes it, and recovers 0.5 s after the page is shown again.
+  - If that `getUserMedia` is refused (it needs a user gesture), the phone shows "Tap to rejoin"; the tap retries it.
   - Screen Wake Lock is held, and re-acquired on `visibilitychange`.
-  - Socket drop: reconnect (§4.1) with `hello {micId, resumeKey, slot}`.
+  - Socket drop: reconnect (§4.1) with `hello {micId, resumeKey, slot}`. A phone that hears no `pong` for 10 s closes its socket with code 4000 and reconnects the same way.
 - **TV on `slot-lost`.** Close that slot's connection.
   - For `disconnected`, the rack slot and its device stay, with a "mic lost" badge.
   - For `bye`, `expired`, `evicted` and `kicked`, the slot is released and the device list is updated.
@@ -419,7 +424,7 @@ sequenceDiagram
 | Second listener, host token, redaction | WP2 (server) | `client/src-server/src/main.rs`, `host_auth.rs`, `bootstrap.rs`, `app-api/src/lib.rs` |
 | `/rtc`, registry, relay, mic links, `remote-mics.json`, `FIRESONG_ICE_SERVERS` | WP3 (server) | `client/src-server/src/rtc.rs`, `lib.rs` (route lines), `state.rs` (one field) |
 | TV socket client, adapter wrapper, MicRack, voice engine | WP4 (tv-voice) | `client/src/bridge/rtc-socket.ts`, `remote-mics.ts`, `microphone.ts`, `client/src/audio/*` |
-| Phone page | WP5 (phone-page) | `client/src/features/phone-mic/*`, `app.tsx` (route) |
+| Phone page | WP5 (phone-page) | `client/src/features/phone-mic/*`, `client/src/entry.ts` + `index.html` (entry hook, instead of an `app.tsx` route), `tools/phone-mic-e2e/` |
 | Cookie bootstrap and secure context on the Cube | WP6 (firetv-apk) | `firetv/` |
 | `song-result` sender, tier captions, display score | WP8 (noraebang) | `features/noraebang/*`, `utils/noraebang-score.ts` |
 | Env files, host-token handoff to the app, song-cache guard and LRU | WP1 (deploy) | `deploy/server/*`, `scripts/firesong_prep.py` |

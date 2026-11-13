@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Release trust (design §4): system CAs plus the FireSong LAN CA (the root of
+    the Caddy `tls internal` PKI that serves the TV origin). No cleartext.
+    Replace res/raw/firesong_lan_ca.pem, or build with -Pfiresong.lanCa=<root.crt>;
+    see android/firesong-tv/certs/README.md.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/firesong_lan_ca" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

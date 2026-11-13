@@ -1,0 +1,19 @@
+# Gradle / Android build state
+.gradle/
+build/
+app/build/
+local.properties
+.kotlin/
+*.iml
+.idea/
+
+# Host-specific build values (URL, pins, LAN CA path). Copy the .example.
+firesong.local.properties
+
+# Signing material never goes in git.
+*.jks
+*.keystore
+
+# Probe artefacts generated on the server machine
+probe/*.mp4
+probe/tls/

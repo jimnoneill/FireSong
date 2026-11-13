@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+        AGP's resource merger moves adaptive icons from mipmap-anydpi to
+        mipmap-anydpi-v26 and then fails to link them when minSdk >= 26, so
+        the -v26 folder is kept on purpose.
+    -->
+    <issue id="ObsoleteSdkInt">
+        <ignore path="src/main/res/mipmap-anydpi-v26" />
+    </issue>
+</lint>

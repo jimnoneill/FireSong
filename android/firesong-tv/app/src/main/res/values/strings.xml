@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <string name="app_name">FireSong</string>
+
+    <string name="overlay_loading">FireSong</string>
+    <string name="overlay_loading_detail">Connecting to %1$s…</string>
+    <string name="overlay_restarting_detail">The screen stopped unexpectedly. Restarting…</string>
+    <string name="overlay_reconnecting">Reconnecting to FireSong…</string>
+    <string name="overlay_reconnecting_detail">%1$s. Trying again in %2$d s.</string>
+    <string name="overlay_lost_detail">Lost the connection to the FireSong server. Waiting for it to come back…</string>
+    <string name="overlay_crashed">FireSong keeps restarting</string>
+    <string name="overlay_crashed_detail">The screen stopped several times in a minute. Waiting before the next try…</string>
+    <string name="overlay_not_configured">FireSong is not set up yet</string>
+    <string name="not_configured_detail" tools:ignore="TypographyDashes">From the FireSong host, run: tools/tvctl configure --url https://&lt;tv-host&gt;:&lt;port&gt;/?tv=1 --token-file &lt;data&gt;/firesong/host-token</string>
+    <string name="reason_token">The server did not accept this TV (host token)</string>
+    <string name="reason_tls">The server certificate is not trusted</string>
+
+    <string name="exit_title">Exit FireSong?</string>
+    <string name="exit_message">Singers can rejoin when you open FireSong again.</string>
+    <string name="exit_yes">Exit</string>
+    <string name="exit_no">Stay</string>
+</resources>

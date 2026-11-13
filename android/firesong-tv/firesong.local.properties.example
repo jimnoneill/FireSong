@@ -1,0 +1,16 @@
+# Copy to firesong.local.properties (git-ignored) and fill in. Values here are
+# read by app/build.gradle.kts; -P<name>=<value> on the command line wins.
+
+# Release default TV URL (the Caddy LAN origin in front of NIGHTINGALE_BIND).
+# Leave unset to configure the installed app with tools/tvctl instead.
+#firesong.tvUrl=https://<tv-host>:64443/?tv=1
+
+# Debug default (adb reverse tcp:64448 tcp:64448 makes this reach the server machine).
+#firesong.debugTvUrl=http://localhost:64448/?tv=1
+
+# Bundle the real LAN CA root (PEM) instead of the committed placeholder.
+#firesong.lanCa=/path/to/caddy/pki/authorities/local/root.crt
+
+# Leaf pins for the onReceivedSslError fallback, comma-separated:
+# 64 hex chars (certificate SHA-256) or sha256/<base64> (SPKI SHA-256).
+#firesong.leafPins=

@@ -164,6 +164,7 @@ export class PitchStateBuffer {
 export class PitchScoring {
   totalSingable: number;
   earned = 0;
+  voicedTime = 0;
   lastTime = 0;
   private readonly contributions: { start: number; end: number; earned: number }[] = [];
 
@@ -176,7 +177,9 @@ export class PitchScoring {
       this.contributions.length > 0 &&
       this.contributions[this.contributions.length - 1].start >= currentTime
     ) {
-      this.earned -= this.contributions.pop()?.earned ?? 0;
+      const removed = this.contributions.pop();
+      this.earned -= removed?.earned ?? 0;
+      this.voicedTime -= removed === undefined ? 0 : removed.end - removed.start;
     }
 
     const contribution = this.contributions.at(-1);
@@ -185,6 +188,7 @@ export class PitchScoring {
         contribution.earned *
         ((currentTime - contribution.start) / (contribution.end - contribution.start));
       this.earned -= contribution.earned - kept;
+      this.voicedTime -= contribution.end - currentTime;
       contribution.end = currentTime;
       contribution.earned = kept;
     }
@@ -206,12 +210,18 @@ export class PitchScoring {
     if (refPitch !== null && userPitch !== null && dt > 0) {
       const earned = similarity * dt;
       this.earned += earned;
+      this.voicedTime += dt;
       this.contributions.push({ start: currentTime - dt, end: currentTime, earned });
     }
   }
 
   score(): number {
     return Math.round(Math.min(1000, Math.max(0, (this.earned / this.totalSingable) * 1000)));
+  }
+
+  /** Share of the singable time in which the singer had a detected pitch, 0-1. */
+  voicedRatio(): number {
+    return Math.min(1, Math.max(0, this.voicedTime / this.totalSingable));
   }
 }
 

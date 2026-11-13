@@ -29,6 +29,8 @@ export type PlaybackPlayerResult = {
   profile: string | null;
   color: PlayerColor;
   score: number;
+  /** Share of the singable time with a detected voice, 0-1. */
+  voicedRatio: number;
 };
 
 type FinalResultsInput = {
@@ -36,6 +38,7 @@ type FinalResultsInput = {
   players: ReturnType<typeof usePlaybackMicState>['players'];
   activeProfile: string | null;
   soloScore: number;
+  soloVoicedRatio: number;
 };
 
 function buildFinalResults(input: FinalResultsInput): PlaybackPlayerResult[] {
@@ -46,6 +49,7 @@ function buildFinalResults(input: FinalResultsInput): PlaybackPlayerResult[] {
         profile: input.activeProfile,
         color: defaultPlayerColor(0),
         score: input.soloScore,
+        voicedRatio: input.soloVoicedRatio,
       },
     ];
   }
@@ -54,6 +58,7 @@ function buildFinalResults(input: FinalResultsInput): PlaybackPlayerResult[] {
     profile: player.profile,
     color: player.color,
     score: player.rawScore,
+    voicedRatio: player.voicedRatio,
   }));
 }
 
@@ -75,10 +80,18 @@ export type PlaybackResult = {
   onNext?: (players?: readonly PlaybackPlayer[]) => void;
 };
 
+export type PlaybackResultOptions = {
+  /** Show results even for a solo song nobody sang. */
+  alwaysShowResult?: boolean;
+  /** Play the built-in success sound when results open. */
+  playSuccessSound?: boolean;
+};
+
 export function usePlaybackResult(
   song: Song,
   queuePlayback: boolean,
   players: readonly PlaybackPlayer[],
+  { alwaysShowResult = false, playSuccessSound = true }: PlaybackResultOptions = {},
 ): PlaybackResult {
   const fileHash = song.file_hash;
   const queryClient = useQueryClient();
@@ -88,7 +101,7 @@ export function usePlaybackResult(
 
   const { isFinished } = usePlaybackTransportState();
   const { handleExit } = usePlaybackTransportActions();
-  const { rawScore, players: micPlayers, multiplayer } = usePlaybackMicState();
+  const { rawScore, voicedRatio, players: micPlayers, multiplayer } = usePlaybackMicState();
   const { skipOutroPending } = usePlaybackTranscriptState();
   const { clearSkipOutroPending } = usePlaybackTranscriptActions();
 
@@ -96,6 +109,7 @@ export function usePlaybackResult(
   const [results, setResults] = useState<PlaybackPlayerResult[]>([]);
   const micPlayersRef = useLatestRef(micPlayers);
   const scoreRef = useLatestRef(rawScore);
+  const voicedRatioRef = useLatestRef(voicedRatio);
   const finishHandledRef = useRef(false);
 
   useEffect(() => {
@@ -111,9 +125,13 @@ export function usePlaybackResult(
       players: micPlayersRef.current,
       activeProfile: profileData?.active ?? null,
       soloScore: scoreRef.current,
+      soloVoicedRatio: voicedRatioRef.current,
     });
     const shouldShowResult =
-      multiplayer || queuePlayback || finalResults.some((result) => result.score > 0);
+      alwaysShowResult ||
+      multiplayer ||
+      queuePlayback ||
+      finalResults.some((result) => result.score > 0);
 
     if (!shouldShowResult) {
       handleExit();
@@ -141,6 +159,7 @@ export function usePlaybackResult(
       setShowResult(true);
     })();
   }, [
+    alwaysShowResult,
     clearSkipOutroPending,
     fileHash,
     handleExit,
@@ -153,10 +172,11 @@ export function usePlaybackResult(
     queuePlayback,
     scoreRef,
     skipOutroPending,
+    voicedRatioRef,
   ]);
 
   useEffect(() => {
-    if (!showResult) {
+    if (!showResult || !playSuccessSound) {
       return undefined;
     }
 
@@ -167,7 +187,7 @@ export function usePlaybackResult(
       audioElement.pause();
       audioElement.src = '';
     };
-  }, [showResult]);
+  }, [playSuccessSound, showResult]);
 
   const onBack = useCallback(() => {
     setShowResult(false);

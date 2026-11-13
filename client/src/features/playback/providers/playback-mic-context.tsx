@@ -38,6 +38,7 @@ export type PlaybackPlayerMicState = {
   micName: string;
   pitchScore: number | null;
   rawScore: number;
+  voicedRatio: number;
   series: PitchSeries;
   micCaptureActive: boolean;
   micPitchActive: boolean;
@@ -55,6 +56,7 @@ export type PlaybackMicState = {
   micName: string;
   pitchScore: number | null;
   rawScore: number;
+  voicedRatio: number;
   series: PitchSeries;
   micCaptureActive: boolean;
   micPitchActive: boolean;
@@ -193,7 +195,7 @@ function usePlayerMic({
     active: micPitchActive,
     error: micPitchError,
   } = useMicPitch(player.id, shouldTrackPitch);
-  const { series, score } = usePitchScoring(
+  const { series, score, voicedRatio } = usePitchScoring(
     { ...source, isReady: source.isReady && player.present },
     latestPitch,
     latencySec,
@@ -205,6 +207,7 @@ function usePlayerMic({
     micName: '',
     pitchScore: micReady ? score : null,
     rawScore: score,
+    voicedRatio,
     series,
     micCaptureActive,
     micPitchActive,
@@ -223,6 +226,7 @@ function namePlayer(player: InternalPlayerMicState, devices: readonly MicDevice[
     micName: device?.label ?? player.microphoneId ?? t('settings.microphone.default'),
     pitchScore: player.pitchScore,
     rawScore: player.rawScore,
+    voicedRatio: player.voicedRatio,
     series: player.series,
     micCaptureActive: player.micCaptureActive,
     micPitchActive: player.micPitchActive,
@@ -259,6 +263,7 @@ function micState(input: MicStateInput): PlaybackMicState {
       micName: primary.micName,
       pitchScore: primary.pitchScore,
       rawScore: primary.rawScore,
+      voicedRatio: primary.voicedRatio,
       series: primary.series,
       micCaptureActive: primary.micCaptureActive,
       micPitchActive: primary.micPitchActive,
@@ -275,6 +280,7 @@ function micState(input: MicStateInput): PlaybackMicState {
     micName: primary.micName,
     pitchScore: primary.pitchScore,
     rawScore: primary.rawScore,
+    voicedRatio: primary.voicedRatio,
     series: primary.series,
     micCaptureActive: primary.micCaptureActive,
     micPitchActive: primary.micPitchActive,

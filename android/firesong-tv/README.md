@@ -50,6 +50,9 @@ Settings are accepted **only** by the activity alias `org.firesong.tv/.Configure
 | `devtools` | boolean | WebView remote debugging. Default: on in debug builds, off in release. |
 | `clear` | boolean | Forget all stored settings first. |
 | `reload` | boolean | Reload the page even if nothing changed. |
+| `issued_ms` | long | When the sender issued the intent (ms since the epoch). An intent issued no later than the newest one applied is ignored, because Android can recreate the activity with the intent that first started it. `cube.sh launch` and `tvctl configure` add it. Intents without it still apply, except when the activity is being recreated. |
+
+FireSong keeps its page only while it is on screen. HOME, another app or the Cube going to sleep closes the page, which stops the song, every phone voice and the TV seat; opening FireSong again reloads it. A renderer the system kills in the background is not replaced until then.
 
 The token and pins never cross origins: when the URL moves to another origin without a new token, both are dropped. The cookie set before `loadUrl` is `firesong_host=<t>; Path=/; HttpOnly; SameSite=Strict`, plus `; Secure` on https, as in `docs/firesong/PROTOCOL.md` §2.2. The token is never logged.
 

@@ -83,7 +83,7 @@ export npm_config_store_dir="$pnpm_config_store_dir"
 export HUSKY=0
 
 # --- Android / Fire TV -----------------------------------------------------
-export ANDROID_HOME="${ANDROID_HOME:-/home/joneill/Android/Sdk}"
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 _fs_path_prepend "$ANDROID_HOME/platform-tools"
 if [ -d /usr/lib/jvm/java-17-openjdk-amd64 ]; then

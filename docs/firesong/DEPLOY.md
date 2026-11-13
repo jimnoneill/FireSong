@@ -53,13 +53,13 @@ Why these options: `soft` makes a dead NFS server return errors instead of hangi
 
 ### 1.2 Plex sign-in (PIN flow)
 
-With the server running (section 2), open the TV door from a browser on the LAN with the host token once:
+With the server running (section 2), open FireSong with the host token once, from a browser on the server machine itself or through an SSH tunnel to the server machine's loopback (other LAN machines are not on the Caddy allowlist):
 
 ```text
-https://<lan-ip>:64443/?host=<contents of /mnt/fast/firesong/data/firesong/host-token>
+http://127.0.0.1:64448/?host=<contents of /mnt/fast/firesong/data/firesong/host-token>
 ```
 
-(or `http://127.0.0.1:64448/?host=…` through an SSH tunnel). Then **Connect Plex → Sign in with Plex**, approve the code at plex.tv/link, pick the server and the music library. The PIN flow makes FireSong a separate Plex device, which can be revoked on its own. Leave auto-analyze off: prep decides what to analyse.
+Then **Connect Plex → Sign in with Plex**, approve the code at plex.tv/link, pick the server and the music library. The PIN flow makes FireSong a separate Plex device, which can be revoked on its own. Leave auto-analyze off: prep decides what to analyse.
 
 ### 1.3 Phone door on Tailscale Funnel (parties only)
 

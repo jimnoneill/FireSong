@@ -176,6 +176,7 @@ cmd_owner_steps() {
   remote_bind="$(env_get "$env" NIGHTINGALE_REMOTE_BIND)"
   origin="$(env_get "$env" NIGHTINGALE_REMOTE_URL)"
   data="$(env_get "$env" NIGHTINGALE_DATA_PATH)"
+  NIGHTINGALE_BIND_SHOWN="$(env_get "$env" NIGHTINGALE_BIND)"
   port="${origin##*:}"
   [[ "$port" =~ ^[0-9]+$ ]] || port=8443
   cat <<EOF
@@ -188,7 +189,8 @@ FireSong owner one-time steps (values from $env)
    Check: findmnt ${cache:-/mnt/firesong-cache}   (FSTYPE nfs4)
 
 2. Plex sign-in (PIN flow, creates a separately revocable device):
-     open the TV door in a browser on the LAN, append ?host=\$(cat ${data:-<data>}/firesong/host-token),
+     on the server machine (or through an SSH tunnel to it) open
+       http://${NIGHTINGALE_BIND_SHOWN:-127.0.0.1:64448}/?host=\$(cat ${data:-<data>}/firesong/host-token)
      then Connect Plex -> Sign in with Plex, approve the code at plex.tv/link,
      pick the server and the music library.
 

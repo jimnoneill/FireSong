@@ -2,9 +2,12 @@ import type { MicCaptureOptions } from '@/types/MicCaptureOptions';
 import type { MicrophoneInfo } from '@/types/MicrophoneInfo';
 import type { MicSampleFrame } from '@/types/MicSampleFrame';
 
+import { fireSongLaunch } from './firesong-launch';
 import type { MicSamplesCallback, StopListening } from './microphone-samples';
+import { withRemoteMics } from './microphone.phone';
 import { tauriMicrophoneAdapter } from './microphone.tauri';
 import { setWebMicMonitorGain, webMicrophoneAdapter } from './microphone.web';
+import { remoteMics } from './remote-mics';
 import { isTauri } from './runtime';
 
 export type { MicSamplesCallback, StopListening } from './microphone-samples';
@@ -24,9 +27,11 @@ export type MicrophoneAdapter = {
 
 export { tauriMicrophoneAdapter, webMicrophoneAdapter };
 
-export const microphoneAdapter: MicrophoneAdapter = isTauri
-  ? tauriMicrophoneAdapter
-  : webMicrophoneAdapter;
+export const microphoneAdapter: MicrophoneAdapter = withRemoteMics(
+  isTauri ? tauriMicrophoneAdapter : webMicrophoneAdapter,
+  remoteMics,
+  { tvProfile: () => fireSongLaunch().tv },
+);
 
 export const listMicrophones = (combineChannels = true): Promise<MicrophoneInfo[]> =>
   microphoneAdapter.listDevices(combineChannels);

@@ -9,6 +9,7 @@ import { Label } from '@/shared/components/ui/label';
 import { Slider } from '@/shared/components/ui/slider';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip';
 
+import { MIC_LATENCY_MAX } from './constants';
 import { Hint } from './settings-controls';
 
 type MicLatencyFieldProps = {
@@ -64,7 +65,7 @@ export function MicLatencyField({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <Slider
           min={0}
-          max={500}
+          max={MIC_LATENCY_MAX * 1000}
           step={5}
           value={[latencyMs]}
           onValueChange={([ms]) => onLatencyChange(ms / 1000)}

@@ -21,6 +21,7 @@ import {
 import { usePlaybackConfigPersist } from '@/features/playback/hooks/use-playback-config-persist';
 import { DEFAULT_MIC_LATENCY_COMPENSATION_SEC } from '@/features/playback/lib/pitch/constants';
 import type { PitchSeries } from '@/features/playback/lib/pitch/state';
+import { useRemoteMicLatencySec } from '@/features/remote-mic/use-remote-mic-latency';
 import { t } from '@/i18n';
 import { defaultPlayerColor, type PlayerColor } from '@/shared/player-colors';
 import type { AppConfig } from '@/types/AppConfig';
@@ -306,12 +307,16 @@ export function PlaybackMicProvider({ config, players, children }: PlaybackMicPr
   );
   const configs = playerConfigs(sessionPlayers, selectedMicId);
   const latencySec = latencyCompensation(config);
-  const playerInput = (index: number): PlayerMicInput => ({
-    player: playerAt(configs, index),
-    ...settings,
-    source,
-    latencySec,
-  });
+  const remoteMicLatencySec = useRemoteMicLatencySec();
+  const playerInput = (index: number): PlayerMicInput => {
+    const player = playerAt(configs, index);
+    return {
+      player,
+      ...settings,
+      source,
+      latencySec: remoteMicLatencySec(player.microphoneId) ?? latencySec,
+    };
+  };
   const slotOne = usePlayerMic(playerInput(0));
   const slotTwo = usePlayerMic(playerInput(1));
   const slotThree = usePlayerMic(playerInput(2));

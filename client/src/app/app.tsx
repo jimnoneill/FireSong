@@ -10,6 +10,7 @@ import { LibraryPage } from '@/features/library/library-page';
 import { MenuLayout } from '@/features/menu/menu';
 import { MenuFocusProvider } from '@/features/menu/providers/menu-focus-context';
 import { Playback } from '@/features/playback/playback';
+import { RemoteMicsHost } from '@/features/remote-mic/remote-mics-host';
 import { RemoteQueuePage } from '@/features/remote/remote-queue';
 import { SettingsPage } from '@/features/settings/settings';
 import { useUpdate } from '@/features/updates/queries/use-update';
@@ -52,6 +53,7 @@ const InnerWrapper = () => (
     </MenuFocusProvider>
     <Toaster />
     {UPDATES_SUPPORTED && <UpdateAutoCheck />}
+    <RemoteMicsHost />
   </>
 );
 

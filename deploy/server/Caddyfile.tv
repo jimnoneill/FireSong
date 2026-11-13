@@ -10,7 +10,7 @@
 #
 # - TLS comes from Caddy's own internal CA. Its root certificate is
 #   {$FIRESONG_CADDY_STORAGE}/pki/authorities/local/root.crt; the Fire TV app
-#   pins it (firetv/ res/raw/firesong_lan_ca). Keep that directory: a new CA
+#   pins it (android/firesong-tv, res/raw/firesong_lan_ca). Keep that directory: a new CA
 #   means rebuilding the app.
 # - Only the Cube, the server machine itself and loopback get through (remote_ip is the TCP
 #   peer, so a spoofed X-Forwarded-For does not help). Everyone else gets the

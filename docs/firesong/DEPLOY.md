@@ -189,7 +189,9 @@ $C status                      # model, Fire OS, foreground app, idle?, FireSong
 $C idle                        # exit 0 only when the launcher is in front
 $C screencap shot.png
 $C logcat FireSongJS           # grep pattern; or a logcat spec such as 'FireSongJS:V chromium:W *:S'; --follow streams
-$C install firetv/app/build/outputs/apk/debug/app-debug.apk
+# the party TV gets the release build with Caddy's root bundled (android/firesong-tv/certs/README.md):
+#   (cd android/firesong-tv && ./gradlew assembleRelease -Pfiresong.lanCa=<caddy-data>/caddy/pki/authorities/local/root.crt)
+$C install android/firesong-tv/app/build/outputs/apk/release/app-release.apk
 $C launch --url 'https://<lan-ip>:64443/?tv=1&mode=noraebang' --host-token-file /mnt/fast/firesong/data/firesong/host-token
 $C reverse 64448               # the Cube's http://localhost:64448 reaches the server machine (a secure context, no certificate)
 $C unreverse                   # removes only the reverses cube.sh created

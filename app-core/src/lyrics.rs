@@ -364,7 +364,7 @@ fn store_lyrics_and_realign(file_hash: &str, lyrics: &LyricsFile) -> Result<(), 
 }
 
 /// Build the transcript JSON (playback shape) from parsed LRC segments.
-fn build_lrc_transcript(
+pub(crate) fn build_lrc_transcript(
     parsed: &ParsedLrc,
     language: Option<&str>,
     key: Option<&str>,
@@ -383,7 +383,7 @@ fn build_lrc_transcript(
     })
 }
 
-fn write_transcript_json(
+pub(crate) fn write_transcript_json(
     cache: &CacheDir,
     file_hash: &str,
     value: &serde_json::Value,

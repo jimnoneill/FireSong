@@ -91,6 +91,26 @@ impl PlaybackQueue {
         Ok(entries.iter().cloned().collect())
     }
 
+    pub fn set_shift(
+        &self,
+        id: &str,
+        tempo: f64,
+        key_offset: i32,
+    ) -> Result<Vec<PlaybackQueueEntry>, String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "playback queue lock poisoned".to_string())?;
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| "queue entry not found".to_string())?;
+        entry.tempo = tempo;
+        entry.key_offset = key_offset;
+
+        Ok(entries.iter().cloned().collect())
+    }
+
     pub fn remove(&self, id: &str) -> Result<Vec<PlaybackQueueEntry>, String> {
         let mut entries = self
             .entries

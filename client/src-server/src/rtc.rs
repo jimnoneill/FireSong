@@ -3,18 +3,21 @@
 //! The listener decides the role: the remote router mounts [`mic_upgrade`],
 //! the full router [`tv_upgrade`]. Each socket runs one task that reads
 //! frames, enforces the handshake, size and rate limits, and writes whatever
-//! the [`Hub`] queued for it.
+//! the [`Hub`] queued for it. Party frames (§13) share the socket; the hub
+//! hands them to [`party`].
 
 mod hub;
 mod mic_store;
+mod party;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use app_core::remote_mic::{
-    close_code, decode_mic_frame, decode_tv_frame, MicToServer, RtcErrorCode, ServerToMic,
-    ServerToTv, TvToServer, MAX_FRAME_BYTES, RATE_BURST, RATE_PER_SEC, SLOT_COUNT,
+    close_code, decode_mic_inbound, decode_tv_inbound, MicInbound, MicToServer, RtcErrorCode,
+    ServerToMic, ServerToTv, TvInbound, TvToServer, MAX_FRAME_BYTES, RATE_BURST, RATE_PER_SEC,
+    SLOT_COUNT,
 };
 use axum::{
     extract::{
@@ -50,12 +53,17 @@ pub struct Timings {
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
     pub reservation: Duration,
+    /// How often preparing party songs are checked (PHONE-V2.md: every 2 s).
+    pub party_poll: Duration,
+    /// How long the TV may take to finish a phone-started calibration.
+    pub calibration_timeout: Duration,
 }
 
 impl Default for Timings {
     fn default() -> Self {
         use app_core::remote_mic::{
-            HELLO_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, PING_INTERVAL_SECS, RESERVATION_SECS,
+            CALIBRATION_TIMEOUT_SECS, HELLO_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, PING_INTERVAL_SECS,
+            RESERVATION_SECS,
         };
 
         Self {
@@ -63,6 +71,8 @@ impl Default for Timings {
             ping_interval: Duration::from_secs(u64::from(PING_INTERVAL_SECS)),
             idle_timeout: Duration::from_secs(u64::from(IDLE_TIMEOUT_SECS)),
             reservation: Duration::from_secs(u64::from(RESERVATION_SECS)),
+            party_poll: Duration::from_secs(2),
+            calibration_timeout: Duration::from_secs(u64::from(CALIBRATION_TIMEOUT_SECS)),
         }
     }
 }
@@ -150,6 +160,7 @@ fn strip_default_port(authority: &str) -> String {
 }
 
 /// Token bucket: `burst` tokens, refilled at `per_sec`.
+#[derive(Clone)]
 struct Bucket {
     burst: f64,
     per_sec: f64,
@@ -164,6 +175,14 @@ impl Bucket {
             per_sec: f64::from(per_sec),
             tokens: f64::from(burst),
             at: Instant::now(),
+        }
+    }
+
+    /// `burst` tokens, refilled at one per `refill_ms`.
+    fn every(burst: u32, refill_ms: u32) -> Self {
+        Self {
+            per_sec: 1000.0 / f64::from(refill_ms.max(1)),
+            ..Self::new(burst, 0)
         }
     }
 
@@ -261,7 +280,14 @@ impl Session {
     }
 
     fn on_mic_text(&mut self, text: &str) -> Result<(), RtcErrorCode> {
-        let frame = decode_mic_frame(text).map_err(|code| self.before_hello(code))?;
+        let frame = match decode_mic_inbound(text).map_err(|code| self.before_hello(code))? {
+            MicInbound::Rtc(frame) => frame,
+            MicInbound::Party(_) if !self.greeted => return Err(RtcErrorCode::NoHello),
+            MicInbound::Party(frame) => {
+                self.hub.mic_party(self.conn, frame);
+                return Ok(());
+            }
+        };
         match frame {
             MicToServer::Hello {
                 mic_id,
@@ -290,7 +316,11 @@ impl Session {
     }
 
     fn on_tv_text(&mut self, text: &str) -> Result<(), RtcErrorCode> {
-        let frame = decode_tv_frame(text).map_err(|code| self.before_hello(code))?;
+        let frame = match decode_tv_inbound(text).map_err(|code| self.before_hello(code))? {
+            TvInbound::Rtc(frame) => frame,
+            TvInbound::Party(_) if !self.greeted => return Err(RtcErrorCode::NoHello),
+            TvInbound::Party(frame) => return self.hub.tv_party(self.conn, frame),
+        };
         match frame {
             TvToServer::Hello { .. } => {
                 if self.greeted || is_phone_hello(text) {

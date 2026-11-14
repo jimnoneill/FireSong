@@ -1,24 +1,48 @@
 //! FireSong additions to the self-hosted server (docs/firesong/PROTOCOL.md):
-//! the phone listener, the host token on the full listener, `/rtc`, the
-//! per-slot phone links and pairing-token rotation.
+//! the phone listener, the host token on the full listener, `/rtc` with its
+//! party channel, the per-slot phone links, pairing-token rotation, and the
+//! phone door's command list.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
+use std::time::Duration;
 
 use app_core::remote_mic::{
     slot_color, IceServer, MicLink, MicLinks, MIC_PAGE_PATH, RTC_PATH, SLOT_COUNT,
+    SONG_BOOK_COMMAND,
 };
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
+    response::Redirect,
     routing::{any, get, post},
     Json, Router,
 };
+use tokio::sync::broadcast::error::RecvError;
 
+use crate::remote::REMOTE_COMMANDS;
 pub use crate::rtc::Timings;
 use crate::rtc::{self, Hub, MicStore};
 use crate::state::{AppState, RemoteAddress};
+
+/// What the phone door answers in a FireSong deployment (PROTOCOL.md §13.2):
+/// reads and the song book. Phones change the queue and playback only over
+/// `/rtc`, where the server knows which phone asks.
+const PHONE_COMMANDS: &[&str] = &[
+    SONG_BOOK_COMMAND,
+    "load_interface_language",
+    "load_playback_queue",
+    "load_playback_status",
+    "load_playback_progress",
+    "load_playback_options",
+    "load_profiles",
+    "load_remote_microphones",
+    "load_songs",
+];
+
+/// The party task's beat: coalesced snapshots, mixer relays, timeouts.
+const PARTY_TICK: Duration = Duration::from_millis(100);
 
 /// How the server was started; everything [`start`] needs from `main`.
 #[derive(Debug, Clone)]
@@ -52,6 +76,7 @@ pub struct Config {
 pub(crate) struct FireSong {
     settings: Arc<RwLock<Settings>>,
     hub: Arc<Hub>,
+    party_task: Arc<OnceLock<()>>,
 }
 
 #[derive(Default)]
@@ -104,6 +129,11 @@ pub fn configure(state: &AppState, config: Config) {
         .firesong
         .hub
         .configure(ice_servers, timings.reservation, store);
+    state
+        .firesong
+        .hub
+        .attach_party(state.commands.party().clone(), timings);
+    start_party_task(state, timings.party_poll);
     *state
         .firesong
         .settings
@@ -113,6 +143,70 @@ pub fn configure(state: &AppState, config: Config) {
         allowed_origins,
         timings,
     };
+}
+
+/// Runs the party channel's timers and follows the playback queue and
+/// preparing songs. Needs a Tokio runtime; started once per state.
+fn start_party_task(state: &AppState, poll_every: Duration) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        tracing::warn!("no async runtime: the party channel runs without timers");
+        return;
+    };
+    let hub = Arc::downgrade(&state.firesong.hub);
+    let events = state.events.clone();
+    state.firesong.party_task.get_or_init(|| {
+        let mut events = events.subscribe();
+        runtime.spawn(async move {
+            let mut tick = tokio::time::interval(PARTY_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut polled = tokio::time::Instant::now();
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let Some(hub) = hub.upgrade() else { return };
+                        hub.party_tick();
+                        if polled.elapsed() >= poll_every {
+                            polled = tokio::time::Instant::now();
+                            if tokio::task::spawn_blocking(move || hub.prep_poll()).await.is_err() {
+                                tracing::warn!("party preparation check failed");
+                            }
+                        }
+                    }
+                    event = events.recv() => {
+                        let queue_changed = match event {
+                            Ok(event) => event.r#type == "playback-queue-changed",
+                            Err(RecvError::Lagged(_)) => true,
+                            Err(RecvError::Closed) => return,
+                        };
+                        if queue_changed {
+                            let Some(hub) = hub.upgrade() else { return };
+                            hub.party_changed();
+                        }
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// The commands the phone door answers: upstream's queue-page list, or in a
+/// FireSong deployment (a separate phone listener) [`PHONE_COMMANDS`].
+pub(crate) fn phone_commands(state: &AppState) -> &'static [&'static str] {
+    if state.separate_phone_listener() {
+        PHONE_COMMANDS
+    } else {
+        REMOTE_COMMANDS
+    }
+}
+
+/// `/` on the phone door: the phone page in a FireSong deployment, the queue
+/// page otherwise.
+pub(crate) async fn phone_root(State(state): State<AppState>) -> Redirect {
+    if state.separate_phone_listener() {
+        Redirect::to(MIC_PAGE_PATH)
+    } else {
+        Redirect::to("/q")
+    }
 }
 
 /// Phone links point at the phone listener. With a separate one, the request

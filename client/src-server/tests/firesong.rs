@@ -66,6 +66,7 @@ fn fast_timings() -> Timings {
         ping_interval: Duration::from_millis(50),
         idle_timeout: Duration::from_secs(10),
         reservation: Duration::from_secs(600),
+        ..Timings::default()
     }
 }
 
@@ -176,7 +177,10 @@ async fn send(socket: &mut Socket, frame: Value) {
         .expect("ws send");
 }
 
-/// Next JSON frame, skipping transport pings.
+/// Party frames (PROTOCOL.md §13) these v1 checks skip, as v1 clients do.
+const PARTY_FRAMES: &[&str] = &["party", "mix", "night-rank"];
+
+/// Next JSON frame, skipping transport pings and party frames.
 async fn recv(socket: &mut Socket) -> Value {
     loop {
         let message = tokio::time::timeout(WAIT, socket.next())
@@ -185,7 +189,12 @@ async fn recv(socket: &mut Socket) -> Value {
             .expect("socket open")
             .expect("ws frame");
         match message {
-            Message::Text(text) => return serde_json::from_str(&text).expect("json frame"),
+            Message::Text(text) => {
+                let frame: Value = serde_json::from_str(&text).expect("json frame");
+                if !PARTY_FRAMES.contains(&frame["type"].as_str().unwrap_or_default()) {
+                    return frame;
+                }
+            }
             Message::Ping(_) | Message::Pong(_) => {}
             other => panic!("expected a text frame, got {other:?}"),
         }
@@ -219,13 +228,17 @@ async fn expect_close(socket: &mut Socket, code: u16) {
     }
 }
 
-/// Asserts nothing but rosters/pings arrives for a short while.
+/// Asserts nothing but rosters, party frames or pings arrives for a short while.
 async fn expect_quiet(socket: &mut Socket) {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
     while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
         if let Message::Text(text) = message {
             let frame: Value = serde_json::from_str(&text).expect("json frame");
-            assert_eq!(frame["type"], "roster", "unexpected frame {frame}");
+            let kind = frame["type"].as_str().unwrap_or_default();
+            assert!(
+                kind == "roster" || PARTY_FRAMES.contains(&kind),
+                "unexpected frame {frame}"
+            );
         }
     }
 }
@@ -392,13 +405,86 @@ async fn phone_listener_keeps_the_pairing_token_and_command_allowlist() {
         .expect("cookie")
         .starts_with(&format!("nightingale_remote={PAIRING_TOKEN}")));
 
-    let load_config = Request::builder()
-        .method("POST")
-        .uri("/api/cmd/load_config")
+    let phone_cmd = |name: &str, payload: Value| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/cmd/{name}"))
+            .header("x-nightingale-token", PAIRING_TOKEN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("req")
+    };
+    assert_eq!(
+        http(phone.clone(), phone_cmd("load_config", Value::Null))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+
+    // A FireSong phone door (separate listener) answers reads and the song
+    // book only: every guest holds the pairing token.
+    for (name, payload) in [
+        (
+            "add_playback_queue_entry",
+            json!({"fileHash": "0".repeat(32), "tempo": 1.0, "keyOffset": 0}),
+        ),
+        ("request_playback_command", json!({"command": "next"})),
+        ("clear_playback_queue", Value::Null),
+        ("request_queue_playback", json!({})),
+    ] {
+        assert_eq!(
+            http(phone.clone(), phone_cmd(name, payload)).await.0,
+            StatusCode::FORBIDDEN,
+            "{name}"
+        );
+    }
+    let (status, _, queue) =
+        http(phone.clone(), phone_cmd("load_playback_queue", Value::Null)).await;
+    assert_eq!((status, queue.as_str()), (StatusCode::OK, "[]"));
+    let (status, _, _) = http(
+        phone.clone(),
+        phone_cmd("firesong_song_book", json!({"take": 51})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let root = get("/")
         .header("x-nightingale-token", PAIRING_TOKEN)
         .body(Body::empty())
         .expect("req");
-    assert_eq!(http(phone, load_config).await.0, StatusCode::FORBIDDEN);
+    let (status, headers, _) = http(phone, root).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/m");
+}
+
+#[tokio::test]
+async fn an_upstream_phone_door_keeps_the_queue_page_and_its_commands() {
+    data_root();
+    let events = Arc::new(EventBus::new());
+    let state = AppState::new(
+        app_api::CommandState::new(events.clone()),
+        events,
+        RemoteControl {
+            token: PAIRING_TOKEN.into(),
+        },
+        RemoteAddress::new(SocketAddr::from(([127, 0, 0, 1], 9)), None),
+        true,
+        false,
+    );
+    let phone = server::remote_router(state);
+    let root = get("/")
+        .header("x-nightingale-token", PAIRING_TOKEN)
+        .body(Body::empty())
+        .expect("req");
+    let (_, headers, _) = http(phone.clone(), root).await;
+    assert_eq!(headers[header::LOCATION], "/q");
+    let clear = Request::builder()
+        .method("POST")
+        .uri("/api/cmd/clear_playback_queue")
+        .header("x-nightingale-token", PAIRING_TOKEN)
+        .body(Body::empty())
+        .expect("req");
+    assert_eq!(http(phone, clear).await.0, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1101,12 +1187,21 @@ async fn a_rotation_that_cannot_be_saved_changes_nothing() {
     assert_eq!(http(phone_router, old).await.0, StatusCode::OK);
 }
 
-/// Asserts the phone gets no frame (it was not kicked) for a short while.
+/// Asserts the phone gets no frame but party frames (it was not kicked) for a
+/// short while.
 async fn expect_quiet_phone(socket: &mut Socket) {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
     while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
+        let party = match &message {
+            Message::Text(text) => serde_json::from_str::<Value>(text)
+                .ok()
+                .is_some_and(|frame| {
+                    PARTY_FRAMES.contains(&frame["type"].as_str().unwrap_or_default())
+                }),
+            _ => false,
+        };
         assert!(
-            matches!(message, Message::Ping(_) | Message::Pong(_)),
+            party || matches!(message, Message::Ping(_) | Message::Pong(_)),
             "unexpected frame {message:?}"
         );
     }

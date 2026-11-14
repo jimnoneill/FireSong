@@ -73,6 +73,16 @@ tailscale funnel --https=8443 off                             # off, after the p
 - Funnel maps only the phone listener. The TV listener is never published.
 - Without `sudo`, these commands need the user to be the Tailscale operator (`sudo tailscale set --operator=$USER`, once).
 
+### 1.5 Firewall for the TV door
+
+If `ufw` is active on the server machine (`sudo ufw status`), it blocks the Fire TV from the TV door until one rule lets the Cube in:
+
+```sh
+sudo ufw allow proto tcp from <cube-ip> to <lan-ip> port 64443 comment 'FireSong TV door'
+```
+
+Caddy's own allowlist still refuses every other address. Without the rule the TV app shows its "Reconnecting to FireSong…" overlay while `curl` on the server machine succeeds.
+
 ### 1.4 Disable Tailscale key expiry
 
 The server machine's node key expires on 2026-11-29 (21:16 UTC). Funnel and all remote access stop when it does. In the admin console, open **Machines → the server machine → ⋯ → Disable key expiry**.

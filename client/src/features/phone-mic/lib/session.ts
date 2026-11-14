@@ -495,7 +495,7 @@ export class PhoneMicSession {
 
   private handleNetworkChange(): void {
     this.updateMobileDataHint();
-    if (this.snapshot.link === 'connecting' || this.snapshot.unreachable) {
+    if (this.snapshot.unreachable) {
       this.retryVoice();
     }
   }

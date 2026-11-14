@@ -27,7 +27,7 @@ export function LivePanel({
   const color = slot === null ? null : slotColor(slot);
 
   return (
-    <section className="flex flex-col gap-4" aria-label={t('phoneMic.level')}>
+    <div className="flex flex-col gap-4">
       {snapshot.needsTap ? (
         <div className="flex flex-col gap-2" role="alert">
           <p className="text-sm">{t('phoneMic.needsTap')}</p>
@@ -63,6 +63,6 @@ export function LivePanel({
       {snapshot.wakeLock === 'unavailable' ? (
         <p className="text-center text-sm text-muted-foreground">{t('phoneMic.wakeLockHint')}</p>
       ) : null}
-    </section>
+    </div>
   );
 }

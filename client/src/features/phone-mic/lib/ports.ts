@@ -83,7 +83,7 @@ export type PagePort = {
 export type NetworkPort = {
   /** `navigator.connection.type` (`wifi`, `cellular`, ...), or `null` where the browser has none. */
   type: () => string | null;
-  /** The browser went `online`, or `navigator.connection` changed. */
+  /** The browser went `online`, or the `navigator.connection` type changed (not just its speed). */
   onChange: (listener: () => void) => void;
 };
 

@@ -62,14 +62,22 @@ const networkConnection = (): EventTarget | null => {
 
 const browserNetwork = (): NetworkPort => {
   const connection = networkConnection();
+  const type = (): string | null => {
+    const value: unknown = connection === null ? undefined : Reflect.get(connection, 'type');
+    return typeof value === 'string' ? value : null;
+  };
   return {
-    type: () => {
-      const type: unknown = connection === null ? undefined : Reflect.get(connection, 'type');
-      return typeof type === 'string' ? type : null;
-    },
+    type,
     onChange: (listener) => {
       window.addEventListener('online', listener);
-      connection?.addEventListener('change', listener);
+      let last = type();
+      connection?.addEventListener('change', () => {
+        const current = type();
+        if (current !== last) {
+          last = current;
+          listener();
+        }
+      });
     },
   };
 };

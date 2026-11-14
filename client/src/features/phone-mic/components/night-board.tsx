@@ -3,6 +3,7 @@ import { TrophyIcon } from 'lucide-react';
 import { TIER_CAPTIONS } from '@/features/phone-mic/components/format';
 import { SingerChip } from '@/features/phone-mic/components/singer-chip';
 import type { PartyState } from '@/features/phone-mic/lib/party-state';
+import { mySinger } from '@/features/phone-mic/lib/party-view';
 import type { MicSlot, NightScore } from '@/features/remote-mic/protocol';
 import { formatNumber, t } from '@/i18n';
 import { cn } from '@/shared/utils/cn';
@@ -48,6 +49,7 @@ function ScoreRow({ score, place, mine }: { score: NightScore; place: number; mi
 export function NightBoard({ party, slot }: { party: PartyState; slot: MicSlot | null }) {
   const scores = party.snapshot?.scores ?? [];
   const yourRank = yourRankText(party);
+  const myName = mySinger(party.snapshot, slot)?.name;
 
   return (
     <section aria-labelledby="phone-best-title" className="flex flex-col gap-2">
@@ -65,7 +67,7 @@ export function NightBoard({ party, slot }: { party: PartyState; slot: MicSlot |
               key={`${String(score.atSecs)}-${String(score.slot)}-${String(score.rawScore)}`}
               score={score}
               place={index + 1}
-              mine={score.slot === slot}
+              mine={score.slot === slot && score.name === myName}
             />
           ))}
         </ol>

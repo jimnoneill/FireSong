@@ -1,0 +1,299 @@
+//! FireSong lyric-timing repair (PHONE-V2.md, feature 9). Forced alignment
+//! sometimes squeezes most lyric lines into a fraction of a second (Blur,
+//! "Song 2": 31 of 35 lines). After a full analysis whose lyrics came from
+//! LRCLIB, such a transcript is rebuilt from LRCLIB's line-synced lyrics of the
+//! same pick, when those pass sanity checks, and the repair is recorded in the
+//! transcript as `timing_repair`.
+
+use serde_json::{Value, json};
+use tracing::{info, warn};
+
+use crate::cache::CacheDir;
+use crate::library_db;
+use crate::lrc::{self, ParsedLrc};
+use crate::lyrics::{
+    build_lrc_transcript, load_lyrics_file, lrclib_candidates, write_transcript_json,
+};
+
+/// A line shorter than this is squeezed.
+const SQUEEZED_LINE_SECS: f64 = 0.5;
+/// Fewer lines than this are never judged, and synced lyrics need as many.
+const MIN_LINES: usize = 6;
+/// Squeezed lines, in percent of all lines, that make the alignment squeezed.
+const SQUEEZED_PERCENT: usize = 40;
+/// Synced lyrics may have this share more or fewer lines than the plain ones.
+const LINE_COUNT_TOLERANCE: f64 = 0.25;
+/// The last synced line must start before the song's end plus this.
+const END_SLACK_SECS: f64 = 5.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Squeeze {
+    squeezed: usize,
+    lines: usize,
+}
+
+/// Runs in `finalize_song`, before the song is marked analysed.
+/// `lyrics_from_lrclib` is true when this analysis fetched its lyrics from
+/// LRCLIB (not a realign, not lyrics the user edited).
+pub(super) fn repair_after_analysis(file_hash: &str, cache: &CacheDir, lyrics_from_lrclib: bool) {
+    if !lyrics_from_lrclib {
+        return;
+    }
+    let Some(transcript) = std::fs::read_to_string(cache.transcript_path(file_hash))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return;
+    };
+    let Some(squeeze) = squeezed(&transcript) else {
+        return;
+    };
+    let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
+        return;
+    };
+    let Some(plain) = load_lyrics_file(file_hash).map(|lyrics| lyrics.lines) else {
+        return;
+    };
+    let pick = lrclib_candidates(&song).into_iter().next();
+    let Some(synced) = pick
+        .filter(|pick| pick.lines == plain)
+        .and_then(|pick| pick.synced_lyrics)
+    else {
+        warn!(
+            "[analyzer] {file_hash}: {} of {} lyric lines are squeezed; LRCLIB has no synced lyrics for the same pick, keeping the alignment",
+            squeeze.squeezed, squeeze.lines
+        );
+        return;
+    };
+    let parsed = match checked_lrc(&synced, plain.len(), song.duration_secs) {
+        Ok(parsed) => parsed,
+        Err(reason) => {
+            warn!(
+                "[analyzer] {file_hash}: {} of {} lyric lines are squeezed; LRCLIB's synced lyrics {reason}, keeping the alignment",
+                squeeze.squeezed, squeeze.lines
+            );
+            return;
+        }
+    };
+    let repaired = rebuilt(&transcript, &parsed, squeeze);
+    cache.delete_transcript_variants(file_hash);
+    match write_transcript_json(cache, file_hash, &repaired) {
+        Ok(()) => info!(
+            "[analyzer] {file_hash}: {} of {} lyric lines were squeezed; using LRCLIB line timing ({} lines)",
+            squeeze.squeezed,
+            squeeze.lines,
+            parsed.segments.len()
+        ),
+        Err(error) => {
+            warn!("[analyzer] {file_hash}: could not write the repaired transcript: {error}")
+        }
+    }
+}
+
+/// `Some` when at least [`MIN_LINES`] lines and [`SQUEEZED_PERCENT`] of them
+/// last under [`SQUEEZED_LINE_SECS`].
+fn squeezed(transcript: &Value) -> Option<Squeeze> {
+    let segments = transcript.get("segments")?.as_array()?;
+    let lines = segments.len();
+    let squeezed = segments
+        .iter()
+        .filter(|segment| {
+            let time = |key: &str| segment.get(key).and_then(Value::as_f64);
+            matches!((time("start"), time("end")), (Some(start), Some(end)) if end - start < SQUEEZED_LINE_SECS)
+        })
+        .count();
+    (lines >= MIN_LINES && squeezed * 100 >= lines * SQUEEZED_PERCENT)
+        .then_some(Squeeze { squeezed, lines })
+}
+
+/// LRCLIB's synced lyrics, if they are usable: at least [`MIN_LINES`] lines
+/// with strictly increasing starts from 0 on, the last before the song's end
+/// (plus [`END_SLACK_SECS`]), and about as many lines as the plain lyrics.
+fn checked_lrc(
+    synced: &str,
+    plain_lines: usize,
+    duration_secs: f64,
+) -> Result<ParsedLrc, &'static str> {
+    // In written order: the full parse sorts its lines.
+    let starts: Vec<f64> = synced
+        .lines()
+        .filter_map(|line| lrc::parse_lrc(line).ok())
+        .flat_map(|parsed| parsed.segments.into_iter().map(|segment| segment.start))
+        .collect();
+    if starts.len() < MIN_LINES {
+        return Err("have too few lines");
+    }
+    if starts.windows(2).any(|pair| pair[1] <= pair[0]) {
+        return Err("are not in order");
+    }
+    let parsed = lrc::parse_lrc(synced).map_err(|_| "cannot be parsed")?;
+    let (Some(first), Some(last)) = (parsed.segments.first(), parsed.segments.last()) else {
+        return Err("have too few lines");
+    };
+    if first.start < 0.0 || last.start >= duration_secs + END_SLACK_SECS {
+        return Err("run past the song");
+    }
+    let count = parsed.segments.len() as f64;
+    let plain = plain_lines as f64;
+    if (count - plain).abs() > plain * LINE_COUNT_TOLERANCE {
+        return Err("have a different number of lines");
+    }
+    Ok(parsed)
+}
+
+/// The LRC transcript, as `apply_timed_lyrics` builds it at the base key and
+/// tempo, plus the repair record.
+fn rebuilt(transcript: &Value, parsed: &ParsedLrc, squeeze: Squeeze) -> Value {
+    let text = |key: &str| transcript.get(key).and_then(Value::as_str);
+    let no_stems = transcript
+        .get("no_stems")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut value = build_lrc_transcript(parsed, text("language"), text("key"), 1.0, no_stems);
+    value["timing_repair"] = json!({
+        "method": "lrclib-lines",
+        "reason": "squeezed-alignment",
+        "squeezed": squeeze.squeezed,
+        "lines": squeeze.lines,
+    });
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transcript(lines: &[(f64, f64)]) -> Value {
+        let segments: Vec<Value> = lines
+            .iter()
+            .enumerate()
+            .map(|(index, (start, end))| {
+                json!({"text": format!("line {index}"), "start": start, "end": end,
+                       "words": [{"word": "x", "start": start, "end": end}]})
+            })
+            .collect();
+        json!({"language": "en", "source": "lyrics", "key": "A major", "tempo": 1.0,
+               "no_stems": false, "segments": segments})
+    }
+
+    /// 35 lines, 31 of them squeezed into 0.2 s, like the bad "Song 2".
+    fn squeezed_song() -> Value {
+        let lines: Vec<(f64, f64)> = (0..35)
+            .map(|index| {
+                let start = 10.0 + f64::from(index) * 4.0;
+                if index < 31 {
+                    (start, start + 0.2)
+                } else {
+                    (start, start + 3.0)
+                }
+            })
+            .collect();
+        transcript(&lines)
+    }
+
+    fn lrc(lines: usize, first: f64) -> String {
+        (0..lines)
+            .map(|index| {
+                let secs = first + index as f64 * 5.0;
+                format!(
+                    "[{:02}:{:05.2}]line {index}",
+                    (secs / 60.0) as u32,
+                    secs % 60.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_squeezed_alignment_takes_lrclib_line_timing() {
+        let transcript = squeezed_song();
+        let squeeze = squeezed(&transcript).expect("squeezed");
+        assert_eq!(
+            squeeze,
+            Squeeze {
+                squeezed: 31,
+                lines: 35
+            }
+        );
+
+        let parsed = checked_lrc(&lrc(35, 14.5), 35, 200.0).expect("usable LRC");
+        let repaired = rebuilt(&transcript, &parsed, squeeze);
+        assert_eq!(repaired["source"], "lrc");
+        assert_eq!(repaired["key"], "A major");
+        assert_eq!(repaired["language"], "en");
+        assert_eq!(repaired["tempo"], 1.0);
+        assert_eq!(
+            repaired["timing_repair"],
+            json!({"method": "lrclib-lines", "reason": "squeezed-alignment", "squeezed": 31, "lines": 35})
+        );
+        let starts: Vec<f64> = repaired["segments"]
+            .as_array()
+            .expect("segments")
+            .iter()
+            .filter_map(|segment| segment["start"].as_f64())
+            .collect();
+        let expected: Vec<f64> = (0..35).map(|index| 14.5 + f64::from(index) * 5.0).collect();
+        assert_eq!(starts.len(), expected.len());
+        assert!(
+            starts
+                .iter()
+                .zip(&expected)
+                .all(|(got, want)| (got - want).abs() < 0.01)
+        );
+    }
+
+    #[test]
+    fn healthy_or_short_transcripts_are_left_alone() {
+        let healthy: Vec<(f64, f64)> = (0..20)
+            .map(|index| (f64::from(index) * 4.0, f64::from(index) * 4.0 + 3.0))
+            .collect();
+        assert_eq!(squeezed(&transcript(&healthy)), None);
+        // 7 of 20 squeezed is under 40 %.
+        let mut some: Vec<(f64, f64)> = healthy.clone();
+        for line in some.iter_mut().take(7) {
+            line.1 = line.0 + 0.3;
+        }
+        assert_eq!(squeezed(&transcript(&some)), None);
+        // 8 of 20 is 40 %.
+        some[7].1 = some[7].0 + 0.3;
+        assert_eq!(
+            squeezed(&transcript(&some)),
+            Some(Squeeze {
+                squeezed: 8,
+                lines: 20
+            })
+        );
+        let short = [(0.0, 0.1); 5];
+        assert_eq!(squeezed(&transcript(&short)), None);
+    }
+
+    #[test]
+    fn bad_synced_lyrics_are_refused() {
+        assert_eq!(
+            checked_lrc(&lrc(5, 10.0), 5, 200.0).err(),
+            Some("have too few lines")
+        );
+        let shuffled =
+            "[00:10.00]a\n[00:20.00]b\n[00:15.00]c\n[00:30.00]d\n[00:40.00]e\n[00:50.00]f";
+        assert_eq!(
+            checked_lrc(shuffled, 6, 200.0).err(),
+            Some("are not in order")
+        );
+        let repeated =
+            "[00:10.00]a\n[00:10.00]b\n[00:15.00]c\n[00:30.00]d\n[00:40.00]e\n[00:50.00]f";
+        assert_eq!(
+            checked_lrc(repeated, 6, 200.0).err(),
+            Some("are not in order")
+        );
+        assert_eq!(
+            checked_lrc(&lrc(35, 14.5), 50, 200.0).err(),
+            Some("have a different number of lines")
+        );
+        assert_eq!(
+            checked_lrc(&lrc(35, 14.5), 35, 150.0).err(),
+            Some("run past the song")
+        );
+        assert!(checked_lrc(&lrc(35, 14.5), 30, 200.0).is_ok());
+    }
+}

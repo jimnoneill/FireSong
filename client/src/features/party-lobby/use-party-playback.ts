@@ -88,6 +88,8 @@ async function restartShifted(
 ): Promise<void> {
   const session = playbackLocationStateSchema.parse(locationState);
   const prepared = await preparePlayback({ song, keyOffset, tempo });
+  // The restarted song is still the same queue entry.
+  partyTv.setPlayingEntry(partyTv.getState().stage.entryId ?? null);
   await navigate('/playback', {
     replace: true,
     state: {

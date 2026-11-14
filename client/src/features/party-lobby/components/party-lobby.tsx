@@ -298,6 +298,8 @@ export function PartyLobby({
     }
     setArmed(false);
     onClearBest();
+    // The button goes once the board is empty; keep the remote on the lobby.
+    startRef.current?.focus();
   };
 
   // OK presses the focused button; Back and the arrows are handled here.

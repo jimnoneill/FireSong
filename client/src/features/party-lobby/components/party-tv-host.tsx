@@ -26,8 +26,12 @@ function PartyTv() {
   const { dismissed, dismiss } = useLobbyDismissal();
   const idle = pathname === '/' && !shouldRunSetup;
   const lobbyOn = noraebang && idle && !dismissed;
-  const { status, entries, startNow } = usePartyConductor({ autoStart: lobbyOn, idle });
-  const { snapshot } = usePartyTv();
+  const { snapshot, tuning } = usePartyTv();
+  // The countdown holds while a phone is tuned, so no song starts over the beep.
+  const { status, entries, startNow } = usePartyConductor({
+    autoStart: lobbyOn && tuning === null,
+    idle,
+  });
   const { devices, connected } = useSyncExternalStore(remoteMics.subscribe, remoteMics.getSnapshot);
   const links = useQuery({
     queryKey: MIC_LINKS,

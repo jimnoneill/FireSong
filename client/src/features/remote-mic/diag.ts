@@ -2,7 +2,7 @@ import { getVoiceEngine } from '@/audio/voice-engine';
 import { subscribeMicSamples } from '@/bridge/microphone-samples';
 import type { RemoteMics } from '@/bridge/remote-mics';
 import { SampleRing } from '@/features/microphone/lib/sample-ring';
-import { partyTv } from '@/features/party-lobby/party-store';
+import { partyTv, type StageReport } from '@/features/party-lobby/party-store';
 import { PITCH_WINDOW_SAMPLES } from '@/features/playback/lib/pitch/constants';
 import { createPitchDetector, detectPitchFromSamples } from '@/features/playback/lib/pitch/detect';
 import { isMicSlot } from '@/features/remote-mic/protocol';
@@ -37,7 +37,7 @@ export type FireSongDiag = {
   /** Fun sounds played and dropped (voice limit) since the page loaded. */
   fx(): { played: number; dropped: number };
   /** The party stage the TV last reported. */
-  stage(): unknown;
+  stage(): StageReport;
 };
 
 const GLOBAL_NAME = 'fireSongDiag';

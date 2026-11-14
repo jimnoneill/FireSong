@@ -79,7 +79,7 @@ function NoraebangResultScreen({
         {...(party ? { onNext: undefined, autoContinue: false } : {})}
       />
       {lobbyIn !== null && (
-        <p className="text-[2.2vh] font-semibold text-white/80" aria-live="polite">
+        <p className="text-[2.2vh] font-semibold text-white/80">
           {tp('firesong.party.backToLobby', lobbyIn)}
         </p>
       )}

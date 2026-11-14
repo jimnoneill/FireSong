@@ -169,7 +169,7 @@ cmd_owner_steps() {
     esac
   done
   [ -r "$env" ] || die "cannot read $env (run: server-install.sh env)"
-  local nfs nfs_export cache remote_bind origin data port
+  local nfs nfs_export cache remote_bind origin data port lan_ip cube_ip tv_port
   nfs="$(env_get "$env" FIRESONG_NFS_SERVER)"
   nfs_export="$(env_get "$env" FIRESONG_NFS_EXPORT)"
   cache="$(env_get "$env" FIRESONG_SONG_CACHE)"
@@ -177,6 +177,9 @@ cmd_owner_steps() {
   origin="$(env_get "$env" NIGHTINGALE_REMOTE_URL)"
   data="$(env_get "$env" NIGHTINGALE_DATA_PATH)"
   NIGHTINGALE_BIND_SHOWN="$(env_get "$env" NIGHTINGALE_BIND)"
+  lan_ip="$(env_get "$env" FIRESONG_LAN_IP)"
+  cube_ip="$(env_get "$env" FIRESONG_CUBE_IP)"
+  tv_port="$(env_get "$env" FIRESONG_TV_PORT)"
   port="${origin##*:}"
   [[ "$port" =~ ^[0-9]+$ ]] || port=8443
   cat <<EOF
@@ -203,6 +206,11 @@ FireSong owner one-time steps (values from $env)
 4. Disable Tailscale key expiry for this machine (admin console -> Machines ->
    $(hostname -s) -> ... -> Disable key expiry), or Funnel and remote access stop
    when the node key expires.
+
+5. Firewall, if ufw is active on this machine (sudo ufw status): let the Fire TV
+   reach the TV door, and nothing else:
+     sudo ufw allow proto tcp from ${cube_ip:-<cube-ip>} to ${lan_ip:-<lan-ip>} port ${tv_port:-64443} comment 'FireSong TV door'
+   Check: open FireSong from the Fire TV home screen; it loads the library.
 EOF
 }
 
@@ -272,6 +280,7 @@ FAKE
   expect "owner steps carry the fstab line" grep -q "10.0.0.7:/var/lib/firesong-cache /mnt/firesong-cache nfs rw,soft,intr,_netdev,nofail,bg 0 0" "$t/steps"
   expect "owner steps carry the Funnel command" grep -q "tailscale funnel --bg --https=8443 http://127.0.0.1:64449" "$t/steps"
   expect "owner steps carry Funnel off" grep -q "funnel --https=8443 off" "$t/steps"
+  expect "owner steps carry the TV door firewall rule" grep -q "ufw allow proto tcp from 10.0.0.6 to 10.0.0.5 port 64443" "$t/steps"
   echo "self-test: $pass passed, $failn failed"
   [ "$failn" = 0 ]
 }

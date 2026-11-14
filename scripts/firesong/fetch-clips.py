@@ -80,6 +80,16 @@ ARCHIVE_KEYWORDS = (
     "city night",
 )
 
+# The clips play on a family TV, and a cut can land anywhere in a long film,
+# so whole films whose id, title or subjects name these topics are skipped.
+UNSUITABLE = re.compile(
+    r"\b(strip\w*|burlesque|strippers?|nud\w*|naked|sex\w*|venereal|medic\w*|surg\w*"
+    r"|hospital\w*|disease\w*|traged\w*|accident\w*|crash\w*|death\w*|dead|dying"
+    r"|war|wars|warfare|bomb\w*|atomic|nuclear|combat|army|navy|soldiers?|crime\w*"
+    r"|criminal\w*|drugs?|narcotic\w*|guns?|kill\w*|blood\w*|murder\w*)\b",
+    re.IGNORECASE,
+)
+
 MIN_CLIP_SEC = 20
 MAX_CLIP_SEC = 60
 DEFAULT_CLIP_SEC = 30
@@ -183,6 +193,7 @@ class Candidate:
     source_url: str = ""
     license_url: str = ""
     tags: list[str] = field(default_factory=list)
+    subjects: list[str] = field(default_factory=list)
     duration_sec: float | None = None
     # Resolved lazily for archive items (needs one more request).
     media_url: str | None = None
@@ -249,6 +260,7 @@ def search_archive(keyword: str, rows: int, get: HttpGet | None = None) -> list[
                 source_url=f"https://archive.org/details/{urllib.parse.quote(identifier)}",
                 license_url=_first(doc.get("licenseurl")) or "",
                 tags=[keyword],
+                subjects=_all(doc.get("subject")),
             )
         )
     return candidates
@@ -352,6 +364,18 @@ def _first(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+def _all(value: Any) -> list[str]:
+    if value is None:
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else [str(value)]
+
+
+def suitable(candidate: Candidate) -> bool:
+    """False for a film that names adult, medical, disaster or war material."""
+    text = " ".join([candidate.source_id, candidate.title, *candidate.subjects])
+    return UNSUITABLE.search(text.replace("_", " ")) is None
+
+
 def _parse_duration(value: Any) -> float | None:
     text = str(value)
     try:
@@ -390,6 +414,9 @@ def gather_candidates(
                 print(f"{source} '{keyword}': {error}", file=sys.stderr)
                 continue
             for candidate in batch:
+                if not suitable(candidate):
+                    print(f"  skipped (not for a family TV): {candidate.name}")
+                    continue
                 found.setdefault(candidate.name, candidate)
     return list(found.values())
 

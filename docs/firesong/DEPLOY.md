@@ -73,6 +73,16 @@ tailscale funnel --https=8443 off                             # off, after the p
 - Funnel maps only the phone listener. The TV listener is never published.
 - Without `sudo`, these commands need the user to be the Tailscale operator (`sudo tailscale set --operator=$USER`, once).
 
+### 1.5 Firewall for the TV door
+
+If `ufw` is active on the server machine (`sudo ufw status`), it blocks the Fire TV from the TV door until one rule lets the Cube in:
+
+```sh
+sudo ufw allow proto tcp from <cube-ip> to <lan-ip> port 64443 comment 'FireSong TV door'
+```
+
+Caddy's own allowlist still refuses every other address. Without the rule the TV app shows its "Reconnecting to FireSong…" overlay while `curl` on the server machine succeeds.
+
 ### 1.4 Disable Tailscale key expiry
 
 The server machine's node key expires on 2026-11-29 (21:16 UTC). Funnel and all remote access stop when it does. In the admin console, open **Machines → the server machine → ⋯ → Disable key expiry**.
@@ -178,6 +188,19 @@ Never delete or edit another job's reservation file.
 - **When it cannot fit.** If the protected songs alone exceed the cap, prep stops with exit 4. Analyse fewer songs, or raise the cap if the volume allows.
 
 `$P evict [--dry-run] [--target-gb N] [--keep-playlist NAME]` runs the same eviction on its own. It refuses while a song is playing and when the server is down, because deleting files behind the server's back would leave the library pointing at missing stems.
+
+### 3.3 Background clips
+
+Noraebang mode plays random silent clips behind the lyrics, from `FIRESONG_CLIP_DIR` (`/mnt/firesong-cache/songs/noraebang-clips`). The server reads clips only from a real folder inside its media roots and outside the videos cache, which is why the pool sits in the songs directory. Prep counts it towards the cache but never evicts it.
+
+```sh
+F="scripts/firesong/fetch-clips.py --clip-dir /mnt/firesong-cache/songs/noraebang-clips"
+python3 -I $F search --source archive --max-clips 30 --max-total-mb 700           # dry run: the list
+python3 -I $F search --source archive --max-clips 30 --max-total-mb 700 --apply   # fetch and encode
+python3 -I $F verify                                                              # what the server will list
+```
+
+Only public-domain and CC0 Prelinger films are fetched (Pixabay and Pexels too, with your API keys). Films whose id, title or subjects name adult, medical, disaster or war material are skipped, because a random cut of such a film could land anywhere. Restart the server after changing `FIRESONG_CLIP_DIR`.
 
 ## 4. The Fire TV Cube from the server machine
 

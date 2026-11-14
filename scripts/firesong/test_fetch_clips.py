@@ -111,6 +111,18 @@ class SourcesTest(unittest.TestCase):
         self.assertEqual(found[0].source_url, "https://archive.org/details/Beach1950")
         self.assertIn("collection%3A%28prelinger%29", get.calls[0])
 
+    def test_unsuitable_films_are_skipped(self):
+        def film(source_id, title="", subjects=()):
+            return fetch_clips.Candidate("archive", source_id, "public-domain", title=title,
+                                         subjects=list(subjects))
+
+        for bad in (film("stripper_betty_howard"), film("Medicusc1939_14"), film("Tragedyo1972"),
+                    film("Roads1950", "Roads to War"), film("Fun1951", subjects=["Atomic bomb"])):
+            self.assertFalse(fetch_clips.suitable(bad), bad.source_id)
+        for good in (film("Beach1950", "Beach Holiday"), film("WarmSun1950", "Warm Sun, Toward Home"),
+                     film("SanFranc1932", "San Francisco"), film("Dance1955", "Dance Party")):
+            self.assertTrue(fetch_clips.suitable(good), good.source_id)
+
     def test_archive_media_picks_largest_mp4_and_rechecks_licence(self):
         candidate = fetch_clips.search_archive(
             "beach", 5, fake_get({"https://archive.org/advancedsearch.php": ARCHIVE_SEARCH})

@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MicRackPort, TapListener } from '@/audio/mic-rack';
-import { DEFAULT_ECHO_MIX, type EchoMix } from '@/audio/voice-params';
+import { DEFAULT_ECHO_MIX, type EchoMix, type SlotMix } from '@/audio/voice-params';
 import type { PeerEvents, PeerInit, PeerPort } from '@/bridge/remote-mic-peer';
 import { RemoteMics, type RemoteMicsDeps } from '@/bridge/remote-mics';
 import { phoneCalibration } from '@/features/remote-mic/calibration';
-import type { ServerToTv, TvSlot, TvToServer } from '@/features/remote-mic/protocol';
+import type {
+  ServerToTv,
+  ServerToTvParty,
+  TvPartyToServer,
+  TvSlot,
+  TvToServer,
+} from '@/features/remote-mic/protocol';
 import type { MicSampleFrame } from '@/types/MicSampleFrame';
 
 vi.mock('@/i18n', () => ({
@@ -24,6 +30,7 @@ class FakeRack implements MicRackPort {
   readonly muted = new Map<number, boolean>();
   readonly streams = new Map<number, MediaStream>();
   readonly mixes: EchoMix[] = [];
+  readonly slotMixes = new Map<number, SlotMix>();
 
   attach(slot: 1 | 2 | 3 | 4, stream: MediaStream) {
     this.calls.push(`attach:${slot}`);
@@ -56,6 +63,9 @@ class FakeRack implements MicRackPort {
   }
   setEchoMix(mix: EchoMix) {
     this.mixes.push(mix);
+  }
+  setSlotMix(slot: number, mix: SlotMix) {
+    this.slotMixes.set(slot, mix);
   }
   learnGateFloor(slot: number) {
     this.calls.push(`learn:${slot}`);
@@ -107,10 +117,10 @@ const setup = (monitorAlways = false) => {
   settings.monitorAlways = monitorAlways;
   settings.mix = DEFAULT_ECHO_MIX;
   const rack = new FakeRack();
-  const sent: TvToServer[] = [];
+  const sent: (TvToServer | TvPartyToServer)[] = [];
   const peers: FakePeer[] = [];
   const frames: [string, MicSampleFrame][] = [];
-  let push: (frame: ServerToTv) => void = () => undefined;
+  let push: (frame: ServerToTv | ServerToTvParty) => void = () => undefined;
   let stopped = 0;
   const deviceChanges = vi.fn();
   const deps: RemoteMicsDeps = {
@@ -147,7 +157,7 @@ const setup = (monitorAlways = false) => {
     peers,
     frames,
     deviceChanges,
-    push: (frame: ServerToTv) => push(frame),
+    push: (frame: ServerToTv | ServerToTvParty) => push(frame),
     stopped: () => stopped,
   };
 };
@@ -399,3 +409,55 @@ describe('noraebang seams (PROTOCOL.md §12)', () => {
   });
 });
 
+
+describe('party frames (PROTOCOL.md §13.6)', () => {
+  it("applies each phone's own volume and echo to its slot, and resets a freed slot", async () => {
+    const { push, rack } = await started();
+    push({ type: 'mix', slot: 2, volumePct: 120, echoPct: 50 });
+    expect(rack.slotMixes.has(2)).toBe(false);
+
+    push(roster(slot(2, { state: 'connected', micId: MIC_A })));
+    expect(rack.slotMixes.get(2)).toEqual({ volume: 1.2, echo: 0.5 });
+    push({ type: 'mix', slot: 2, volumePct: 0, echoPct: 200 });
+    expect(rack.slotMixes.get(2)).toEqual({ volume: 0, echo: 2 });
+
+    push({ type: 'slot-lost', slot: 2, micId: MIC_A, reason: 'bye' });
+    rack.slotMixes.clear();
+    push(roster(slot(2, { state: 'connected', micId: MIC_B })));
+    expect(rack.slotMixes.has(2)).toBe(false);
+  });
+
+  it('hands party frames and seat changes to the party client, the latest snapshot first', async () => {
+    const { mics, push, sent } = await started();
+    const party = {
+      type: 'party' as const,
+      party: {
+        rev: 1,
+        tvConnected: true,
+        stage: { state: 'lobby' as const, singers: [] },
+        queue: [],
+        queueTotal: 0,
+        singers: [],
+        scores: [],
+      },
+    };
+    push(party);
+    const events: unknown[] = [];
+    const unsubscribe = mics.subscribeParty((event) => events.push(event));
+    expect(events).toEqual([{ kind: 'frame', frame: party }]);
+
+    push({ type: 'ready', v: 1, iceServers: [] });
+    push({ type: 'fx', slot: 1, sound: 'cheer' });
+    push({ type: 'control', slot: 1, micId: MIC_A, action: 'pause' });
+    push({ type: 'mix', slot: 1, volumePct: 100, echoPct: 100 });
+    expect(events.slice(1)).toEqual([
+      { kind: 'ready' },
+      { kind: 'frame', frame: { type: 'fx', slot: 1, sound: 'cheer' } },
+      { kind: 'frame', frame: { type: 'control', slot: 1, micId: MIC_A, action: 'pause' } },
+    ]);
+    unsubscribe();
+
+    expect(mics.sendParty({ type: 'reset-scores' })).toBe(true);
+    expect(sent.at(-1)).toEqual({ type: 'reset-scores' });
+  });
+});

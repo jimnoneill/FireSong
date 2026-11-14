@@ -31,7 +31,7 @@ export const FX_MAX_VOICES = 4;
 /** How long each sound lasts, s. */
 export const FX_DURATION_SEC: Readonly<Record<FxSound, number>> = {
   applause: 2.5,
-  tambourine: 1.3,
+  tambourine: 1.1,
   cheer: 2.2,
   'air-horn': 1.2,
 };
@@ -42,17 +42,17 @@ const SILENT = 0.0001;
 
 const APPLAUSE_BANDS = 4;
 const APPLAUSE_CLAPS_PER_SEC = 20;
-const APPLAUSE_LEVEL = 1.1;
+const APPLAUSE_LEVEL = 2.2;
 
 const TAMBOURINE_PARTIALS_HZ = [5340, 7180, 9620] as const;
-const TAMBOURINE_LEVEL = 1.4;
+const TAMBOURINE_LEVEL = 0.9;
 
 const CHEER_FORMANTS = [
   { fromHz: 520, peakHz: 760, toHz: 610, q: 3, gain: 2.6 },
   { fromHz: 1050, peakHz: 1750, toHz: 1300, q: 3, gain: 2.2 },
   { fromHz: 2450, peakHz: 2900, toHz: 2600, q: 4, gain: 1.4 },
 ] as const;
-const CHEER_LEVEL = 1;
+const CHEER_LEVEL = 0.56;
 
 /** F major, each voice a little off so the chord beats like a real horn. */
 const HORN_NOTES_HZ = [349.23, 440, 523.25] as const;
@@ -65,7 +65,7 @@ const HORN_STABS = [
   [0.6, 1.17],
 ] as const;
 const HORN_DRIVE = 3;
-const HORN_LEVEL = 0.75;
+const HORN_LEVEL = 0.3;
 
 /** A small LCG; the same seed gives the same sounds. */
 export const seededRandom = (seed: number): (() => number) => {
@@ -142,8 +142,8 @@ export const createFxSynth = (
     const swell = context.createGain();
     swell.gain.setValueAtTime(SILENT, start);
     swell.gain.linearRampToValueAtTime(1, start + 0.35);
-    swell.gain.setValueAtTime(1, end - 1);
-    swell.gain.exponentialRampToValueAtTime(SILENT, end);
+    swell.gain.setValueAtTime(1, end - 0.8);
+    swell.gain.linearRampToValueAtTime(0, end);
     swell.connect(out);
     const source = noiseSource(start, end);
     const bands = Array.from({ length: APPLAUSE_BANDS }, () => {
@@ -174,7 +174,7 @@ export const createFxSynth = (
 
   const tambourine = (start: number): Voice => {
     const shakes = 8 + Math.floor(random() * 5);
-    const spacing = 1.08 / shakes;
+    const spacing = (FX_DURATION_SEC.tambourine - 0.2) / (shakes - 1);
     const end = start + FX_DURATION_SEC.tambourine;
     const out = voiceOut(TAMBOURINE_LEVEL);
     const source = noiseSource(start, end);
@@ -212,7 +212,7 @@ export const createFxSynth = (
     swell.gain.setValueAtTime(SILENT, start);
     swell.gain.linearRampToValueAtTime(1, peakAt);
     swell.gain.setValueAtTime(1, peakAt + 0.3);
-    swell.gain.exponentialRampToValueAtTime(SILENT, end);
+    swell.gain.linearRampToValueAtTime(0, end);
     const band = context.createBiquadFilter();
     band.type = 'lowpass';
     band.frequency.value = 4000;

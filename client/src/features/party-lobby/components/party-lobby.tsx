@@ -108,15 +108,15 @@ function SingerChip({ singer }: { singer: LobbySinger }) {
 function UpNextRow({ item, index }: { item: LobbyItem; index: number }) {
   const prep = prepLabel(item.prep);
   return (
-    <li className="flex items-center gap-[2vh] border-b border-white/10 py-[1.4vh] last:border-b-0">
-      <span className="w-[4vh] text-right text-[3vh] font-black text-white/40 tabular-nums">
+    <li className="flex items-center gap-[2vh] border-b border-white/10 py-[0.8vh] last:border-b-0">
+      <span className="w-[3.5vh] text-right text-[2.6vh] font-black text-white/40 tabular-nums">
         {index + 1}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[3.2vh] font-bold text-white">{item.title}</p>
-        <p className="truncate text-[2.2vh] text-white/60">{item.artist}</p>
+        <p className="truncate text-[2.8vh] leading-tight font-bold text-white">{item.title}</p>
+        <p className="truncate text-[2vh] leading-tight text-white/60">{item.artist}</p>
       </div>
-      <div className="flex max-w-[45%] flex-col items-end gap-[0.6vh] text-[2.4vh]">
+      <div className="flex max-w-[45%] flex-col items-end gap-[0.3vh] text-[2.2vh] leading-tight">
         <div className="flex flex-wrap justify-end gap-x-[2vh]">
           {item.singers.length === 0 ? (
             <span className="text-white/50">{t('firesong.party.hostSong')}</span>
@@ -124,7 +124,7 @@ function UpNextRow({ item, index }: { item: LobbyItem; index: number }) {
             item.singers.map((singer) => <SingerChip key={singer.slot} singer={singer} />)
           )}
         </div>
-        {prep !== null && <span className="text-[2vh] text-sky-300">{prep}</span>}
+        {prep !== null && <span className="text-[1.8vh] text-sky-300">{prep}</span>}
       </div>
     </li>
   );
@@ -133,12 +133,19 @@ function UpNextRow({ item, index }: { item: LobbyItem; index: number }) {
 function UpNext({ model }: { model: LobbyModel }) {
   return (
     <section aria-labelledby="party-up-next" className="flex min-h-0 flex-col">
-      <h2
-        id="party-up-next"
-        className="mb-[1vh] text-[2.6vh] font-bold tracking-wide text-white/70 uppercase"
-      >
-        {t('firesong.party.upNext')}
-      </h2>
+      <div className="mb-[1vh] flex items-baseline justify-between gap-[2vh]">
+        <h2
+          id="party-up-next"
+          className="text-[2.6vh] font-bold tracking-wide text-white/70 uppercase"
+        >
+          {t('firesong.party.upNext')}
+        </h2>
+        {model.more > 0 && (
+          <p className="text-[2.2vh] text-white/50">
+            {tp('firesong.party.upNext.more', model.more)}
+          </p>
+        )}
+      </div>
       {model.upNext.length === 0 ? (
         <p className="text-[2.6vh] text-white/50">{t('firesong.party.upNext.none')}</p>
       ) : (
@@ -148,11 +155,6 @@ function UpNext({ model }: { model: LobbyModel }) {
           ))}
         </ol>
       )}
-      {model.more > 0 && (
-        <p className="mt-[1vh] text-[2.2vh] text-white/50">
-          {tp('firesong.party.upNext.more', model.more)}
-        </p>
-      )}
     </section>
   );
 }
@@ -161,18 +163,18 @@ function BestRow({ score, rank }: { score: NightScore; rank: number }) {
   const caption = TIER_CAPTIONS[score.tier];
   const style = SLOT_STYLES[score.color];
   return (
-    <li className="flex items-center gap-[1.6vh] py-[1vh]">
-      <span className="w-[4vh] text-right text-[2.6vh] font-black text-white/40 tabular-nums">
+    <li className="flex items-center gap-[1.6vh] py-[0.8vh]">
+      <span className="w-[4vh] text-right text-[2.4vh] font-black text-white/40 tabular-nums">
         {t('firesong.noraebang.reveal.rank', { rank })}
       </span>
-      <span className="w-[8vh] text-right text-[4vh] font-black text-amber-300 tabular-nums">
+      <span className="w-[7vh] text-right text-[3.4vh] leading-none font-black text-amber-300 tabular-nums">
         {score.displayScore}
       </span>
       <div className="min-w-0 flex-1">
-        <p className={cn('truncate text-[2.6vh] font-bold', style.text)}>
+        <p className={cn('truncate text-[2.4vh] leading-tight font-bold', style.text)}>
           {score.name ?? colorName(score.color)}
         </p>
-        <p className="truncate text-[2vh] text-white/60">
+        <p className="truncate text-[1.8vh] leading-tight text-white/60">
           {t(caption.korean)} · {score.title ?? ''}
         </p>
       </div>
@@ -219,26 +221,32 @@ function SlotCard({ slot }: { slot: LobbySlot }) {
   return (
     <li
       className={cn(
-        'flex flex-col items-center gap-[1vh] rounded-[2vh] border-[0.5vh] bg-white/5 p-[1.6vh]',
+        'flex items-center gap-[1.6vh] rounded-[2vh] border-[0.5vh] bg-white/5 p-[1.2vh]',
         style.border,
       )}
     >
       {svg === null ? (
-        <div className="flex size-[20vh] items-center justify-center rounded-[1vh] bg-white/10 p-[1vh] text-center text-[2vh] text-white/60">
+        <div className="flex size-[21vh] shrink-0 items-center justify-center rounded-[1vh] bg-white/10 p-[1vh] text-center text-[2vh] text-white/60">
           {t('firesong.party.slotNoLink')}
         </div>
       ) : (
         <img
           src={qrDataUrl(svg)}
           alt={t('firesong.party.slotQr', { slot: slot.slot })}
-          className="size-[20vh] rounded-[1vh] bg-white p-[1vh]"
+          className="size-[21vh] shrink-0 rounded-[1vh] bg-white p-[0.8vh]"
         />
       )}
-      <p className={cn('text-[2.6vh] font-black', style.text)}>
-        {t('firesong.party.slotName', { slot: slot.slot })}
-        {slot.singer !== null && ` · ${singerName(slot.singer)}`}
-      </p>
-      <p className="text-[2vh] text-white/70">{slotState(slot)}</p>
+      <div className="flex min-w-0 flex-col gap-[0.6vh]">
+        <p className={cn('text-[2.8vh] leading-tight font-black', style.text)}>
+          {t('firesong.party.slotName', { slot: slot.slot })}
+        </p>
+        {slot.singer !== null && (
+          <p className={cn('truncate text-[2.6vh] leading-tight font-bold', style.text)}>
+            {singerName(slot.singer)}
+          </p>
+        )}
+        <p className="text-[2vh] leading-tight text-white/70">{slotState(slot)}</p>
+      </div>
     </li>
   );
 }
@@ -332,7 +340,7 @@ export function PartyLobby({
       aria-modal="true"
       aria-label={t('firesong.party.lobby')}
       data-nav-passthrough
-      className="fixed inset-0 z-40 m-0 flex size-full max-h-none max-w-none flex-col gap-[2.4vh] border-0 bg-linear-to-b from-slate-950 via-indigo-950 to-slate-950 px-[4vw] py-[3vh] text-white"
+      className="fixed inset-0 z-40 m-0 grid size-full max-h-none max-w-none grid-rows-[auto_minmax(0,1fr)_auto_auto] gap-[2vh] border-0 bg-linear-to-b from-slate-950 via-indigo-950 to-slate-950 px-[4vw] py-[3vh] text-white"
     >
       <header className="flex items-center gap-[2.4vh]">
         <img src={BRAND_MARK_URL} alt="" className="size-[8vh]" />
@@ -343,14 +351,13 @@ export function PartyLobby({
         {!connected && <p className="text-[2.2vh] text-amber-300">{t('firesong.party.offline')}</p>}
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[3fr_2fr] gap-[4vw]">
+      <div className="grid min-h-0 grid-cols-[3fr_2fr] gap-[4vw] overflow-hidden">
         <UpNext model={model} />
         <TonightsBest best={model.best} />
       </div>
 
-      <div className="flex flex-col gap-[1.4vh]">
-        <p className="text-[2.4vh] text-white/80">{t('firesong.party.joinHint')}</p>
-        <ul className="grid grid-cols-4 gap-[2vw]">
+      <section aria-label={t('firesong.party.joinHint')} className="flex flex-col gap-[1vh]">
+        <ul className="grid grid-cols-4 gap-[1.6vw]">
           {model.slots.map((slot) => (
             <SlotCard key={slot.slot} slot={slot} />
           ))}
@@ -358,7 +365,7 @@ export function PartyLobby({
         {linksError && (
           <p className="text-[2vh] text-amber-300">{t('firesong.party.linksError')}</p>
         )}
-      </div>
+      </section>
 
       <footer className="flex items-center gap-[2vw]">
         <button

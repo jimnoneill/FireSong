@@ -874,7 +874,7 @@
   "firesong.party.slotNoLink": "没有加入链接",
   "firesong.party.slotState.joined": "已加入",
   "firesong.party.slotState.reconnecting": "正在重连",
-  "firesong.party.slotState.free": "空闲",
+  "firesong.party.slotState.free": "空闲：扫码加入",
   "firesong.party.linksError": "无法加载加入码。",
   "firesong.party.joinHint": "用手机相机扫码一起唱",
   "firesong.party.offline": "正在重新连接手机…",

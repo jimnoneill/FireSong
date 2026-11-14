@@ -874,7 +874,7 @@
   "firesong.party.slotNoLink": "No join link",
   "firesong.party.slotState.joined": "Joined",
   "firesong.party.slotState.reconnecting": "Reconnecting",
-  "firesong.party.slotState.free": "Free",
+  "firesong.party.slotState.free": "Free: scan to join",
   "firesong.party.linksError": "Couldn't load the join codes.",
   "firesong.party.joinHint": "Scan a code with your phone's camera to sing along",
   "firesong.party.offline": "Reconnecting to the phones…",

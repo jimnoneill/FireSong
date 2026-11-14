@@ -71,6 +71,7 @@ export type LobbyStatus =
       entry: ConductorEntry;
       singers: MicSlot[];
       owner: MicSlot;
+      /** Until the item is passed over; `null` when it will not be. */
       secondsLeft: number | null;
     }
   | { kind: 'starting'; entry: ConductorEntry; singers: MicSlot[] };
@@ -227,8 +228,7 @@ export class LobbyConductor {
       this.ports.notify(owner, 'passed-over', entry.title);
       this.resetFocus(null);
     }
-    const secondsLeft =
-      this.input.entries.length > 1 ? Math.max(0, Math.ceil((GRACE_MS - waited) / 1000)) : null;
+    const secondsLeft = canPass ? Math.max(0, Math.ceil((GRACE_MS - waited) / 1000)) : null;
     this.show({ kind: 'waiting', entry, singers, owner, secondsLeft }, LOBBY_STAGE);
   }
 

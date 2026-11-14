@@ -874,7 +874,7 @@
   "firesong.party.slotNoLink": "Kein Beitrittslink",
   "firesong.party.slotState.joined": "Dabei",
   "firesong.party.slotState.reconnecting": "Verbindet neu",
-  "firesong.party.slotState.free": "Frei",
+  "firesong.party.slotState.free": "Frei: zum Mitmachen scannen",
   "firesong.party.linksError": "Die Beitrittscodes konnten nicht geladen werden.",
   "firesong.party.joinHint": "Code mit der Handykamera scannen und mitsingen",
   "firesong.party.offline": "Verbindung zu den Handys wird wiederhergestellt…",

@@ -168,6 +168,17 @@ export const isPending = (
   kind: PartyState['pending'][number]['kind'],
 ): boolean => state.pending.some((request) => request.kind === kind);
 
+/** When the lobby countdown reaches zero (wall clock, ms), or `null` without one. */
+export const countdownEndsAt = (state: PartyState): number | null => {
+  const secs =
+    state.snapshot?.stage.state === 'lobby' ? state.snapshot.stage.countdownSecs : undefined;
+  return secs === undefined ? null : state.snapshotAt + secs * 1_000;
+};
+
+/** When the last accepted key change stops blocking the next one, or `null`. */
+export const shiftCooldownEndsAt = (state: PartyState): number | null =>
+  state.shift === null ? null : state.shift.lastAt + SHIFT_CURRENT_COOLDOWN_SECS * 1_000;
+
 /** Seconds left of the lobby countdown at `now`, counted on from the snapshot's arrival. */
 export const countdownLeft = (state: PartyState, now: number): number | null => {
   const secs =

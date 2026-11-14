@@ -5,6 +5,7 @@ import type { PartyController } from '@/features/phone-mic/lib/party-controller'
 import type { PartyState } from '@/features/phone-mic/lib/party-state';
 import {
   canStartNow,
+  countdownEndsAt,
   countdownLeft,
   firstReadyItem,
   isPending,
@@ -22,8 +23,7 @@ type NextUpCardProps = {
 
 /** In the lobby, when this phone sings the next song: the countdown and "Start now". */
 export function NextUpCard({ party, controller, slot, disabled }: NextUpCardProps) {
-  const counting = party.snapshot?.stage.countdownSecs !== undefined;
-  const now = useNow(counting);
+  const now = useNow(countdownEndsAt(party));
   if (!canStartNow(party.snapshot, slot)) {
     return null;
   }

@@ -3,7 +3,11 @@ import { AudioLinesIcon } from 'lucide-react';
 import { calibrationFailureText } from '@/features/phone-mic/components/format';
 import { useNow } from '@/features/phone-mic/hooks/use-now';
 import type { PartyController } from '@/features/phone-mic/lib/party-controller';
-import type { CalibrationView, PartyState } from '@/features/phone-mic/lib/party-state';
+import {
+  CALIBRATE_COOLDOWN_MS,
+  type CalibrationView,
+  type PartyState,
+} from '@/features/phone-mic/lib/party-state';
 import { calibrateCooldownUntil } from '@/features/phone-mic/lib/party-view';
 import { formatNumber, t } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
@@ -84,7 +88,9 @@ function TuneStatus({ calibration, running, cooldownUntil, now }: TuneStatusProp
 /** "Tune my mic": the TV beeps and measures this phone's delay, between songs only. */
 export function TuneMic({ party, controller, disabled }: TuneMicProps) {
   const running = party.calibration.state === 'requested' || party.calibration.state === 'started';
-  const now = useNow(party.calibrateSentAt !== null);
+  const now = useNow(
+    party.calibrateSentAt === null ? null : party.calibrateSentAt + CALIBRATE_COOLDOWN_MS,
+  );
   const cooldownUntil = calibrateCooldownUntil(party, now);
   const unavailable = unavailableText(party);
 

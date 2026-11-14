@@ -7,7 +7,12 @@ import { SingerChip } from '@/features/phone-mic/components/singer-chip';
 import { useNow } from '@/features/phone-mic/hooks/use-now';
 import type { PhoneMicApp } from '@/features/phone-mic/lib/app';
 import type { PartyState } from '@/features/phone-mic/lib/party-state';
-import { countdownLeft, isReady, singsIn } from '@/features/phone-mic/lib/party-view';
+import {
+  countdownEndsAt,
+  countdownLeft,
+  isReady,
+  singsIn,
+} from '@/features/phone-mic/lib/party-view';
 import type { MicSlot, PartyItem, PartySnapshot } from '@/features/remote-mic/protocol';
 import { formatNumber, t } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
@@ -114,7 +119,7 @@ function QueueRow({ item, position, snapshot, mine, onEdit }: QueueRowProps) {
 }
 
 function Countdown({ party }: { party: PartyState }) {
-  const now = useNow(party.snapshot?.stage.countdownSecs !== undefined);
+  const now = useNow(countdownEndsAt(party));
   const left = countdownLeft(party, now);
   return left === null ? null : (
     <p aria-live="polite" className="rounded-xl bg-muted px-4 py-3 text-base">

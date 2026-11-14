@@ -1,13 +1,15 @@
 // Mock of the FireSong server for the phone-page e2e test: two loopback
 // listeners like the real server (phone door and TV door), static files from
 // client/dist with the SPA fallback, the pairing-token cookie on the phone
-// door, and /rtc implementing the slot registry and relay of
-// docs/firesong/PROTOCOL.md §4-6. Test code drives it directly.
+// door, /rtc implementing the slot registry and relay of
+// docs/firesong/PROTOCOL.md §4-6, and the party channel and song book of §13
+// (party-mock.mjs). Test code drives it directly.
 import { randomBytes } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 
+import { createPartyMock, PARTY_TYPES } from './party-mock.mjs';
 import { acceptUpgrade } from './ws-server.mjs';
 
 const SLOTS = [1, 2, 3, 4];
@@ -40,8 +42,10 @@ const cookieToken = (header) =>
     .map((pair) => pair.trim().split('='))
     .find(([name]) => name === COOKIE)?.[1];
 
-export async function startMockRelay({ distDir, extraFiles = {}, token }) {
+export async function startMockRelay({ distDir, extraFiles = {}, token: initialToken }) {
+  let token = initialToken;
   const log = [];
+  const httpLog = [];
   const sockets = new Set();
   const slots = new Map();
   let tv = null;
@@ -68,6 +72,7 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
       };
     });
   const sendRoster = () => toTv({ type: 'roster', slots: roster() });
+  const party = createPartyMock({ slots, sendTo, toTv, hasTv: () => tv !== null });
   const entryOf = (conn) => [...slots.values()].find((entry) => entry.conn === conn);
   const fail = (conn, role, code, closeCode) => {
     sendTo(conn, role, { type: 'error', code });
@@ -130,6 +135,7 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
     });
     if (entry.muted) sendTo(conn, 'mic', { type: 'mute', muted: true, by: entry.mutedBy });
     sendRoster();
+    party.afterAssign(entry.slot);
   };
 
   const micFrame = (conn, frame) => {
@@ -154,11 +160,12 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
         entry.conn = null;
         conn.close(1000);
         toTv({ type: 'slot-lost', ...stamp, reason: 'bye' });
-        return sendRoster();
+        sendRoster();
+        return party.slotFreed(entry.slot);
       case 'ping':
         return sendTo(conn, 'mic', { type: 'pong', t: frame.t });
       default:
-        return fail(conn, 'mic', 'bad-frame');
+        return PARTY_TYPES.has(frame.type) ? party.handle(entry.slot, frame) : fail(conn, 'mic', 'bad-frame');
     }
   };
 
@@ -207,6 +214,7 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
         ...(frame.title === undefined ? {} : { title: frame.title }),
       });
     }
+    party.songResult(frame);
   };
 
   const onMicConnection = (conn) => {
@@ -250,7 +258,8 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
         tv = conn;
         sendTo(conn, 'tv', { type: 'ready', v: 1, iceServers: [] });
         sendRoster();
-        return broadcastTvState(true);
+        broadcastTvState(true);
+        return party.tvChanged();
       }
       return tvFrame(conn, frame);
     });
@@ -259,6 +268,7 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
       if (tv === conn) {
         tv = null;
         broadcastTvState(false);
+        party.tvChanged();
       }
     });
   };
@@ -288,9 +298,39 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
     return url.searchParams.get('t') === token || cookieToken(request.headers.cookie) === token;
   };
 
+  const readJson = (request) =>
+    new Promise((resolve) => {
+      const chunks = [];
+      request.on('data', (chunk) => chunks.push(chunk));
+      request.on('end', () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        } catch {
+          resolve(undefined);
+        }
+      });
+    });
+
+  const songBook = async (request, response) => {
+    const page = party.songBook(await readJson(request));
+    if (page === null) {
+      response.writeHead(400).end('invalid song book query');
+      return;
+    }
+    const body = Buffer.from(JSON.stringify(page));
+    response.writeHead(200, { 'content-type': 'application/json', 'content-length': body.length });
+    response.end(body);
+  };
+
   const phoneServer = createServer((request, response) => {
+    const pathname = new URL(request.url, 'http://local').pathname;
+    httpLog.push({ at: Date.now(), method: request.method, path: pathname });
     if (!phoneAuthorised(request)) {
       response.writeHead(401).end('remote link is not valid');
+      return;
+    }
+    if (request.method === 'POST' && pathname === '/api/cmd/firesong_song_book') {
+      songBook(request, response).catch((error) => response.writeHead(500).end(String(error)));
       return;
     }
     if (new URL(request.url, 'http://local').searchParams.get('t') === token) {
@@ -325,7 +365,9 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
   const tvPort = await listen(tvServer);
 
   return {
-    token,
+    get token() {
+      return token;
+    },
     phoneOrigin: `http://127.0.0.1:${phonePort}`,
     tvOrigin: `http://127.0.0.1:${tvPort}`,
     log,
@@ -341,6 +383,14 @@ export async function startMockRelay({ distDir, extraFiles = {}, token }) {
       record('in', 'tv', { type: 'song-result', ...frame });
       relaySongResult(frame);
     },
+    party,
+    httpLog,
+    /** Pairing-token rotation as far as the song book sees it: old cookies get 401. */
+    rotateToken: () => {
+      token = `${token}x`;
+    },
+    framesTo: (role, type) =>
+      log.filter((entry) => entry.dir === 'out' && entry.role === role && entry.frame.type === type),
     framesFrom: (role, type) =>
       log.filter((entry) => entry.dir === 'in' && entry.role === role && entry.frame.type === type),
     close: async () => {

@@ -9,24 +9,24 @@ import { cn } from '@/shared/utils/cn';
 
 const SOUNDS: readonly { sound: FxSound; label: TranslationKey; icon: LucideIcon; tone: string }[] =
   [
-    { sound: 'applause', label: 'phoneMic.fx.applause', icon: HandIcon, tone: 'bg-rose-500/15' },
+    { sound: 'applause', label: 'phoneMic.fx.applause', icon: HandIcon, tone: 'bg-rose-500/20' },
     {
       sound: 'tambourine',
       label: 'phoneMic.fx.tambourine',
       icon: DrumIcon,
-      tone: 'bg-amber-500/15',
+      tone: 'bg-amber-500/20',
     },
     {
       sound: 'cheer',
       label: 'phoneMic.fx.cheer',
       icon: PartyPopperIcon,
-      tone: 'bg-fuchsia-500/15',
+      tone: 'bg-fuchsia-500/20',
     },
     {
       sound: 'air-horn',
       label: 'phoneMic.fx.airHorn',
       icon: MegaphoneIcon,
-      tone: 'bg-emerald-500/15',
+      tone: 'bg-emerald-500/20',
     },
   ];
 
@@ -43,8 +43,8 @@ type FxPadProps = {
  * 2 s), shown as dots and a countdown instead of taps that silently vanish.
  */
 export function FxPad({ party, disabled, onPlay }: FxPadProps) {
-  const refilling = party.fx.tokens < FX_BURST;
-  const now = useNow(refilling, REFRESH_MS);
+  const fullAt = party.fx.updatedAt + (FX_BURST - party.fx.tokens) * FX_RULE.refillMs;
+  const now = useNow(party.fx.tokens < FX_BURST ? fullAt : null, REFRESH_MS);
   const tokens = bucketAt(party.fx, FX_RULE, now).tokens;
   const nextAt = nextTokenAt(party.fx, FX_RULE, now);
   const empty = tokens < 1;

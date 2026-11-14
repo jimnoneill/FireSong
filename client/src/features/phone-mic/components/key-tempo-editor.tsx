@@ -8,6 +8,7 @@ import type { PartyState, ShiftValues } from '@/features/phone-mic/lib/party-sta
 import {
   isPending,
   shiftAllowance,
+  shiftCooldownEndsAt,
   type ShiftAllowance,
 } from '@/features/phone-mic/lib/party-view';
 import { formatNumber, t } from '@/i18n';
@@ -40,8 +41,7 @@ export function KeyTempoEditor({ party, controller, settings, disabled }: KeyTem
   const [draft, setDraft] = useState<ShiftValues>(settings);
   const [confirming, setConfirming] = useState(false);
   const pending = isPending(party, 'shift-current');
-  const cooling = party.shift !== null;
-  const now = useNow(cooling);
+  const now = useNow(shiftCooldownEndsAt(party));
   const allowance = shiftAllowance(party, now);
   const changed = draft.keyOffset !== settings.keyOffset || draft.tempo !== settings.tempo;
   const blocked = disabled || pending || allowance.kind !== 'ok';

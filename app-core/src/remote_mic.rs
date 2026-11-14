@@ -734,6 +734,866 @@ fn check_candidate(candidate: Option<&IceCandidate>) -> Result<(), RtcErrorCode>
         .ok_or(RtcErrorCode::TooLarge)
 }
 
+// ─── Party channel (PROTOCOL.md §13, phone app v2) ──────────────────────
+//
+// Song book, reservations, the phone remote, fun sounds, mic tuning, lyric
+// lines and tonight's scores. Party frames share the `/rtc` socket with the
+// signaling frames above but live in their own enums, so the v1 decoders and
+// v1 clients are unchanged: a v1 client drops frames it cannot parse.
+
+/// App-api command behind the phone's song book (`POST /api/cmd/<name>`).
+pub const SONG_BOOK_COMMAND: &str = "firesong_song_book";
+
+/// Reservations one phone may own at a time, ready and preparing together.
+pub const MAX_RESERVATIONS_PER_SLOT: usize = 3;
+/// Of those, songs still being prepared (analysed).
+pub const MAX_PREPARING_PER_SLOT: usize = 2;
+/// Preparations started by phones, across the whole party.
+pub const MAX_PREPARING_TOTAL: usize = 6;
+/// "Sing next" reservations one phone may hold at a time.
+pub const MAX_SING_NEXT_PER_SLOT: usize = 1;
+/// Other phones one reservation may name as partners (four singers in all).
+pub const MAX_PARTNERS: usize = 3;
+/// Queue items a `party` snapshot lists before it cuts the rest. Items with
+/// phone singers are always listed.
+pub const MAX_PARTY_QUEUE_ITEMS: usize = 30;
+pub const MAX_NIGHT_SCORES: usize = 10;
+/// A night score older than this leaves the board.
+pub const NIGHT_SCORE_MAX_AGE_SECS: u32 = 43_200;
+pub const MAX_LYRIC_CHARS: usize = 200;
+pub const MAX_LINE_MS: u32 = 60_000;
+pub const MAX_COUNTDOWN_SECS: u32 = 120;
+pub const FILE_HASH_MIN_LEN: usize = 16;
+pub const FILE_HASH_MAX_LEN: usize = 64;
+/// Reservation ids and playback-queue entry ids.
+pub const MAX_PARTY_ID_LEN: usize = 32;
+pub const MIN_KEY_OFFSET: i8 = -5;
+pub const MAX_KEY_OFFSET: i8 = 5;
+pub const MIN_TEMPO: f64 = 0.5;
+pub const MAX_TEMPO: f64 = 2.0;
+/// Tempo ratios are whole multiples of this; the stem cache rounds to it.
+pub const TEMPO_STEP: f64 = 0.1;
+pub const DEFAULT_VOLUME_PCT: u8 = 100;
+pub const MAX_VOLUME_PCT: u8 = 150;
+pub const DEFAULT_ECHO_PCT: u8 = 100;
+pub const MAX_ECHO_PCT: u8 = 200;
+pub const MAX_SEARCH_CHARS: usize = 100;
+pub const MAX_BOOK_PAGE: u32 = 50;
+pub const MAX_BOOK_SKIP: u32 = 1_000_000;
+
+/// Party requests per phone (`reserve`, `edit`, `cancel`, `control`,
+/// `shift-current`, `calibrate`): a burst of this many, then one more every
+/// [`PARTY_REQUEST_REFILL_MS`]. Every frame still counts against the socket
+/// bucket ([`RATE_BURST`]).
+pub const PARTY_REQUEST_BURST: u32 = 6;
+pub const PARTY_REQUEST_REFILL_MS: u32 = 3_000;
+/// Fun sounds per phone; sounds over the budget are dropped without an error.
+pub const FX_BURST: u32 = 3;
+pub const FX_REFILL_MS: u32 = 2_000;
+/// Fun sounds the TV plays at the same time; extra ones are dropped.
+pub const MAX_FX_VOICES: u32 = 4;
+/// `mix` frames the server relays per phone per second; it keeps the newest.
+pub const MIX_PER_SEC: u32 = 5;
+pub const CALIBRATION_COOLDOWN_SECS: u32 = 30;
+/// The server gives up on a calibration the TV has not finished by then.
+pub const CALIBRATION_TIMEOUT_SECS: u32 = 15;
+pub const SHIFT_CURRENT_COOLDOWN_SECS: u32 = 15;
+pub const MAX_SHIFTS_PER_SONG: u32 = 3;
+/// `party` snapshots are coalesced to at most one per this interval.
+pub const PARTY_SNAPSHOT_MIN_INTERVAL_MS: u32 = 500;
+/// Preparation time assumed for an estimate before any song has finished.
+pub const DEFAULT_PREP_SECS: u32 = 120;
+/// Lobby countdown before the TV starts the next ready song.
+pub const LOBBY_COUNTDOWN_SECS: u32 = 15;
+/// How long the lobby waits for a reconnecting next singer before it moves
+/// that song back by one place.
+pub const ABSENT_SINGER_GRACE_SECS: u32 = 30;
+
+/// `type` values of [`MicPartyToServer`].
+pub const MIC_PARTY_TYPES: &[&str] = &[
+    "reserve",
+    "edit",
+    "cancel",
+    "control",
+    "shift-current",
+    "fx",
+    "mix",
+    "calibrate",
+];
+
+/// `type` values of [`TvPartyToServer`].
+pub const TV_PARTY_TYPES: &[&str] = &["stage", "lyric", "calibration", "notify", "reset-scores"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum PartyAction {
+    /// Pause the current song.
+    Pause,
+    Resume,
+    /// End the current song now; the TV returns to the lobby.
+    Stop,
+    /// In the lobby: start the next song without waiting for the countdown.
+    StartNow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum FxSound {
+    Applause,
+    Tambourine,
+    Cheer,
+    AirHorn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum StageKind {
+    /// Between songs: the TV shows the party lobby.
+    Lobby,
+    /// A song is loading (key or tempo render, stems).
+    Starting,
+    Singing,
+    Paused,
+    /// The score reveal is on screen.
+    Reveal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum PrepStage {
+    /// Analysed: it can be sung now.
+    Ready,
+    /// Not analysed and not queued for analysis (song book only).
+    NotReady,
+    /// Waiting in the analysis queue.
+    Queued,
+    Analyzing,
+    /// Queued, but the GPU is reserved or short of memory.
+    WaitingGpu,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum CalibrationState {
+    Started,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum CalibrationFailure {
+    /// A song is on, or another calibration is running.
+    Busy,
+    /// The slot has no audio from the phone.
+    NoAudio,
+    /// The beep was not heard in the phone's audio.
+    NoTone,
+    Timeout,
+    NoTv,
+}
+
+/// Why a party request was refused (`ack {ok: false}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum PartyErrorCode {
+    /// Not this phone's reservation, or not a singer of the current song.
+    NotAllowed,
+    /// No such reservation or song.
+    NotFound,
+    /// A value that does not fit this song or this stage.
+    Invalid,
+    /// This phone already owns [`MAX_RESERVATIONS_PER_SLOT`] reservations.
+    LimitReservations,
+    /// This phone already has [`MAX_PREPARING_PER_SLOT`] songs preparing.
+    LimitPreparing,
+    /// The party already prepares [`MAX_PREPARING_TOTAL`] songs.
+    PrepFull,
+    /// This phone already holds a "sing next" reservation.
+    LimitSingNext,
+    /// The same song is already waiting for this phone.
+    Duplicate,
+    /// The TV is busy with something that blocks this request.
+    Busy,
+    NoTv,
+    /// The song cannot do this: no detected key for a shift, a USDX song, or
+    /// a source that cannot be reached.
+    Unavailable,
+    /// Over a party request budget or cooldown.
+    RateLimited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "firesong/")]
+pub enum NoticeCode {
+    /// Another phone named this phone as a partner.
+    DuetAdded,
+    /// A song preparing for this phone failed and was dropped.
+    PrepFailed,
+    /// This phone's song came up while it was away and moved back one place.
+    PassedOver,
+    /// The key or tempo change failed; the song plays on unchanged.
+    ShiftFailed,
+    /// The TV could not start this phone's song; it was dropped.
+    StartFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct PrepState {
+    pub state: PrepStage,
+    /// Analysis progress, 0-100, while `analyzing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pct: Option<u8>,
+    /// Estimated seconds until ready. For `not-ready`: if it were picked now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub eta_secs: Option<u32>,
+}
+
+/// One queued or preparing song in a `party` snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct PartyItem {
+    /// Opaque and server-assigned; stable while the item waits, also when
+    /// `fileHash` changes.
+    pub reservation_id: String,
+    /// The playback-queue entry, once the song is ready and in the queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub entry_id: Option<String>,
+    /// The song's current hash; it can change once while a remote song is
+    /// prepared.
+    pub file_hash: String,
+    pub title: String,
+    pub artist: String,
+    pub duration_secs: f64,
+    /// Slots that sing it, owner first. Empty for songs the host queued.
+    pub singers: Vec<u8>,
+    pub key_offset: i8,
+    pub tempo: f64,
+    pub sing_next: bool,
+    /// Key and tempo can be changed: a detected key, not USDX.
+    pub shiftable: bool,
+    pub prep: PrepState,
+}
+
+/// One occupied slot in a `party` snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct PartySinger {
+    pub slot: u8,
+    pub color: PlayerColor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// `connected`, or `reserved` while the phone reconnects.
+    pub state: SlotState,
+    /// The slot's fader on the TV, 0-150, 100 = unity.
+    pub volume_pct: u8,
+    /// The slot's echo, 0-200, 100 = the echo preset as it is.
+    pub echo_pct: u8,
+}
+
+/// One entry of tonight's best scores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct NightScore {
+    pub slot: u8,
+    pub color: PlayerColor,
+    /// The singer's name when the score was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
+    pub display_score: u8,
+    pub raw_score: u32,
+    pub tier: ScoreTier,
+    /// Unix time of the reveal, in seconds.
+    pub at_secs: u32,
+}
+
+/// What the TV shows, as it last reported with `stage`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct PartyStage {
+    pub state: StageKind,
+    /// The reservation being sung, when the song came from the queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reservation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub artist: Option<String>,
+    /// Slots the TV scores for the current song; empty in the lobby.
+    pub singers: Vec<u8>,
+    /// Lobby: seconds left before the TV starts the first ready item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub countdown_secs: Option<u32>,
+}
+
+/// The shared party state. Every phone and the TV get the same snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct PartySnapshot {
+    /// Grows with every snapshot the server builds.
+    pub rev: u32,
+    pub tv_connected: bool,
+    pub stage: PartyStage,
+    /// Up next, in play order.
+    pub queue: Vec<PartyItem>,
+    /// Every queued and preparing item, including any cut from `queue`.
+    pub queue_total: u32,
+    /// Occupied slots, in slot order.
+    pub singers: Vec<PartySinger>,
+    /// Tonight's best, best first.
+    pub scores: Vec<NightScore>,
+}
+
+/// Payload of [`SONG_BOOK_COMMAND`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct SongBookQuery {
+    /// Words to match in title or artist; none lists the whole library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub skip: u32,
+    pub take: u32,
+}
+
+impl SongBookQuery {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let search_ok = self
+            .search
+            .as_deref()
+            .is_none_or(|search| is_short_text(search, MAX_SEARCH_CHARS));
+        if !search_ok {
+            return Err("search is too long");
+        }
+        if !(1..=MAX_BOOK_PAGE).contains(&self.take) || self.skip > MAX_BOOK_SKIP {
+            return Err("page is out of range");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct BookSong {
+    pub file_hash: String,
+    pub title: String,
+    pub artist: String,
+    pub duration_secs: f64,
+    /// Key and tempo can be changed: a detected key, not USDX.
+    pub shiftable: bool,
+    pub prep: PrepState,
+}
+
+/// One page of the song book: ready songs first, each part in title order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "firesong/")]
+pub struct SongBookPage {
+    pub items: Vec<BookSong>,
+    pub skip: u32,
+    /// Songs that match the search.
+    pub total: u32,
+    /// Of `total`, the ready ones; they fill positions `0..readyTotal`.
+    pub ready_total: u32,
+}
+
+/// Phone -> server party requests on the phone's `/rtc`. The server stamps
+/// the sender's slot and `micId`; a request with `reqId` gets an `ack`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export, export_to = "firesong/")]
+pub enum MicPartyToServer {
+    /// Reserve a song for this phone and its partners. A song that is not
+    /// ready starts preparing.
+    Reserve {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        req_id: Option<u32>,
+        file_hash: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        key_offset: Option<i8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        tempo: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        sing_next: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        partners: Option<Vec<u8>>,
+    },
+    /// Change one of this phone's own reservations.
+    Edit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        req_id: Option<u32>,
+        reservation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        key_offset: Option<i8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        tempo: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        sing_next: Option<bool>,
+    },
+    /// The owner removes the reservation; a partner leaves it.
+    Cancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        req_id: Option<u32>,
+        reservation_id: String,
+    },
+    Control {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        req_id: Option<u32>,
+        action: PartyAction,
+    },
+    /// New key and tempo for the current song; the TV restarts it with them.
+    ShiftCurrent {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        req_id: Option<u32>,
+        key_offset: i8,
+        tempo: f64,
+    },
+    Fx {
+        sound: FxSound,
+    },
+    /// This phone's slot on the TV mixer.
+    Mix {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        volume_pct: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        echo_pct: Option<u8>,
+    },
+    /// Run the beep calibration for this phone's slot.
+    Calibrate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        req_id: Option<u32>,
+    },
+}
+
+/// Server -> phone party frames.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export, export_to = "firesong/")]
+pub enum ServerToMicParty {
+    /// The shared party state, after `assign` and on every change.
+    Party { party: PartySnapshot },
+    /// The answer to a request that carried `reqId`.
+    Ack {
+        req_id: u32,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        code: Option<PartyErrorCode>,
+        /// The new reservation, for `reserve`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reservation_id: Option<String>,
+    },
+    /// The current and next lyric line of the song this phone sings.
+    Lyric {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        line: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        next: Option<String>,
+        /// How long `line` lasts at the current tempo.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        line_ms: Option<u32>,
+        /// How much of `line` had passed when the TV sent this.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        elapsed_ms: Option<u32>,
+        paused: bool,
+    },
+    /// Progress of this phone's calibration.
+    Calibration {
+        state: CalibrationState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        latency_ms: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<CalibrationFailure>,
+    },
+    Notice {
+        code: NoticeCode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        title: Option<String>,
+        /// For `duet-added`: who named this phone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        by_slot: Option<u8>,
+    },
+    /// Where this phone's last result placed tonight; follows `song-result`.
+    NightRank {
+        /// 1-based place on the board, when it made the board.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        rank: Option<u8>,
+        /// Scores made tonight, on the board or not.
+        entries: u32,
+    },
+}
+
+/// TV -> server party frames, on the full listener's `/rtc`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export, export_to = "firesong/")]
+pub enum TvPartyToServer {
+    /// What the TV shows; sent on every change and after `ready`.
+    Stage {
+        state: StageKind,
+        /// The playback-queue entry being played, when it came from the queue.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        entry_id: Option<String>,
+        /// Slots the TV scores for this song.
+        singers: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        artist: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        countdown_secs: Option<u32>,
+    },
+    /// A lyric line change, pause, resume or seek of the current song.
+    Lyric {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        line: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        next: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        line_ms: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        elapsed_ms: Option<u32>,
+        paused: bool,
+    },
+    Calibration {
+        slot: u8,
+        state: CalibrationState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        latency_ms: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<CalibrationFailure>,
+    },
+    /// Tell one phone what happened to its song.
+    Notify {
+        slot: u8,
+        code: NoticeCode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        title: Option<String>,
+    },
+    /// The host clears tonight's scores.
+    ResetScores,
+}
+
+/// Server -> TV party frames. Frames about a phone carry the stamped `slot`
+/// and `micId`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export, export_to = "firesong/")]
+pub enum ServerToTvParty {
+    Party {
+        party: PartySnapshot,
+    },
+    /// A phone remote action the server has authorised.
+    Control {
+        slot: u8,
+        mic_id: String,
+        action: PartyAction,
+    },
+    /// Restart the current song with this key and tempo.
+    ShiftCurrent {
+        slot: u8,
+        mic_id: String,
+        key_offset: i8,
+        tempo: f64,
+    },
+    Fx {
+        slot: u8,
+        sound: FxSound,
+    },
+    /// One slot's mixer settings; sent on change and, after `ready`, for
+    /// every occupied slot.
+    Mix {
+        slot: u8,
+        volume_pct: u8,
+        echo_pct: u8,
+    },
+    /// Run the beep calibration for this slot now.
+    Calibrate {
+        slot: u8,
+        mic_id: String,
+    },
+}
+
+/// Any phone text frame: signaling (§5.1) or party (§13).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MicInbound {
+    Rtc(MicToServer),
+    Party(MicPartyToServer),
+}
+
+/// Any TV text frame: signaling (§5.3) or party (§13).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TvInbound {
+    Rtc(TvToServer),
+    Party(TvPartyToServer),
+}
+
+/// Size-checks, parses and validates one phone text frame of either kind.
+/// Signaling frames decode exactly as [`decode_mic_frame`] does.
+pub fn decode_mic_inbound(text: &str) -> Result<MicInbound, RtcErrorCode> {
+    if text.len() > MAX_FRAME_BYTES {
+        return Err(RtcErrorCode::TooLarge);
+    }
+    let Some(value) = party_frame_value(text, MIC_PARTY_TYPES) else {
+        return decode_mic_frame(text).map(MicInbound::Rtc);
+    };
+    let frame: MicPartyToServer =
+        serde_json::from_value(value).map_err(|_| RtcErrorCode::BadFrame)?;
+    frame.validate()?;
+    Ok(MicInbound::Party(frame))
+}
+
+/// Size-checks, parses and validates one TV text frame of either kind.
+/// Signaling frames decode exactly as [`decode_tv_frame`] does.
+pub fn decode_tv_inbound(text: &str) -> Result<TvInbound, RtcErrorCode> {
+    if text.len() > MAX_FRAME_BYTES {
+        return Err(RtcErrorCode::TooLarge);
+    }
+    let Some(value) = party_frame_value(text, TV_PARTY_TYPES) else {
+        return decode_tv_frame(text).map(TvInbound::Rtc);
+    };
+    let frame: TvPartyToServer =
+        serde_json::from_value(value).map_err(|_| RtcErrorCode::BadFrame)?;
+    frame.validate()?;
+    Ok(TvInbound::Party(frame))
+}
+
+fn party_frame_value(text: &str, types: &[&str]) -> Option<Value> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let is_party = value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| types.contains(&kind));
+    is_party.then_some(value)
+}
+
+/// Song hashes: 16-64 lowercase hex characters.
+pub fn is_valid_file_hash(hash: &str) -> bool {
+    (FILE_HASH_MIN_LEN..=FILE_HASH_MAX_LEN).contains(&hash.len())
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Reservation and playback-queue entry ids: 1-32 chars of `[A-Za-z0-9_-]`.
+pub fn is_valid_party_id(id: &str) -> bool {
+    (1..=MAX_PARTY_ID_LEN).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+pub fn is_valid_key_offset(key_offset: i8) -> bool {
+    (MIN_KEY_OFFSET..=MAX_KEY_OFFSET).contains(&key_offset)
+}
+
+/// A tempo ratio from [`MIN_TEMPO`] to [`MAX_TEMPO`] in [`TEMPO_STEP`] steps.
+pub fn is_valid_tempo(tempo: f64) -> bool {
+    const EPSILON: f64 = 1e-6;
+    let steps = tempo / TEMPO_STEP;
+    (MIN_TEMPO - EPSILON..=MAX_TEMPO + EPSILON).contains(&tempo)
+        && (steps - steps.round()).abs() < EPSILON
+}
+
+fn is_short_text(text: &str, max_chars: usize) -> bool {
+    text.chars().count() <= max_chars && !text.chars().any(char::is_control)
+}
+
+fn is_valid_slot_list(slots: &[u8], max: usize) -> bool {
+    slots.len() <= max
+        && slots.iter().all(|slot| is_valid_slot(*slot))
+        && slots
+            .iter()
+            .enumerate()
+            .all(|(index, slot)| !slots[..index].contains(slot))
+}
+
+fn check(valid: bool) -> Result<(), RtcErrorCode> {
+    valid.then_some(()).ok_or(RtcErrorCode::BadFrame)
+}
+
+fn check_shift(key_offset: Option<i8>, tempo: Option<f64>) -> Result<(), RtcErrorCode> {
+    check(key_offset.is_none_or(is_valid_key_offset) && tempo.is_none_or(is_valid_tempo))
+}
+
+fn check_lyric(
+    line: Option<&str>,
+    next: Option<&str>,
+    line_ms: Option<u32>,
+    elapsed_ms: Option<u32>,
+) -> Result<(), RtcErrorCode> {
+    let text_ok = |text: Option<&str>| text.is_none_or(|text| is_short_text(text, MAX_LYRIC_CHARS));
+    let ms_ok = |ms: Option<u32>| ms.is_none_or(|ms| ms <= MAX_LINE_MS);
+    check(text_ok(line) && text_ok(next) && ms_ok(line_ms) && ms_ok(elapsed_ms))
+}
+
+impl MicPartyToServer {
+    pub fn validate(&self) -> Result<(), RtcErrorCode> {
+        match self {
+            Self::Reserve {
+                file_hash,
+                key_offset,
+                tempo,
+                partners,
+                ..
+            } => {
+                check(is_valid_file_hash(file_hash))?;
+                check_shift(*key_offset, *tempo)?;
+                check(
+                    partners
+                        .as_deref()
+                        .is_none_or(|partners| is_valid_slot_list(partners, MAX_PARTNERS)),
+                )
+            }
+            Self::Edit {
+                reservation_id,
+                key_offset,
+                tempo,
+                sing_next,
+                ..
+            } => {
+                check(is_valid_party_id(reservation_id))?;
+                check(key_offset.is_some() || tempo.is_some() || sing_next.is_some())?;
+                check_shift(*key_offset, *tempo)
+            }
+            Self::Cancel { reservation_id, .. } => check(is_valid_party_id(reservation_id)),
+            Self::ShiftCurrent {
+                key_offset, tempo, ..
+            } => check_shift(Some(*key_offset), Some(*tempo)),
+            Self::Mix {
+                volume_pct,
+                echo_pct,
+            } => check(
+                (volume_pct.is_some() || echo_pct.is_some())
+                    && volume_pct.is_none_or(|pct| pct <= MAX_VOLUME_PCT)
+                    && echo_pct.is_none_or(|pct| pct <= MAX_ECHO_PCT),
+            ),
+            Self::Control { .. } | Self::Fx { .. } | Self::Calibrate { .. } => Ok(()),
+        }
+    }
+}
+
+impl TvPartyToServer {
+    pub fn validate(&self) -> Result<(), RtcErrorCode> {
+        let title_ok = |title: Option<&str>| {
+            title.is_none_or(|title| title.chars().count() <= MAX_TITLE_CHARS)
+        };
+        match self {
+            Self::Stage {
+                entry_id,
+                singers,
+                title,
+                artist,
+                countdown_secs,
+                ..
+            } => check(
+                entry_id.as_deref().is_none_or(is_valid_party_id)
+                    && is_valid_slot_list(singers, usize::from(SLOT_COUNT))
+                    && title_ok(title.as_deref())
+                    && title_ok(artist.as_deref())
+                    && countdown_secs.is_none_or(|secs| secs <= MAX_COUNTDOWN_SECS),
+            ),
+            Self::Lyric {
+                line,
+                next,
+                line_ms,
+                elapsed_ms,
+                ..
+            } => check_lyric(line.as_deref(), next.as_deref(), *line_ms, *elapsed_ms),
+            Self::Calibration {
+                slot, latency_ms, ..
+            } => check(is_valid_slot(*slot) && latency_ms.is_none_or(|ms| ms <= MAX_LATENCY_MS)),
+            Self::Notify { slot, title, .. } => {
+                check(is_valid_slot(*slot) && title_ok(title.as_deref()))
+            }
+            Self::ResetScores => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -1100,6 +1960,422 @@ mod tests {
                 ScoreTier::Retry,
                 ScoreTier::Retry,
             ]
+        );
+    }
+
+    const HASH: &str = "535b53bf0c2d4e6f8a9b1c2d3e4f5a6b";
+
+    fn kind(value: &Value) -> &str {
+        value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn party_type_lists_match_the_enums() {
+        let mic = [
+            MicPartyToServer::Reserve {
+                req_id: None,
+                file_hash: HASH.into(),
+                key_offset: None,
+                tempo: None,
+                sing_next: None,
+                partners: None,
+            },
+            MicPartyToServer::Edit {
+                req_id: None,
+                reservation_id: "r1".into(),
+                key_offset: Some(1),
+                tempo: None,
+                sing_next: None,
+            },
+            MicPartyToServer::Cancel {
+                req_id: None,
+                reservation_id: "r1".into(),
+            },
+            MicPartyToServer::Control {
+                req_id: None,
+                action: PartyAction::Pause,
+            },
+            MicPartyToServer::ShiftCurrent {
+                req_id: None,
+                key_offset: 0,
+                tempo: 1.0,
+            },
+            MicPartyToServer::Fx {
+                sound: FxSound::AirHorn,
+            },
+            MicPartyToServer::Mix {
+                volume_pct: Some(100),
+                echo_pct: None,
+            },
+            MicPartyToServer::Calibrate { req_id: None },
+        ];
+        let mic_types: Vec<_> = mic.iter().map(to_json).collect();
+        let mic_types: Vec<_> = mic_types.iter().map(kind).collect();
+        assert_eq!(mic_types, MIC_PARTY_TYPES);
+
+        let tv = [
+            TvPartyToServer::Stage {
+                state: StageKind::Lobby,
+                entry_id: None,
+                singers: vec![],
+                title: None,
+                artist: None,
+                countdown_secs: None,
+            },
+            TvPartyToServer::Lyric {
+                line: None,
+                next: None,
+                line_ms: None,
+                elapsed_ms: None,
+                paused: false,
+            },
+            TvPartyToServer::Calibration {
+                slot: 1,
+                state: CalibrationState::Started,
+                latency_ms: None,
+                reason: None,
+            },
+            TvPartyToServer::Notify {
+                slot: 1,
+                code: NoticeCode::PassedOver,
+                title: None,
+            },
+            TvPartyToServer::ResetScores,
+        ];
+        let tv_types: Vec<_> = tv.iter().map(to_json).collect();
+        let tv_types: Vec<_> = tv_types.iter().map(kind).collect();
+        assert_eq!(tv_types, TV_PARTY_TYPES);
+
+        let signaling = ["hello", "offer", "ice", "mute", "diag", "bye", "ping"];
+        assert!(signaling.iter().all(|kind| !MIC_PARTY_TYPES.contains(kind)));
+        let signaling = [
+            "hello",
+            "answer",
+            "ice",
+            "restart",
+            "mute",
+            "kick",
+            "latency",
+            "song-result",
+            "ping",
+        ];
+        assert!(signaling.iter().all(|kind| !TV_PARTY_TYPES.contains(kind)));
+    }
+
+    #[test]
+    fn inbound_decoders_route_signaling_and_party_frames() {
+        let hello = json!({"type": "hello", "v": 1, "micId": MIC}).to_string();
+        assert!(matches!(
+            decode_mic_inbound(&hello),
+            Ok(MicInbound::Rtc(MicToServer::Hello { .. }))
+        ));
+
+        let reserve = json!({
+            "type": "reserve", "reqId": 7, "fileHash": HASH, "keyOffset": -2,
+            "tempo": 1.1, "singNext": true, "partners": [2, 3]
+        });
+        assert_eq!(
+            decode_mic_inbound(&reserve.to_string()),
+            Ok(MicInbound::Party(MicPartyToServer::Reserve {
+                req_id: Some(7),
+                file_hash: HASH.into(),
+                key_offset: Some(-2),
+                tempo: Some(1.1),
+                sing_next: Some(true),
+                partners: Some(vec![2, 3]),
+            }))
+        );
+
+        // Sender fields are stamped by the server, never read from the phone.
+        let spoofed = json!({"type": "fx", "sound": "cheer", "slot": 4, "micId": "someone-else"});
+        assert_eq!(
+            decode_mic_inbound(&spoofed.to_string()),
+            Ok(MicInbound::Party(MicPartyToServer::Fx {
+                sound: FxSound::Cheer
+            }))
+        );
+
+        let stage =
+            json!({"type": "stage", "state": "singing", "entryId": "12", "singers": [1, 2]});
+        assert!(matches!(
+            decode_tv_inbound(&stage.to_string()),
+            Ok(TvInbound::Party(TvPartyToServer::Stage { .. }))
+        ));
+        let kick = json!({"type": "kick", "slot": 2}).to_string();
+        assert_eq!(
+            decode_tv_inbound(&kick),
+            Ok(TvInbound::Rtc(TvToServer::Kick { slot: 2 }))
+        );
+
+        // Each role keeps to its own party frames.
+        let tv_frame_from_phone = json!({"type": "reset-scores"}).to_string();
+        assert_eq!(
+            decode_mic_inbound(&tv_frame_from_phone),
+            Err(RtcErrorCode::BadFrame)
+        );
+        let phone_frame_from_tv = json!({"type": "fx", "sound": "cheer"}).to_string();
+        assert_eq!(
+            decode_tv_inbound(&phone_frame_from_tv),
+            Err(RtcErrorCode::BadFrame)
+        );
+
+        let huge = "x".repeat(MAX_FRAME_BYTES + 1);
+        assert_eq!(decode_mic_inbound(&huge), Err(RtcErrorCode::TooLarge));
+        assert_eq!(decode_tv_inbound(&huge), Err(RtcErrorCode::TooLarge));
+        let bad_hello = json!({"type": "hello", "v": 1, "micId": "x"}).to_string();
+        assert_eq!(decode_mic_inbound(&bad_hello), Err(RtcErrorCode::BadHello));
+    }
+
+    #[test]
+    fn party_requests_reject_out_of_range_values() {
+        let bad = [
+            json!({"type": "reserve", "fileHash": "../../etc"}),
+            json!({"type": "reserve", "fileHash": HASH.to_uppercase()}),
+            json!({"type": "reserve", "fileHash": HASH, "keyOffset": 6}),
+            json!({"type": "reserve", "fileHash": HASH, "keyOffset": 1.5}),
+            json!({"type": "reserve", "fileHash": HASH, "tempo": 2.1}),
+            json!({"type": "reserve", "fileHash": HASH, "tempo": 1.05}),
+            json!({"type": "reserve", "fileHash": HASH, "partners": [2, 2]}),
+            json!({"type": "reserve", "fileHash": HASH, "partners": [1, 2, 3, 4]}),
+            json!({"type": "reserve", "fileHash": HASH, "partners": [5]}),
+            json!({"type": "edit", "reservationId": "r1"}),
+            json!({"type": "edit", "reservationId": "r 1", "tempo": 1.0}),
+            json!({"type": "cancel", "reservationId": "x".repeat(33)}),
+            json!({"type": "control", "action": "kick"}),
+            json!({"type": "shift-current", "keyOffset": 0}),
+            json!({"type": "fx", "sound": "gunshot"}),
+            json!({"type": "mix"}),
+            json!({"type": "mix", "volumePct": 151}),
+            json!({"type": "mix", "echoPct": 201}),
+            json!({"type": "reserve", "reqId": -1, "fileHash": HASH}),
+        ];
+        for frame in bad {
+            assert_eq!(
+                decode_mic_inbound(&frame.to_string()),
+                Err(RtcErrorCode::BadFrame),
+                "{frame}"
+            );
+        }
+
+        let ok = [
+            json!({"type": "reserve", "fileHash": HASH, "tempo": 0.5, "keyOffset": -5}),
+            json!({"type": "reserve", "fileHash": HASH, "tempo": 2.0, "partners": [], "reqId": null}),
+            json!({"type": "edit", "reservationId": "r1", "singNext": false}),
+            json!({"type": "shift-current", "keyOffset": 5, "tempo": 0.8}),
+            json!({"type": "mix", "volumePct": 0, "echoPct": 200}),
+            json!({"type": "control", "action": "start-now", "reqId": 3}),
+            json!({"type": "calibrate"}),
+        ];
+        for frame in ok {
+            assert!(decode_mic_inbound(&frame.to_string()).is_ok(), "{frame}");
+        }
+    }
+
+    #[test]
+    fn tv_party_frames_validate_slots_text_and_ranges() {
+        let ok = [
+            json!({"type": "stage", "state": "lobby", "singers": [], "countdownSecs": 15}),
+            json!({"type": "lyric", "line": "I got my head checked", "next": "Woo-hoo",
+                   "lineMs": 2400, "elapsedMs": 0, "paused": false}),
+            json!({"type": "lyric", "paused": true}),
+            json!({"type": "calibration", "slot": 3, "state": "done", "latencyMs": 212}),
+            json!({"type": "calibration", "slot": 3, "state": "failed", "reason": "no-tone"}),
+            json!({"type": "notify", "slot": 2, "code": "start-failed", "title": "Song 2"}),
+            json!({"type": "reset-scores"}),
+        ];
+        for frame in ok {
+            assert!(decode_tv_inbound(&frame.to_string()).is_ok(), "{frame}");
+        }
+
+        let bad = [
+            json!({"type": "stage", "state": "dancing", "singers": []}),
+            json!({"type": "stage", "state": "singing", "singers": [1, 1]}),
+            json!({"type": "stage", "state": "singing", "singers": [0]}),
+            json!({"type": "stage", "state": "lobby", "singers": [], "countdownSecs": 121}),
+            json!({"type": "stage", "state": "singing", "singers": [], "entryId": "a/b"}),
+            json!({"type": "lyric", "line": "x".repeat(MAX_LYRIC_CHARS + 1), "paused": false}),
+            json!({"type": "lyric", "line": "two\nlines", "paused": false}),
+            json!({"type": "lyric", "lineMs": 60_001, "paused": false}),
+            json!({"type": "lyric"}),
+            json!({"type": "calibration", "slot": 5, "state": "done"}),
+            json!({"type": "calibration", "slot": 1, "state": "done", "latencyMs": 1001}),
+            json!({"type": "notify", "slot": 1, "code": "hello"}),
+        ];
+        for frame in bad {
+            assert_eq!(
+                decode_tv_inbound(&frame.to_string()),
+                Err(RtcErrorCode::BadFrame),
+                "{frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn tempo_and_identifier_formats() {
+        for tempo in [0.5, 0.8, 1.0, 1.1, 1.3, 2.0] {
+            assert!(is_valid_tempo(tempo), "{tempo}");
+        }
+        for tempo in [0.4, 2.1, 1.05, 0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(!is_valid_tempo(tempo), "{tempo}");
+        }
+        assert!(is_valid_file_hash(HASH));
+        assert!(!is_valid_file_hash(&HASH[..15]));
+        assert!(!is_valid_file_hash(&"a".repeat(65)));
+        assert!(is_valid_party_id("r42"));
+        assert!(is_valid_party_id("17"));
+        assert!(!is_valid_party_id(""));
+        assert!(!is_valid_party_id("r/42"));
+    }
+
+    #[test]
+    fn song_book_query_limits() {
+        let query = |search: Option<&str>, skip: u32, take: u32| SongBookQuery {
+            search: search.map(str::to_owned),
+            skip,
+            take,
+        };
+        assert!(query(None, 0, 25).validate().is_ok());
+        assert!(query(Some("song 2"), 50, MAX_BOOK_PAGE).validate().is_ok());
+        assert!(query(None, 0, 0).validate().is_err());
+        assert!(query(None, 0, MAX_BOOK_PAGE + 1).validate().is_err());
+        assert!(query(None, MAX_BOOK_SKIP + 1, 10).validate().is_err());
+        let long = "a".repeat(MAX_SEARCH_CHARS + 1);
+        assert!(query(Some(&long), 0, 10).validate().is_err());
+
+        let decoded: Result<SongBookQuery, _> =
+            serde_json::from_value(json!({"search": "blur", "take": 20}));
+        assert_eq!(decoded.ok(), Some(query(Some("blur"), 0, 20)));
+    }
+
+    #[test]
+    fn party_snapshot_serializes_to_the_documented_shape() {
+        let snapshot = PartySnapshot {
+            rev: 9,
+            tv_connected: true,
+            stage: PartyStage {
+                state: StageKind::Singing,
+                reservation_id: Some("r3".into()),
+                title: Some("Song 2".into()),
+                artist: Some("Blur".into()),
+                singers: vec![1],
+                countdown_secs: None,
+            },
+            queue: vec![
+                PartyItem {
+                    reservation_id: "r4".into(),
+                    entry_id: Some("12".into()),
+                    file_hash: HASH.into(),
+                    title: "Wonderwall".into(),
+                    artist: "Oasis".into(),
+                    duration_secs: 258.5,
+                    singers: vec![2, 1],
+                    key_offset: -2,
+                    tempo: 1.0,
+                    sing_next: false,
+                    shiftable: true,
+                    prep: PrepState {
+                        state: PrepStage::Ready,
+                        pct: None,
+                        eta_secs: None,
+                    },
+                },
+                PartyItem {
+                    reservation_id: "r5".into(),
+                    entry_id: None,
+                    file_hash: HASH.into(),
+                    title: "Creep".into(),
+                    artist: "Radiohead".into(),
+                    duration_secs: 238.0,
+                    singers: vec![3],
+                    key_offset: 0,
+                    tempo: 1.0,
+                    sing_next: false,
+                    shiftable: false,
+                    prep: PrepState {
+                        state: PrepStage::Analyzing,
+                        pct: Some(40),
+                        eta_secs: Some(75),
+                    },
+                },
+            ],
+            queue_total: 2,
+            singers: vec![PartySinger {
+                slot: 1,
+                color: PlayerColor::Rose,
+                name: Some("Jim".into()),
+                state: SlotState::Connected,
+                volume_pct: DEFAULT_VOLUME_PCT,
+                echo_pct: DEFAULT_ECHO_PCT,
+            }],
+            scores: vec![NightScore {
+                slot: 1,
+                color: PlayerColor::Rose,
+                name: Some("Jim".into()),
+                title: Some("The Final Countdown".into()),
+                display_score: 100,
+                raw_score: 995,
+                tier: ScoreTier::Perfect,
+                at_secs: 1_763_100_000,
+            }],
+        };
+        let frame = ServerToMicParty::Party {
+            party: snapshot.clone(),
+        };
+        assert_eq!(
+            to_json(&frame),
+            json!({"type": "party", "party": {
+                "rev": 9, "tvConnected": true,
+                "stage": {"state": "singing", "reservationId": "r3", "title": "Song 2",
+                          "artist": "Blur", "singers": [1]},
+                "queue": [
+                    {"reservationId": "r4", "entryId": "12", "fileHash": HASH, "title": "Wonderwall",
+                     "artist": "Oasis", "durationSecs": 258.5, "singers": [2, 1], "keyOffset": -2,
+                     "tempo": 1.0, "singNext": false, "shiftable": true, "prep": {"state": "ready"}},
+                    {"reservationId": "r5", "fileHash": HASH, "title": "Creep", "artist": "Radiohead",
+                     "durationSecs": 238.0, "singers": [3], "keyOffset": 0, "tempo": 1.0,
+                     "singNext": false, "shiftable": false,
+                     "prep": {"state": "analyzing", "pct": 40, "etaSecs": 75}}
+                ],
+                "queueTotal": 2,
+                "singers": [{"slot": 1, "color": "rose", "name": "Jim", "state": "connected",
+                             "volumePct": 100, "echoPct": 100}],
+                "scores": [{"slot": 1, "color": "rose", "name": "Jim", "title": "The Final Countdown",
+                            "displayScore": 100, "rawScore": 995, "tier": "perfect",
+                            "atSecs": 1_763_100_000_u32}]
+            }})
+        );
+
+        assert_eq!(
+            to_json(&ServerToTvParty::Party { party: snapshot }),
+            to_json(&frame)
+        );
+        assert_eq!(
+            to_json(&ServerToMicParty::Ack {
+                req_id: 7,
+                ok: false,
+                code: Some(PartyErrorCode::PrepFull),
+                reservation_id: None
+            }),
+            json!({"type": "ack", "reqId": 7, "ok": false, "code": "prep-full"})
+        );
+        assert_eq!(
+            to_json(&ServerToTvParty::ShiftCurrent {
+                slot: 2,
+                mic_id: MIC.into(),
+                key_offset: -1,
+                tempo: 0.9
+            }),
+            json!({"type": "shift-current", "slot": 2, "micId": MIC, "keyOffset": -1, "tempo": 0.9})
+        );
+        assert_eq!(
+            to_json(&ServerToMicParty::NightRank {
+                rank: Some(2),
+                entries: 14
+            }),
+            json!({"type": "night-rank", "rank": 2, "entries": 14})
         );
     }
 

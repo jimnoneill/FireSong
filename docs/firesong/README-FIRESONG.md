@@ -27,7 +27,8 @@ Audio never goes through the server machine or the internet. Only page loads and
 | Document | What it covers |
 |---|---|
 | Design (owner's plan, not in the repo) | Architecture, latency budget, HTTPS strategy, spikes S0-S8 and work packages WP0-WP12 |
-| [`PROTOCOL.md`](PROTOCOL.md) | The shared contract: listeners, auth, env vars, `/rtc` messages, slot registry, WebRTC rules, remote mics in the `MicrophoneAdapter` |
+| [`PROTOCOL.md`](PROTOCOL.md) | The shared contract: listeners, auth, env vars, `/rtc` messages, slot registry, WebRTC rules, remote mics in the `MicrophoneAdapter`, the party channel (§13) |
+| [`PHONE-V2.md`](PHONE-V2.md) | Phone app v2: design of the ten party features, acceptance checks, work packages and file ownership |
 | [`BASELINE.md`](BASELINE.md) | Check results at upstream HEAD, and the failures that already existed (the Tauri crate cannot build on the server machine) |
 | [`DEPLOY.md`](DEPLOY.md) | Runbook for the server machine: owner one-time steps, build and install, song prep (GPU guard, cache cap), the Fire TV Cube helper, party checklist |
 

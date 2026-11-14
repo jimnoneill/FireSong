@@ -38,7 +38,8 @@ Rules:
 - `NIGHTINGALE_REMOTE_BIND` must differ from `NIGHTINGALE_BIND`. Startup fails if the two are the same.
 - Both binds are loopback on the server machine (`127.0.0.1:64448` full, `127.0.0.1:64449` remote). Only the proxies are exposed.
 - Funnel maps **only** the remote listener. The full listener is never published to the internet.
-- The `/q` queue page and its `REMOTE_COMMANDS` allowlist (`client/src-server/src/remote.rs`) are unchanged. `/m` uses no `/api/cmd` command; it talks only over `/rtc`.
+- The `/q` queue page and its `REMOTE_COMMANDS` allowlist (`client/src-server/src/remote.rs`) are unchanged in upstream and Tauri builds. In a FireSong deployment (a separate phone listener), the phone door answers only read-only commands and `/` opens `/m` (§13.2).
+- `/m` uses one `/api/cmd` command, the song book (`firesong_song_book`, §13.11). Everything else goes over `/rtc`: signaling (§5) and the party channel (§13).
 
 New HTTP routes:
 
@@ -464,6 +465,7 @@ sequenceDiagram
 | Cookie bootstrap and secure context on the Cube | WP6 (firetv-apk) | `android/firesong-tv/`, `tools/tvctl` |
 | `song-result` sender, tier captions, display score, echo presets | WP8 (noraebang) | `features/noraebang/*` (§12) |
 | Env files, host-token handoff to the app, song-cache guard and LRU | WP1 (deploy) | `deploy/server/*`, `scripts/firesong_prep.py` |
+| Phone app v2: party channel, song book, phone remote, lobby (§13) | WP-server, WP-tv, WP-phone | [`PHONE-V2.md`](PHONE-V2.md), section "Work packages" |
 
 ## 11. Changing the contract
 
@@ -490,3 +492,230 @@ Constants added to `protocol.ts` for the frame builder: `MAX_TITLE_CHARS` (200, 
 
 **Clip pool.** `list_noraebang_clips` (app-api) returns `NoraebangClips {status, clips[], skipped}` from `FIRESONG_CLIP_DIR` (§3). A clip is `<name>.mp4|.webm` plus a sidecar `<name>.json`: `{source, license, title?, author?, source_url?, license_url?, tags[], duration_sec?}`, with `license` one of `cc0`, `public-domain`, `pixabay`, `pexels`, `original`. Anything else is skipped. `scripts/firesong/fetch-clips.py` writes the pool (dry run unless `--apply`).
 
+
+## 13. Party channel (phone app v2)
+
+Status: contract frozen; the server, TV and phone work packages implement it (design and acceptance checks: [`PHONE-V2.md`](PHONE-V2.md)). Everything here is additive: `PROTOCOL_VERSION` stays 1, no v1 frame changes, and v1 clients drop party frames because their parsers return `null` for unknown types.
+
+### 13.1 Transport
+
+| What | How | Why |
+|---|---|---|
+| Song book (search the whole library) | `POST /api/cmd/firesong_song_book` on the phone door, pairing cookie (§13.11) | Bulk, read-only, paged data with no identity; HTTP keeps it off the socket's frame and rate budget, and it works before the phone joins a slot. |
+| Everything else: party state, reservations, remote, fun sounds, mixer, calibration, lyric lines, scores | Party frames on the existing `/rtc` socket | These need an identity. On `/rtc` the server stamps `slot` and `micId`, so authorisation is per phone; the socket already has the handshake, rate limit and reconnect; state is pushed, so phones never poll. |
+| `/ws` (upstream event stream) | Not used by `/m` | It broadcasts every app event, including progress ticks, to every client. |
+
+Party frames are JSON text frames on `/rtc`, discriminated by `type` (kebab-case, fields camelCase), like §5. They are separate enums in `remote_mic.rs`: `MicPartyToServer`, `ServerToMicParty`, `TvPartyToServer` and `ServerToTvParty`. Their `type` values never collide with the signaling frames of the same direction.
+
+- **Decoding.** The server decodes every inbound text frame with `decode_mic_inbound` (phone) or `decode_tv_inbound` (TV). A `type` listed in `MIC_PARTY_TYPES` / `TV_PARTY_TYPES` decodes as a party frame; anything else decodes exactly as before (`decode_mic_frame` / `decode_tv_frame`, §4). Party frames of the other role give `bad-frame`.
+- **Clients.** The phone parses with `parseServerToMic(raw) ?? parseServerToMicParty(raw)`, the TV with `parseServerToTv(raw) ?? parseServerToTvParty(raw)` (`protocol.ts`).
+- **Handshake.** Party frames count only after `hello`. Before it they get `no-hello`, as any other frame does.
+- **Errors.** A malformed or out-of-range party frame gets the non-fatal `bad-frame`. A well-formed request that is refused is not an error frame: it gets `ack {ok: false, code}` (§13.3), if it carried `reqId`. Size and rate limits are those of §4 (`too-large`, `rate-limited`).
+- **Stamping.** Phone party frames never carry `slot` or `micId`; any client-sent value is dropped. Frames relayed to the TV carry the server's `slot` and `micId`.
+- **Logging.** Lyric text, song titles and names are not logged above `trace`.
+
+### 13.2 The phone door in a FireSong deployment
+
+When the server runs a separate phone listener (`NIGHTINGALE_REMOTE_BIND`, §1), the phone door changes in two ways. Upstream and Tauri builds keep `REMOTE_COMMANDS` and the `/q` redirect.
+
+- `/api/cmd` answers only these commands; every other name gets `403`:
+  `firesong_song_book`, `load_interface_language`, `load_playback_queue`, `load_playback_status`, `load_playback_progress`, `load_playback_options`, `load_profiles`, `load_remote_microphones`, `load_songs`.
+  The mutating upstream commands (`add_playback_queue_entry`, `move_playback_queue_entry`, `remove_playback_queue_entry`, `clear_playback_queue`, `request_playback_command`, `request_playback_control`, `request_queue_playback`) are no longer reachable with the pairing token, which every guest holds. Phones change the queue and playback only through §13 frames, where the server knows who is asking. `/q` still loads, read-only.
+- `GET /` redirects to `/m` instead of `/q`.
+
+### 13.3 Phone → server (`MicPartyToServer`)
+
+`reqId` (optional, any `u32` the phone picks) asks for an `ack`. Without it, a refused request is silent.
+
+| `type` | Fields | Who may (§13.7) | Effect |
+|---|---|---|---|
+| `reserve` | `reqId?`, `fileHash`, `keyOffset?` -5..5, `tempo?` 0.5..2.0 in 0.1 steps, `singNext?`, `partners?: slot[]` (at most 3, distinct, not the sender) | any phone | A new reservation owned by this phone, with the partners as co-singers. A song that is not ready starts preparing (§13.9). `ack.reservationId` names it. `keyOffset`/`tempo` other than 0/1.0 need a `shiftable` song. |
+| `edit` | `reqId?`, `reservationId`, at least one of `keyOffset?`, `tempo?`, `singNext?` | owner | Changes key/tempo (ready, shiftable songs) or moves it to or from "sing next". |
+| `cancel` | `reqId?`, `reservationId` | owner or partner | The owner removes the reservation (and its preparation, §13.9); a partner only leaves it. |
+| `control` | `reqId?`, `action`: `pause`, `resume`, `stop`, `start-now` | §13.7 | Relayed to the TV as `control`. `stop` ends the current song without a score reveal; the TV returns to the lobby. `start-now` skips the lobby countdown. |
+| `shift-current` | `reqId?`, `keyOffset`, `tempo` | singers of the current song | Relayed as `shift-current`; the TV renders the new key/tempo and restarts the song from the beginning. |
+| `fx` | `sound`: `applause`, `tambourine`, `cheer`, `air-horn` | any phone | Relayed as `fx`. Over the phone's fx budget it is dropped, with no ack. |
+| `mix` | `volumePct?` 0-150, `echoPct?` 0-200, at least one | own slot | Stored with the slot and relayed as `mix`. 100 is the default for both. |
+| `calibrate` | `reqId?` | own slot | Relayed as `calibrate` when the TV is in the lobby; progress comes back as `calibration`. |
+
+### 13.4 Server → phone (`ServerToMicParty`)
+
+| `type` | Fields | When |
+|---|---|---|
+| `party` | `party: PartySnapshot` (§13.8) | Right after `assign` (also on reclaim), then on every change, coalesced to one per 500 ms. |
+| `ack` | `reqId`, `ok`, `code?: PartyErrorCode`, `reservationId?` | Reply to a request with `reqId`. `code` is one of `not-allowed`, `not-found`, `invalid`, `limit-reservations`, `limit-preparing`, `prep-full`, `limit-sing-next`, `duplicate`, `busy`, `no-tv`, `unavailable`, `rate-limited`. |
+| `lyric` | `line?`, `next?`, `lineMs?`, `elapsedMs?`, `paused` | Relayed from the TV to the phones of the current song's singers only. `lineMs` is the line's length at the current tempo, `elapsedMs` how much of it had passed when the TV sent the frame. Absent `line` clears the card. |
+| `calibration` | `state`: `started`, `done`, `failed`; `latencyMs?`; `reason?`: `busy`, `no-audio`, `no-tone`, `timeout`, `no-tv` | This phone's calibration. The server sends `failed {timeout}` itself when the TV has not finished within 15 s. |
+| `notice` | `code`: `duet-added`, `prep-failed`, `passed-over`, `shift-failed`, `start-failed`; `title?`; `bySlot?` | Something happened to one of this phone's songs. `bySlot` names who added it to a duet. |
+| `night-rank` | `rank?` 1-10, `entries` | Right after the v1 `song-result`: this result's place on tonight's board (absent when it did not make the board) and how many scores were made tonight. |
+
+### 13.5 TV → server (`TvPartyToServer`)
+
+| `type` | Fields | Notes |
+|---|---|---|
+| `stage` | `state`: `lobby`, `starting`, `singing`, `paused`, `reveal`; `entryId?` (the playback-queue entry being played); `singers: slot[]` (the slots it scores); `title?`; `artist?`; `countdownSecs?` 0-120 | After `ready` and on every change. The server maps `entryId` to the reservation. Until the first `stage`, and after the TV socket closes, the stage is `lobby` with no singers. |
+| `lyric` | `line?`, `next?` (each at most 200 characters, no control characters), `lineMs?`, `elapsedMs?` (each at most 60 000), `paused` | On every line change, pause, resume and seek of the current song. |
+| `calibration` | `slot`, `state`, `latencyMs?` 0-1000, `reason?` | Progress of a calibration the server asked for. On `done` the TV also sends the v1 `latency {slot, latencyMs, method: beep}`, which stores it (§6.4). |
+| `notify` | `slot`, `code`, `title?` | Relayed to that slot's phone as `notice`. |
+| `reset-scores` | — | The host clears tonight's board. |
+
+### 13.6 Server → TV (`ServerToTvParty`)
+
+| `type` | Fields | Notes |
+|---|---|---|
+| `party` | `party: PartySnapshot` | The same snapshot the phones get: after `ready` + `roster`, then on change. |
+| `control` | `slot`, `micId`, `action` | Already authorised by the server. The TV still ignores actions that do not fit its state (for example `pause` in the lobby). |
+| `shift-current` | `slot`, `micId`, `keyOffset`, `tempo` | Restart the current song with this key and tempo. On failure the TV sends `notify {slot, shift-failed}` and plays on. |
+| `fx` | `slot`, `sound` | Synthesised on the TV, at most 4 at once; extra ones are dropped. |
+| `mix` | `slot`, `volumePct`, `echoPct` | On change, and for every occupied slot after `ready`. A slot whose phone leaves goes back to 100/100. |
+| `calibrate` | `slot`, `micId` | Run the beep calibration for this slot now. |
+
+### 13.7 Who may do what
+
+The listener decides the role (§1), and the server stamps the phone's slot, so these rules hold for every phone frame. A refused request gets `ack {ok: false, code: not-allowed}`.
+
+| Action | Allowed for |
+|---|---|
+| Search the song book | anyone with the pairing token, before or after joining |
+| `reserve` | any joined phone, as owner. Partners must be other occupied slots. |
+| `edit` | the owner |
+| `cancel` | the owner (removes) or a partner (leaves) |
+| `control pause / resume / stop`, `shift-current` | slots in `stage.singers` while the stage is `starting`, `singing` or `paused`. A song with no phone singers has no phone remote. |
+| `control start-now` | in the lobby: the singers of the first ready item, or any joined phone when that item has no phone singers |
+| `fx` | any joined phone |
+| `mix`, `calibrate` | the phone's own slot only |
+| **TV only**, never a phone | `kick`, host `mute`, `latency` for a slot, reordering or removing other phones' items, clearing the queue, queueing songs with no owner, `reset-scores`, pairing-token rotation, settings, library and analysis commands |
+
+### 13.8 Party types
+
+`PartySnapshot`: `{rev, tvConnected, stage: PartyStage, queue: PartyItem[], queueTotal, singers: PartySinger[], scores: NightScore[]}`.
+
+| Type | Fields |
+|---|---|
+| `PartyStage` | `state`, `reservationId?`, `title?`, `artist?`, `singers: slot[]`, `countdownSecs?` |
+| `PartyItem` | `reservationId` (opaque, stable), `entryId?` (present once the song is ready and in the playback queue), `fileHash` (the current hash; it can change once while a remote song is prepared, so phones key on `reservationId`), `title`, `artist`, `durationSecs`, `singers: slot[]` (owner first; empty for songs the host queued), `keyOffset`, `tempo`, `singNext`, `shiftable` (a detected key and not USDX), `prep: PrepState` |
+| `PrepState` | `state`: `ready`, `not-ready` (song book only), `queued`, `analyzing`, `waiting-gpu`, `failed`; `pct?` 0-100 while analysing; `etaSecs?` |
+| `PartySinger` | `slot`, `color`, `name?`, `state` (`connected` or `reserved`), `volumePct`, `echoPct` |
+| `NightScore` | `slot`, `color`, `name?` (at the time of the score), `title?`, `displayScore`, `rawScore`, `tier`, `atSecs` (Unix seconds) |
+
+`queue` lists items in play order (§13.9): the first 30, then every later item that has phone singers. `queueTotal` counts all of them.
+
+Example (`party` to a phone or the TV):
+
+```json
+{"type": "party", "party": {
+  "rev": 9, "tvConnected": true,
+  "stage": {"state": "singing", "reservationId": "r3", "title": "Song 2", "artist": "Blur", "singers": [1]},
+  "queue": [
+    {"reservationId": "r4", "entryId": "12", "fileHash": "535b53bf0c2d4e6f8a9b1c2d3e4f5a6b", "title": "Wonderwall",
+     "artist": "Oasis", "durationSecs": 258.5, "singers": [2, 1], "keyOffset": -2, "tempo": 1.0,
+     "singNext": false, "shiftable": true, "prep": {"state": "ready"}},
+    {"reservationId": "r5", "fileHash": "535b53bf0c2d4e6f8a9b1c2d3e4f5a6b", "title": "Creep", "artist": "Radiohead",
+     "durationSecs": 238.0, "singers": [3], "keyOffset": 0, "tempo": 1.0, "singNext": false,
+     "shiftable": false, "prep": {"state": "analyzing", "pct": 40, "etaSecs": 75}}
+  ],
+  "queueTotal": 2,
+  "singers": [{"slot": 1, "color": "rose", "name": "Jim", "state": "connected", "volumePct": 100, "echoPct": 100}],
+  "scores": [{"slot": 1, "color": "rose", "name": "Jim", "title": "The Final Countdown",
+              "displayScore": 100, "rawScore": 995, "tier": "perfect", "atSecs": 1763100000}]
+}}
+```
+
+### 13.9 Queue model
+
+The upstream playback queue (in memory, `app-core/src/playback_queue.rs`) stays the only thing the TV plays from, and keeps its type: FireSong keeps the party data beside it, keyed by queue entry id, so `/q`, the TV's queue sidebar and the Tauri app see ordinary entries.
+
+- **Reservations.** Each item has a server-assigned `reservationId`, a sequence number `seq` (order of reservation), its singers (owner first, by `micId`, shown as slots), key, tempo and `singNext`. A ready item is also an upstream queue entry (`entryId`). Host-added upstream entries become items with no singers and the next `seq` when the server first sees them.
+- **Play order.** The upstream queue order is authoritative for ready items: the host may reorder them on the TV, and the server never re-sorts existing entries. The server places only new, edited and newly ready items: before the first upstream entry whose key is greater, where the key is `(singNext ? 0 : 1, seq)`. It never places an item at index 0 while the TV stage is `lobby` with a countdown, or `starting`; then index 1 is the earliest. Preparing items are listed in `queue` where they will go when ready.
+- **Preparing.** `reserve` of a song that is not analysed checks the limits (§13.10), then queues analysis (`app_core::enqueue`). A song the host already queued for analysis is joined, not queued again, and does not count against `prep-full`. Analysis runs behind the GPU gate (PHONE-V2.md, feature 2), which holds queued jobs while the pinned GPU is reserved or short of memory (`waiting-gpu`). When analysis succeeds, the item is added to the upstream queue at its place, with its key and tempo. When it fails, the item is dropped and its singers get `notice {prep-failed}`. A remote (Plex) song gets a new `fileHash` when it is downloaded; the item follows it.
+- **ETA.** `etaSecs` = what is left of the running analysis + (analyses ahead of it) × the mean of tonight's last 5 analysis times (120 s before the first one), rounded up to 10 s. `waiting-gpu` has no ETA.
+- **Cancelling.** Removing a preparing item cancels its analysis only if a phone started it and no other item waits for that song.
+- **When a phone goes away.** While its slot is `reserved` (reconnecting), its items stay; the lobby waits up to 30 s for an absent next singer, then moves that item back one place, once (`notice {passed-over}`). When the slot is freed (`bye`, `expired`, `kicked`, `evicted`), the items it owns are dropped, unless they have partners: then the first partner becomes the owner. The phone is also removed from items where it is a partner. Pairing-token rotation kicks every phone, so every party item is dropped.
+- **Restart.** Reservations, mixer settings and the scoreboard are in memory, like the upstream queue. A server restart clears them all.
+
+### 13.10 Limits
+
+All values are constants in `remote_mic.rs`, mirrored in `protocol.ts`.
+
+| Limit | Value |
+|---|---|
+| Reservations a phone owns | 3 (`limit-reservations`) |
+| Of those, preparing | 2 (`limit-preparing`) |
+| Preparations started by phones, party-wide | 6 (`prep-full`) |
+| "Sing next" items per phone | 1 (`limit-sing-next`) |
+| Partners per reservation | 3 |
+| Party requests (`reserve`, `edit`, `cancel`, `control`, `shift-current`, `calibrate`) per phone | burst 6, then 1 per 3 s (`rate-limited`) |
+| `fx` per phone | burst 3, then 1 per 2 s (extra dropped silently); the TV plays at most 4 at once |
+| `mix` relayed per phone | 5 per second, newest wins |
+| `calibrate` | one at a time on the TV; 30 s cooldown per slot; 15 s timeout |
+| `shift-current` | 15 s cooldown per slot; 3 per song |
+| `party` snapshots | at most one per 500 ms per socket |
+| Lyric line | 200 characters; `lineMs`, `elapsedMs` at most 60 000 |
+| Song book | `take` 1-50, `skip` at most 1 000 000, `search` at most 100 characters |
+| Snapshot queue | first 30 items, plus later items with phone singers |
+| Night board | 10 entries; an entry older than 12 h leaves it |
+
+Every party frame also counts against the socket's token bucket (§4).
+
+### 13.11 Song book command
+
+`POST /api/cmd/firesong_song_book` with `SongBookQuery {search?, skip, take}`, on either listener (the phone door with the pairing token). It returns `SongBookPage {items: BookSong[], skip, total, readyTotal}`:
+
+- The matching songs are ordered ready first, then the rest, each part by title (case-insensitive), then by id. Positions `0..readyTotal` are the ready ones, so the phone can draw a divider.
+- `search` matches words in title and artist, like the library search. No `search` lists the whole library.
+- `BookSong = {fileHash, title, artist, durationSecs, shiftable, prep}`. `prep.etaSecs` on a `not-ready` song estimates how long it would take if picked now.
+- No paths, album-art paths or source details leave the server through this command.
+- An invalid query gets `400`.
+
+### 13.12 Night scoreboard
+
+- **Source.** The v1 TV `song-result` frame (§5.3). Each `SlotResult` whose slot is occupied becomes a `NightScore`, with the slot's name and colour at that moment and `atSecs` = now. Results for empty slots are ignored.
+- **Order.** `displayScore` descending, then `rawScore` descending, then the older score first. The board keeps the best 10. An entry older than 12 h leaves it.
+- **Reset.** TV `reset-scores`, pairing-token rotation, or a server restart. The board is never persisted and never written to profiles. Profiles keep storing Nightingale's raw score as before.
+- **Rank.** After relaying `song-result` to a phone, the server sends it `night-rank`.
+
+### 13.13 Sequences
+
+```mermaid
+sequenceDiagram
+  participant A as Phone A (slot 1)
+  participant B as Phone B (slot 2)
+  participant S as Server
+  participant T as TV
+  A->>S: POST /api/cmd/firesong_song_book {search: "creep", take: 25}
+  S-->>A: SongBookPage (Creep: not-ready, etaSecs 140)
+  A->>S: reserve {reqId: 1, fileHash, partners: [2]}
+  S->>A: ack {reqId: 1, ok: true, reservationId: "r5"}
+  S->>B: notice {duet-added, bySlot: 1, title: "Creep"}
+  S-->>A: party (r5 prep queued)
+  S-->>B: party
+  S-->>T: party
+  Note over S: analysis runs (GPU gate), r5 analyzing 40%, then ready
+  S-->>T: party (r5 ready, entryId 12)
+  T->>S: stage {lobby, countdownSecs: 15}
+  Note over T: countdown ends: start entry 12 with players remote:A, remote:B
+  T->>S: stage {singing, entryId: 12, singers: [1, 2]}
+  T->>S: lyric {line, next, lineMs, elapsedMs: 0, paused: false}
+  S->>A: lyric
+  S->>B: lyric
+  B->>S: control {reqId: 2, action: pause}
+  S->>T: control {slot: 2, micId, action: pause}
+  S->>B: ack {reqId: 2, ok: true}
+```
+
+```mermaid
+sequenceDiagram
+  participant P as Phone (slot 3)
+  participant S as Server
+  participant T as TV
+  P->>S: calibrate {reqId: 4}
+  Note over S: TV connected, stage lobby, no calibration running, slot cooldown over
+  S->>T: calibrate {slot: 3, micId}
+  S->>P: ack {reqId: 4, ok: true}
+  T->>S: calibration {slot: 3, started}
+  S->>P: calibration {started}
+  Note over T: beep through the TV speakers, measured in slot 3's audio
+  T->>S: latency {slot: 3, latencyMs: 212, method: beep}
+  T->>S: calibration {slot: 3, done, latencyMs: 212}
+  S->>P: calibration {done, latencyMs: 212}
+```

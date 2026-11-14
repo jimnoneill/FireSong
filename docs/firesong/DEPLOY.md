@@ -189,6 +189,19 @@ Never delete or edit another job's reservation file.
 
 `$P evict [--dry-run] [--target-gb N] [--keep-playlist NAME]` runs the same eviction on its own. It refuses while a song is playing and when the server is down, because deleting files behind the server's back would leave the library pointing at missing stems.
 
+### 3.3 Background clips
+
+Noraebang mode plays random silent clips behind the lyrics, from `FIRESONG_CLIP_DIR` (`/mnt/firesong-cache/songs/noraebang-clips`). The server reads clips only from a real folder inside its media roots and outside the videos cache, which is why the pool sits in the songs directory. Prep counts it towards the cache but never evicts it.
+
+```sh
+F="scripts/firesong/fetch-clips.py --clip-dir /mnt/firesong-cache/songs/noraebang-clips"
+python3 -I $F search --source archive --max-clips 30 --max-total-mb 700           # dry run: the list
+python3 -I $F search --source archive --max-clips 30 --max-total-mb 700 --apply   # fetch and encode
+python3 -I $F verify                                                              # what the server will list
+```
+
+Only public-domain and CC0 Prelinger films are fetched (Pixabay and Pexels too, with your API keys). Films whose id, title or subjects name adult, medical, disaster or war material are skipped, because a random cut of such a film could land anywhere. Restart the server after changing `FIRESONG_CLIP_DIR`.
+
 ## 4. The Fire TV Cube from the server machine
 
 `scripts/firesong/cube.sh` takes the Cube's address from `FIRESONG_CUBE_SERIAL` (env file) or `--serial <cube-ip>:5555`.

@@ -219,23 +219,31 @@ def main() -> int:
         for i in range(args.phones):
             phone = Cdp(PHONE_CDP_BASE + i)
             phone.call("Page.navigate", {"url": f"http://127.0.0.1:64449/m?t={token}&slot={i + 1}"})
-            time.sleep(4)
+            wait_for(f"phone {i + 1} join card", lambda: phone.eval("document.body.innerText.includes('Join as')"), 20)
             phone.eval(FAKE_MIC % {"hz": PITCHES[i], "gain": args.gain})
-            phone.tap('document.querySelector("input")')
+            phone.tap('document.querySelector("#phone-panel-sing input")')
             phone.call("Input.insertText", {"text": f"Load {i + 1}"})
-            phone.tap('document.querySelector("button[type=submit]")')
+            phone.tap('document.querySelector("#phone-panel-sing button[type=submit]")')
             phones.append(phone)
         devices = wait_for(f"{args.phones} phones on the TV",
                            lambda: (lambda d: d if len(d) >= args.phones and not any(x["reconnecting"] for x in d) else None)(
                                tv.eval("fireSongDiag.snapshot().devices")), 40)
         report["devices"] = devices
-        by_slot = {d["slot"]: d["id"] for d in devices}
-        for i in range(args.phones):
-            tv.eval(f"fireSongDiag.watchPitch('p{i + 1}')")
+        # The server may give a phone another slot than the one its link asked
+        # for (a slot can still be held for a phone that just left), so each
+        # player's expected pitch comes from the phone's name, not its slot.
+        singers = []
+        for d in sorted(devices, key=lambda d: d["slot"]):
+            m = re.search(r"Load (\d)", d["label"])
+            if m:
+                singers.append({"id": f"p{d['slot']}", "slot": d["slot"], "device": d["id"], "want": PITCHES[int(m.group(1)) - 1]})
+        report["singers"] = singers
+        for s in singers:
+            tv.eval(f"fireSongDiag.watchPitch('{s['id']}')")
         cmd("add_playback_queue_entry", {"fileHash": args.song, "tempo": 1.0, "keyOffset": 0})
         cmd("request_queue_playback", {"players": [
-            {"id": f"p{i + 1}", "profile": None, "microphoneId": by_slot[i + 1], "color": COLORS[i]}
-            for i in range(args.phones)]})
+            {"id": s["id"], "profile": None, "microphoneId": s["device"], "color": COLORS[s["slot"] - 1]}
+            for s in singers]})
         wait_for("playback", lambda: cmd("load_playback_progress").get("playing"), 40)
         t0, p0 = time.time(), cmd("load_playback_progress")["positionMs"]
         while time.time() - t0 < args.seconds:
@@ -251,11 +259,11 @@ def main() -> int:
         played = (report["samples"][-1]["position_ms"] - p0) / 1000 if report["samples"] else 0
         report["realtime_ratio"] = round(played / elapsed, 3) if elapsed else None
         report["pitch"] = {}
-        for i in range(args.phones):
-            got = tv.eval(f"fireSongDiag.pitches('p{i + 1}')") or {}
+        for s in singers:
+            got = tv.eval(f"fireSongDiag.pitches('{s['id']}')") or {}
             values = got.get("pitches") or []
-            near = [v for v in values if abs(v - PITCHES[i]) <= 3]
-            report["pitch"][f"p{i + 1}"] = {"want_hz": PITCHES[i], "frames": got.get("frames"), "voiced": got.get("voiced"),
+            near = [v for v in values if abs(v - s["want"]) <= 3]
+            report["pitch"][s["id"]] = {"slot": s["slot"], "want_hz": s["want"], "frames": got.get("frames"), "voiced": got.get("voiced"),
                                             "median": statistics.median(values) if values else None,
                                             "within_3hz": round(len(near) / len(values), 3) if values else 0}
         shot = tv.call("Page.captureScreenshot", {"format": "png"}).get("data")

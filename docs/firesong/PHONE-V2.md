@@ -167,7 +167,7 @@ The phone retries on the button, on `online`, and on `navigator.connection` `cha
 
 **Acceptance.**
 - [P] unit: the candidate classifier over fixture SDPs (private host → fine; only CGNAT 100.64/10 or public host → mobile-like; mDNS only → unknown), and the state machine reaching `unreachable` after two timeouts with fake timers.
-- [P] e2e: a phone Chrome started with `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` (no UDP, so ICE cannot connect) shows the guidance within 25 s; a normal phone never shows it.
+- [P] e2e: a phone Chrome started with `--webrtc-ip-handling-policy=disable_non_proxied_udp` (Chrome 156 ignores the `--force-` spelling) (no UDP, so ICE cannot connect) shows the guidance within 25 s; a normal phone never shows it.
 - [C] a real Android phone (Chrome) and an iPhone (Safari) on mobile data show the guidance; after joining the Wi-Fi, Try again goes live.
 
 ### 9. Automatic lyric-timing repair

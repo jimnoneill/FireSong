@@ -580,9 +580,11 @@ describe('FireSong end to end (server + TV + two phones, no ML, no Plex)', () =>
 
     const results = [];
     for (const [index, phone] of phones.entries()) {
-      const card = phone.locator('[aria-labelledby="phone-mic-result"]');
+      const card = phone.locator('[data-testid="score-card"]');
       await waitUntil(`phone ${index + 1} song result`, () => card.isVisible(), 15_000);
-      const score = Number((await card.locator('p.text-7xl').innerText()).replace(/[^\d]/g, ''));
+      const score = Number(
+        (await card.locator('p.tabular-nums').first().innerText()).replace(/[^\d]/g, ''),
+      );
       results.push({ phone: index + 1, displayScore: score, text: await card.innerText() });
       await shot(phone, `06-phone${index + 1}-result`);
     }

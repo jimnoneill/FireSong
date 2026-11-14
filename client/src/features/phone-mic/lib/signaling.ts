@@ -1,9 +1,12 @@
 import {
   encodeFrame,
   parseServerToMic,
+  parseServerToMicParty,
   PING_INTERVAL_SECS,
+  type MicPartyToServer,
   type MicToServer,
   type ServerToMic,
+  type ServerToMicParty,
 } from '@/features/remote-mic/protocol';
 
 import type { OpenSocket, SocketPort, TimerPort } from './ports';
@@ -28,6 +31,8 @@ export type SignalingEvents = {
   /** Built at every connect, so a reset identity is used straight away. */
   hello: () => HelloFrame;
   onFrame: (frame: Exclude<ServerToMic, { type: 'pong' }>) => void;
+  /** A party frame (PROTOCOL.md §13.4). */
+  onPartyFrame: (frame: ServerToMicParty) => void;
   onOpen: () => void;
   onDown: (decision: CloseDecision) => void;
   /** `bad-resume`: drop the stored identity before the immediate reconnect. */
@@ -83,7 +88,7 @@ export class MicSignaling {
     this.retire(NORMAL_CLOSE);
   }
 
-  send(frame: MicToServer): boolean {
+  send(frame: MicToServer | MicPartyToServer): boolean {
     if (this.socket === null || this.openedAt === null) {
       return false;
     }
@@ -129,6 +134,10 @@ export class MicSignaling {
   private handleMessage(data: string): void {
     const frame = parseServerToMic(data);
     if (frame === null) {
+      const party = parseServerToMicParty(data);
+      if (party !== null) {
+        this.events.onPartyFrame(party);
+      }
       return;
     }
     if (frame.type === 'pong') {

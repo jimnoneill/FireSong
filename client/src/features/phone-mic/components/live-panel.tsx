@@ -1,18 +1,11 @@
-import { ListMusicIcon, MicIcon, MicOffIcon } from 'lucide-react';
+import { MicIcon, MicOffIcon } from 'lucide-react';
 
 import { LevelMeter } from '@/features/phone-mic/components/level-meter';
-import { linkMessage } from '@/features/phone-mic/components/problem-message';
-import { SlotDisc } from '@/features/phone-mic/components/slot-disc';
 import type { PhoneMicSnapshot } from '@/features/phone-mic/lib/session';
 import { slotColor, type MicSlot } from '@/features/remote-mic/protocol';
 import { t } from '@/i18n';
 import { Alert, AlertDescription } from '@/shared/components/ui/alert';
-import { Button, buttonVariants } from '@/shared/components/ui/button';
-import { playerColorOption } from '@/shared/player-colors';
-import { cn } from '@/shared/utils/cn';
-
-/** The existing phone queue page, opened in a new tab so the mic page is not unloaded. */
-const REMOTE_QUEUE_PATH = '/q';
+import { Button } from '@/shared/components/ui/button';
 
 type LivePanelProps = {
   snapshot: PhoneMicSnapshot;
@@ -21,38 +14,20 @@ type LivePanelProps = {
   readLevel: () => number;
   onToggleMute: () => void;
   onTapToResume: () => void;
-  onLeave: () => void;
 };
 
-/** The phone while it is a mic: who it is, whether the TV hears it, level and mute. */
+/** The phone while it is a mic: level, mute, and recovery when the system stopped capture. */
 export function LivePanel({
   snapshot,
   slot,
   readLevel,
   onToggleMute,
   onTapToResume,
-  onLeave,
 }: LivePanelProps) {
   const color = slot === null ? null : slotColor(slot);
-  const title =
-    color === null
-      ? t('phoneMic.join.any')
-      : t('phoneMic.slotLabel', { color: t(playerColorOption(color).label) });
 
   return (
-    <section className="flex flex-col gap-6" aria-labelledby="phone-mic-title">
-      <header className="flex items-center gap-3">
-        <SlotDisc color={color} size="sm" />
-        <div className="min-w-0 flex-1">
-          <h1 id="phone-mic-title" className="truncate text-xl font-semibold">
-            {title}
-          </h1>
-          <p aria-live="polite" className="text-sm text-muted-foreground">
-            {linkMessage(snapshot.link)}
-          </p>
-        </div>
-      </header>
-
+    <section className="flex flex-col gap-4" aria-label={t('phoneMic.level')}>
       {snapshot.needsTap ? (
         <div className="flex flex-col gap-2" role="alert">
           <p className="text-sm">{t('phoneMic.needsTap')}</p>
@@ -88,20 +63,6 @@ export function LivePanel({
       {snapshot.wakeLock === 'unavailable' ? (
         <p className="text-center text-sm text-muted-foreground">{t('phoneMic.wakeLockHint')}</p>
       ) : null}
-
-      <a
-        href={REMOTE_QUEUE_PATH}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-12 text-base')}
-      >
-        <ListMusicIcon className="size-5" />
-        {t('phoneMic.actions.queue')}
-      </a>
-
-      <Button type="button" variant="ghost" className="self-center" onClick={onLeave}>
-        {t('phoneMic.actions.leave')}
-      </Button>
     </section>
   );
 }

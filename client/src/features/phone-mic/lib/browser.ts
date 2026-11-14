@@ -1,9 +1,19 @@
+import type { PhoneMicApp } from './app';
 import { BrowserMicMedia } from './browser-media';
 import type { KeyValueStore } from './identity';
 import { joinLinkSlot, rtcSocketUrl } from './join-link';
+import { PartyController } from './party-controller';
 import { PeerLink } from './peer-link';
-import type { OpenSocket, PagePort, TimerPort, WakeLockPort, WakeLockState } from './ports';
+import type {
+  NetworkPort,
+  OpenSocket,
+  PagePort,
+  TimerPort,
+  WakeLockPort,
+  WakeLockState,
+} from './ports';
 import { PhoneMicSession } from './session';
+import { SongBook, type HttpPost } from './song-book';
 
 const openWebSocket: OpenSocket = (url, handlers) => {
   const socket = new WebSocket(url);
@@ -42,6 +52,26 @@ const documentPage: PagePort = {
     }),
   onPageShow: (listener) =>
     window.addEventListener('pageshow', (event) => listener(event.persisted)),
+};
+
+/** `navigator.connection`, which only Chromium has; Safari falls back to `online` events. */
+const networkConnection = (): EventTarget | null => {
+  const connection: unknown = Reflect.get(navigator, 'connection');
+  return connection instanceof EventTarget ? connection : null;
+};
+
+const browserNetwork = (): NetworkPort => {
+  const connection = networkConnection();
+  return {
+    type: () => {
+      const type: unknown = connection === null ? undefined : Reflect.get(connection, 'type');
+      return typeof type === 'string' ? type : null;
+    },
+    onChange: (listener) => {
+      window.addEventListener('online', listener);
+      connection?.addEventListener('change', listener);
+    },
+  };
 };
 
 /** `false` when the browser refuses storage (private modes, quota). */
@@ -135,14 +165,30 @@ class ScreenWakeLock implements WakeLockPort {
   }
 }
 
-export type BrowserPhoneMic = {
-  session: PhoneMicSession;
-  /** Current input level on a 0..1 scale, for the meter. */
-  readLevel: () => number;
+const postJson: HttpPost = async (path, body) => {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    credentials: 'same-origin',
+  });
+  return {
+    status: response.status,
+    json: async (): Promise<unknown> => {
+      const value: unknown = await response.json();
+      return value;
+    },
+  };
 };
 
-/** Composition root of the phone page: real browser ports into the session. */
-export const createBrowserPhoneMic = (): BrowserPhoneMic => {
+const vibrate = (ms: number): void => {
+  if ('vibrate' in navigator) {
+    navigator.vibrate(ms);
+  }
+};
+
+/** Composition root of the phone page: real browser ports into the session, party and song book. */
+export const createBrowserPhoneMic = (): PhoneMicApp => {
   const media = new BrowserMicMedia(
     'mediaDevices' in navigator ? navigator.mediaDevices : undefined,
   );
@@ -160,6 +206,7 @@ export const createBrowserPhoneMic = (): BrowserPhoneMic => {
       peer,
       wakeLock: new ScreenWakeLock('wakeLock' in navigator ? navigator.wakeLock : undefined),
       page: documentPage,
+      network: browserNetwork(),
       storage: browserStore(),
       timers: windowTimers,
       random: Math.random,
@@ -170,5 +217,17 @@ export const createBrowserPhoneMic = (): BrowserPhoneMic => {
     joinLinkSlot(window.location.search),
   );
 
-  return { session, readLevel: () => media.readLevel() };
+  const party = new PartyController({
+    send: (frame) => session.sendParty(frame),
+    timers: windowTimers,
+  });
+  session.onParty(party);
+
+  const songBook = new SongBook({
+    post: postJson,
+    timers: windowTimers,
+    reportError: (error) => reportError(error),
+  });
+
+  return { session, party, songBook, readLevel: () => media.readLevel(), vibrate };
 };

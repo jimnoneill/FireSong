@@ -7,6 +7,7 @@ import type {
   MediaStartResult,
   MicMediaPort,
   MicPeerPort,
+  NetworkPort,
   OpenSocket,
   PagePort,
   PeerLinkState,
@@ -17,7 +18,7 @@ import type {
   WakeLockPort,
   WakeLockState,
 } from '@/features/phone-mic/lib/ports';
-import type { IceCandidate, ServerToMic } from '@/features/remote-mic/protocol';
+import type { IceCandidate, ServerToMic, ServerToMicParty } from '@/features/remote-mic/protocol';
 
 /** Lets pending promise chains settle. */
 export const settle = async (turns = 5): Promise<void> => {
@@ -112,7 +113,7 @@ export class FakeSocket implements SocketPort {
     this.handlers.onOpen();
   }
 
-  deliver(frame: ServerToMic): void {
+  deliver(frame: ServerToMic | ServerToMicParty): void {
     this.handlers.onMessage(JSON.stringify(frame));
   }
 
@@ -194,9 +195,12 @@ export class FakePeer implements MicPeerPort {
   readonly candidates: (IceCandidate | null)[] = [];
   private readonly stateListeners: ((state: PeerLinkState) => void)[] = [];
 
+  /** The SDP of the n-th offer; tests put candidate lines in it. */
+  offerSdp = (count: number): string => `offer-${count}`;
+
   readonly open = (): Promise<string | null> => {
     this.opens += 1;
-    return Promise.resolve(`offer-${this.opens}`);
+    return Promise.resolve(this.offerSdp(this.opens));
   };
   readonly restartIce = (): Promise<string | null> => {
     this.iceRestarts += 1;
@@ -277,6 +281,21 @@ export class FakePage implements PagePort {
   }
 }
 
+export class FakeNetwork implements NetworkPort {
+  connectionType: string | null = null;
+  private readonly changeListeners: (() => void)[] = [];
+
+  readonly type = (): string | null => this.connectionType;
+  readonly onChange = (listener: () => void): void => {
+    this.changeListeners.push(listener);
+  };
+
+  change(type: string | null): void {
+    this.connectionType = type;
+    this.changeListeners.forEach((listener) => listener());
+  }
+}
+
 export const memoryStore = (): KeyValueStore & { data: Map<string, string> } => {
   const data = new Map<string, string>();
   return {
@@ -299,6 +318,7 @@ export type Rig = {
   peer: FakePeer;
   wakeLock: FakeWakeLock;
   page: FakePage;
+  network: FakeNetwork;
   storage: ReturnType<typeof memoryStore>;
   errors: unknown[];
 };
@@ -310,6 +330,7 @@ export const createRig = (): Rig => {
   const peer = new FakePeer();
   const wakeLock = new FakeWakeLock();
   const page = new FakePage();
+  const network = new FakeNetwork();
   const storage = memoryStore();
   const errors: unknown[] = [];
   let micCount = 0;
@@ -321,6 +342,7 @@ export const createRig = (): Rig => {
     peer,
     wakeLock,
     page,
+    network,
     storage,
     errors,
     ports: {
@@ -330,6 +352,7 @@ export const createRig = (): Rig => {
       peer,
       wakeLock,
       page,
+      network,
       storage,
       timers: clock,
       random: () => 0.5,

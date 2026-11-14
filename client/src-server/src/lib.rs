@@ -54,7 +54,7 @@ pub fn router(state: AppState) -> Router {
 /// Every request must carry the pairing token as a cookie, header, or `?t=`.
 pub fn remote_router(state: AppState) -> Router {
     Router::new()
-        .route("/", get(|| async { axum::response::Redirect::to("/q") }))
+        .route("/", get(firesong::phone_root))
         .route("/api/cmd/:name", post(commands::handle_remote_cmd))
         .route("/api/asset", get(media::handle_remote_asset))
         .route("/ws", any(ws::handle_upgrade))

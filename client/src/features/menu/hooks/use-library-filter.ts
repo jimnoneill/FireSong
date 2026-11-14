@@ -1,9 +1,12 @@
 import { atom, useAtom } from 'jotai';
 
 import { EMPTY_LIBRARY_FILTER } from '@/features/library/lib/library-menu-filter';
+import { initialLibraryFilter } from '@/features/noraebang/library-filter';
 import type { LibraryMenuFilters } from '@/types/LibraryMenuFilters';
 
-export const libraryFilterAtom = atom<LibraryMenuFilters>(EMPTY_LIBRARY_FILTER);
+export const libraryFilterAtom = atom<LibraryMenuFilters>(
+  initialLibraryFilter(EMPTY_LIBRARY_FILTER),
+);
 
 export const useLibraryFilter = () => {
   const [filter, setLibraryFilter] = useAtom(libraryFilterAtom);

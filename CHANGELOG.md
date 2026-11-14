@@ -18,16 +18,22 @@ below.
 - Phones can now be wireless microphones on a FireSong TV: scan a slot's QR code, sing as your own player with a karaoke echo timed to your phone's delay, and see your score on the phone after each song.
 - Noraebang mode: background clips, a two-line wipe lyric bar, the live score hidden while you sing, and a 0-100 score reveal with a drum roll, fanfare and Korean captions.
 - The microphone latency setting now goes up to 800 ms, enough for wireless and network microphones.
+- Guests' phones are now the whole karaoke remote in one page: browse the song book and reserve songs (even ones still getting ready, which are prepared on demand), sing duets, control your own song (pause, stop, key and tempo), set your echo and volume, tune your mic, follow the lyric line, play fun sounds and see tonight's best.
+- After each song the phone shows a shareable score card, and the night keeps a best-scores board.
 
 ### Improvements
 
 - The TV and phone screens now show FireSong's name, logo, icons and mascot, with a note that FireSong is built on Nightingale. The mascot reacts to every noraebang score on the TV and on your phone, greets you on the phone mic page in your slot's colour, and a FireSong stage replaces the black screen when no background clip can play. The update menu, which offered Nightingale's releases, is gone.
+- Scanning a party QR code opens the phone page, and guests can no longer change the queue or playback through the old queue page.
+- Song analysis waits while the GPU is reserved or short of memory.
+- If a phone can't reach the TV, it says to join the home Wi-Fi instead of spinning.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
 ### Fixes
 
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.
 - Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
+- Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.
 
 ## [1.4.1] - 2026-11-09
 

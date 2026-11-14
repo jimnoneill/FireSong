@@ -20,7 +20,13 @@ use crate::lyrics::{fetch_lrclib_lyrics, write_lyrics_file};
 use crate::song::{Song, SongOrigin, TranscriptSource, compute_file_hash, read_transcript_meta};
 use crate::source::{MediaSource, active_source};
 
+mod gpu_gate;
 mod idle;
+mod rekeys;
+mod timing_repair;
+
+pub use gpu_gate::{AnalyzerView, analyzer_view};
+pub use rekeys::rekeyed_hash;
 
 // ─── Analysis queue (persisted to disk) ──────────────────────────────
 
@@ -808,6 +814,7 @@ fn spawn_worker() {
         let cache = CacheDir::new();
 
         loop {
+            gpu_gate::wait_for_gpu(|| !lock_unpoisoned(&ANALYZER).queue.is_empty());
             let file_hash = {
                 let mut state = lock_unpoisoned(&ANALYZER);
                 match state.queue.pop_front() {
@@ -884,6 +891,7 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
 
     let config = AppConfig::load();
     let skip_lrclib = stems_only || lock_unpoisoned(&FORCE_TRANSCRIBE).remove(file_hash);
+    let lyrics_from_lrclib = !skip_lrclib && !cache.lyrics_path(file_hash).is_file();
     let lyrics_path = if skip_lrclib {
         None
     } else {
@@ -978,7 +986,7 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
                     lock_unpoisoned(&STEMS_ONLY).remove(file_hash);
                     *guard = None;
                 } else {
-                    finalize_song(file_hash, cache);
+                    finalize_song(file_hash, cache, lyrics_from_lrclib);
                 }
                 return;
             }
@@ -1029,11 +1037,12 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
     }
 }
 
-fn finalize_song(file_hash: &str, cache: &CacheDir) {
+fn finalize_song(file_hash: &str, cache: &CacheDir, lyrics_from_lrclib: bool) {
     if cache.transcript_exists(file_hash) {
         if let Err(err) = crate::playback::ensure_playable_source_video(file_hash) {
             warn!("[analyzer] Playable source-video conversion failed for {file_hash}: {err}");
         }
+        timing_repair::repair_after_analysis(file_hash, cache, lyrics_from_lrclib);
         let meta = read_transcript_meta(cache, file_hash);
         remove_from_queue(file_hash);
         update_song_analyzed(
@@ -1225,6 +1234,7 @@ fn prepare_audio_for_analysis(
             library_db::rekey_song(&song.file_hash, &real_hash, &updated).map_err(|e| {
                 NightingaleError::Other(format!("failed to rekey remote song: {e}"))
             })?;
+            rekeys::record(&song.file_hash, &real_hash);
 
             Ok((updated, new_source_path, real_hash))
         }

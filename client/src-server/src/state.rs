@@ -85,6 +85,11 @@ impl AppState {
         }
     }
 
+    /// FireSong deployment: phones use their own listener.
+    pub(crate) fn separate_phone_listener(&self) -> bool {
+        self.address.separate
+    }
+
     pub fn remote_token(&self) -> String {
         self.remote
             .read()

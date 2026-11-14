@@ -1,6 +1,7 @@
 //! The `/rtc` slot registry and relay. Every operation takes the lock, applies
 //! the PROTOCOL.md rules, queues frames on the peers' channels and returns; no
-//! lock is held across an await.
+//! lock is held across an await. Party frames (§13) are handled in
+//! [`super::party`] on the same state.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -14,13 +15,14 @@ use serde::Serialize;
 use tokio::sync::{mpsc, Notify};
 
 use super::mic_store::MicStore;
+use super::party::{Phone, Room};
 use super::Bucket;
 use crate::host_auth::new_token;
 use crate::remote::constant_time_eq;
 
 pub(crate) type ConnId = u64;
 
-const SLOTS: usize = SLOT_COUNT as usize;
+pub(super) const SLOTS: usize = SLOT_COUNT as usize;
 
 /// Close code for a normal close after `bye`.
 const CLOSE_NORMAL: u16 = 1000;
@@ -67,6 +69,10 @@ impl Peer {
         self.push(Outbound::Close(code));
     }
 
+    pub(super) fn conn(&self) -> ConnId {
+        self.conn
+    }
+
     fn push(&self, frame: Outbound) {
         if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(frame) {
             self.overflow.notify_one();
@@ -75,23 +81,24 @@ impl Peer {
 }
 
 #[derive(Clone)]
-enum Link {
+pub(super) enum Link {
     Connected(Peer),
     Reserved { until: Instant },
 }
 
 #[derive(Clone)]
-struct Entry {
-    mic_id: String,
+pub(super) struct Entry {
+    pub(super) mic_id: String,
     resume_key: String,
-    link: Link,
-    name: Option<String>,
+    pub(super) link: Link,
+    pub(super) name: Option<String>,
     muted: bool,
     muted_by: MuteSource,
     latency_ms: Option<u32>,
     latency_method: Option<LatencyMethod>,
     /// Newest offer over the slot's offer budget, relayed once it refills.
     held_offer: Option<HeldOffer>,
+    pub(super) party: Phone,
 }
 
 #[derive(Clone)]
@@ -101,7 +108,7 @@ struct HeldOffer {
 }
 
 impl Entry {
-    fn phone(&self) -> Option<&Peer> {
+    pub(super) fn phone(&self) -> Option<&Peer> {
         match &self.link {
             Link::Connected(peer) => Some(peer),
             Link::Reserved { .. } => None,
@@ -121,14 +128,15 @@ pub(crate) struct Hub {
     inner: Mutex<Inner>,
 }
 
-struct Inner {
+pub(super) struct Inner {
     ice_servers: Vec<IceServer>,
     reservation: Duration,
-    tv: Option<Peer>,
-    slots: [Option<Entry>; SLOTS],
+    pub(super) tv: Option<Peer>,
+    pub(super) slots: [Option<Entry>; SLOTS],
     /// Per slot number, not per phone, so rejoining cannot refill it.
     offer_budget: [Bucket; SLOTS],
     store: MicStore,
+    pub(super) room: Room,
 }
 
 impl Default for Hub {
@@ -151,6 +159,7 @@ impl Hub {
                 slots: Default::default(),
                 offer_budget: std::array::from_fn(|_| Bucket::new(OFFER_BURST, OFFER_PER_SEC)),
                 store,
+                room: Room::default(),
             }),
         }
     }
@@ -167,7 +176,7 @@ impl Hub {
         inner.store = store;
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
+    pub(super) fn lock(&self) -> MutexGuard<'_, Inner> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.expire(Instant::now());
         inner.flush_offers();
@@ -198,6 +207,7 @@ impl Hub {
         peer.send(&ServerToTv::Roster {
             slots: inner.roster(Instant::now()),
         });
+        inner.party_tv_ready();
         inner.tell_phones_tv_state(true);
     }
 
@@ -207,6 +217,7 @@ impl Hub {
             inner.tv = None;
             inner.drop_held_offers();
             inner.tell_phones_tv_state(false);
+            inner.party_tv_gone();
         }
     }
 
@@ -256,6 +267,7 @@ impl Hub {
             TvToServer::Kick { slot } => {
                 let entry = inner.take_entry(slot).ok_or(RtcErrorCode::UnknownSlot)?;
                 inner.kick(slot, &entry);
+                inner.party_slot_freed(slot, &entry);
                 inner.send_roster();
                 Ok(())
             }
@@ -278,7 +290,7 @@ impl Hub {
             }
             TvToServer::SongResult { title, results } => {
                 let singers = u8::try_from(results.len()).ok();
-                for result in results {
+                for result in results.iter().cloned() {
                     let SlotResult {
                         slot,
                         display_score,
@@ -297,6 +309,7 @@ impl Hub {
                         });
                     }
                 }
+                inner.record_scores(title.as_deref(), &results);
                 Ok(())
             }
         }
@@ -348,6 +361,7 @@ impl Hub {
                 inner.store.set_name(&mic_id, name);
             }
             inner.assign(slot, &entry, true);
+            inner.party_after_assign(index);
             inner.send_roster();
             return Ok(());
         }
@@ -358,10 +372,11 @@ impl Hub {
             if let Some(tv) = &inner.tv {
                 tv.send(&ServerToTv::SlotLost {
                     slot,
-                    mic_id: evicted.mic_id,
+                    mic_id: evicted.mic_id.clone(),
                     reason: SlotLostReason::Evicted,
                 });
             }
+            inner.party_slot_freed(slot, &evicted);
         }
         let stored = inner.store.get(&mic_id).cloned().unwrap_or_default();
         let entry = Entry {
@@ -374,12 +389,14 @@ impl Hub {
             latency_ms: stored.latency_ms,
             latency_method: stored.latency_method,
             held_offer: None,
+            party: Phone::default(),
         };
         inner.slots[index] = Some(entry.clone());
         if let Some(name) = &name {
             inner.store.set_name(&mic_id, name);
         }
         inner.assign(slot, &entry, false);
+        inner.party_after_assign(index);
         inner.send_roster();
         Ok(())
     }
@@ -447,7 +464,9 @@ impl Hub {
                 if let Some(phone) = entry.phone() {
                     phone.close(CLOSE_NORMAL);
                 }
-                inner.slots[index] = None;
+                if let Some(entry) = inner.slots[index].take() {
+                    inner.party_slot_freed(slot, &entry);
+                }
                 inner.slot_lost(slot, mic_id, SlotLostReason::Bye);
                 inner.send_roster();
                 Ok(())
@@ -472,16 +491,19 @@ impl Hub {
         inner.send_roster();
     }
 
-    /// Frees every slot and disconnects every phone (pairing-token rotation).
+    /// Frees every slot and disconnects every phone, and clears tonight's
+    /// scores (pairing-token rotation).
     pub(crate) fn kick_all(&self) -> usize {
         let mut inner = self.lock();
         let mut kicked = 0;
         for index in 0..SLOTS {
             if let Some(entry) = inner.slots[index].take() {
                 inner.kick(slot_number(index), &entry);
+                inner.party_slot_freed(slot_number(index), &entry);
                 kicked += 1;
             }
         }
+        inner.reset_scores();
         if kicked > 0 {
             inner.send_roster();
         }
@@ -489,11 +511,11 @@ impl Hub {
     }
 }
 
-fn slot_number(index: usize) -> u8 {
+pub(super) fn slot_number(index: usize) -> u8 {
     u8::try_from(index + 1).unwrap_or(SLOT_COUNT)
 }
 
-fn slot_index(slot: u8) -> Option<usize> {
+pub(super) fn slot_index(slot: u8) -> Option<usize> {
     let index = usize::from(slot).checked_sub(1)?;
     (index < SLOTS).then_some(index)
 }
@@ -507,6 +529,7 @@ impl Inner {
             );
             if expired {
                 if let Some(entry) = self.slots[index].take() {
+                    self.party_slot_freed(slot_number(index), &entry);
                     self.slot_lost(slot_number(index), entry.mic_id, SlotLostReason::Expired);
                     changed = true;
                 }
@@ -567,13 +590,13 @@ impl Inner {
         }
     }
 
-    fn index_of_mic(&self, mic_id: &str) -> Option<usize> {
+    pub(super) fn index_of_mic(&self, mic_id: &str) -> Option<usize> {
         self.slots
             .iter()
             .position(|entry| entry.as_ref().is_some_and(|entry| entry.mic_id == mic_id))
     }
 
-    fn index_of_conn(&self, conn: ConnId) -> Option<usize> {
+    pub(super) fn index_of_conn(&self, conn: ConnId) -> Option<usize> {
         self.slots.iter().position(|entry| {
             entry
                 .as_ref()
@@ -590,7 +613,7 @@ impl Inner {
         self.slots[slot_index(slot)?].take()
     }
 
-    fn phone(&self, slot: u8) -> Option<Peer> {
+    pub(super) fn phone(&self, slot: u8) -> Option<Peer> {
         self.slots[slot_index(slot)?]
             .as_ref()
             .and_then(Entry::phone)
@@ -662,7 +685,9 @@ impl Inner {
         }
     }
 
-    fn send_roster(&self) {
+    /// Every registry change also changes the party snapshot's singers.
+    fn send_roster(&mut self) {
+        self.mark_party_dirty();
         if let Some(tv) = &self.tv {
             tv.send(&ServerToTv::Roster {
                 slots: self.roster(Instant::now()),

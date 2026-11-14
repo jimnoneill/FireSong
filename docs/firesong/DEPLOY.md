@@ -176,7 +176,30 @@ $P gpu-check; rm ~/.config/gpu-reservations/<4090 uuid>
 
 Never delete or edit another job's reservation file.
 
-### 3.2 Cache cap and LRU eviction
+### 3.2 The server's GPU gate
+
+The server applies the same two rules itself, before its analyzer worker starts any job: songs the host queues on the TV, prep batches, and songs guests reserve from the phone song book (PHONE-V2.md, feature 2). While either rule holds, the job stays queued, the worker looks again every 30 seconds, and party songs show "waiting for the GPU" on the phones and the TV. Unlike prep, the gate never cancels an analysis that is already running; it only holds the next one.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FIRESONG_GPU_UUID` | unset | The GPU to check. Unset: the first entry of `CUDA_VISIBLE_DEVICES`. With neither, the gate is open (upstream behaviour). |
+| `FIRESONG_GPU_MIN_FREE_GB` | `6` | Free GiB the job needs, counting memory held by this server's own analyzer processes as free. |
+| `FIRESONG_GPU_RESERVATIONS_DIR` | `~/.config/gpu-reservations` | Where the reservation file `<gpu uuid>` lives. |
+
+- A reservation that starts within 10 minutes already holds the next job. Times without an offset are local time, as prep reads them.
+- An empty file, a file it cannot read, or a line it cannot parse holds the GPU until the file is fixed or removed.
+- Without `nvidia-smi` the gate is open. Any other `nvidia-smi` failure, or a pinned GPU it does not list, holds the jobs.
+- `nvidia-smi` runs with fixed arguments and a 10 s timeout.
+
+The journal shows each change: `GPU gate closed: <reason>; checking again every 30 s`, then `GPU gate open`.
+
+```sh
+journalctl --user -u firesong --since today | grep "GPU gate"
+```
+
+Party preparations download Plex originals and write stems into the song cache like prep does, but only `party-prep.py evict` keeps the cache under its cap; run it after a party.
+
+### 3.3 Cache cap and LRU eviction
 
 - **Usage.** The cache counts as the larger of the volume's `statvfs` usage and the sum of the files under the mount. The cap is the smaller of `FIRESONG_SONG_CACHE_MAX_GB` (36 GB, decimal) and 90% of the volume.
 - **Room before each batch.** Before each batch, prep needs room for the new songs. It estimates each song at the median size of the cached songs, or 60 MiB while the cache is empty; `--song-estimate-mb` overrides that.
@@ -189,7 +212,7 @@ Never delete or edit another job's reservation file.
 
 `$P evict [--dry-run] [--target-gb N] [--keep-playlist NAME]` runs the same eviction on its own. It refuses while a song is playing and when the server is down, because deleting files behind the server's back would leave the library pointing at missing stems.
 
-### 3.3 Background clips
+### 3.4 Background clips
 
 Noraebang mode plays random silent clips behind the lyrics, from `FIRESONG_CLIP_DIR` (`/mnt/firesong-cache/songs/noraebang-clips`). The server reads clips only from a real folder inside its media roots and outside the videos cache, which is why the pool sits in the songs directory. Prep counts it towards the cache but never evicts it.
 
@@ -268,6 +291,7 @@ The prep tests run the real prep loop against a fake Nightingale server on an ep
 | `party-prep.py` exit 2 "not mounted" | The NFS mount is missing (1.1), or the NFS server is down. |
 | `party-prep.py` exit 5 "not set up" | The analyzer setup has not been done in the UI (section 2). |
 | Prep waits forever on "GPU reserved by …" | A reservation window or a `touch`ed file is in force. Wait, or ask its holder. Never delete someone else's reservation. |
+| Party songs stay "waiting for the GPU" | The server's GPU gate holds the analysis (§3.2). `journalctl --user -u firesong \| grep "GPU gate"` names the reason; the jobs start on their own once it clears. |
 | Prep exit 4 | The protected songs exceed the cap. Prep fewer songs, or evict other playlists' songs with `evict`. |
 | `cube.sh` "unauthorized" | The Cube no longer trusts this host's key. Only someone at the TV can accept it again. Do not regenerate the key. |
 | `cube.sh install/launch` "not idle" | Someone is using the TV. Retry later. |

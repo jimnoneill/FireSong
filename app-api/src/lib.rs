@@ -1,3 +1,4 @@
+mod firesong;
 mod redact;
 mod vendor;
 
@@ -16,6 +17,7 @@ use app_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub use firesong::Party;
 pub use redact::{REDACTED_SECRET, redact_config};
 
 pub trait CommandRuntime: Send + Sync + 'static {
@@ -44,13 +46,16 @@ pub struct CommandState {
     playback_options: Arc<Mutex<PlaybackOptions>>,
     remote_microphones: Arc<Mutex<Vec<RemoteMicrophone>>>,
     secrets: Arc<redact::SecretStash>,
+    party: Arc<Party>,
 }
 
 impl CommandState {
     pub fn new(runtime: Arc<dyn CommandRuntime>) -> Self {
+        let playback_queue = Arc::new(PlaybackQueue::default());
         Self {
+            party: Arc::new(Party::new(playback_queue.clone(), runtime.clone())),
             runtime,
-            playback_queue: Arc::new(PlaybackQueue::default()),
+            playback_queue,
             playback_sessions: Arc::new(PlaybackSessionStore::default()),
             playback_status: Arc::new(Mutex::new(PlaybackStatus::default())),
             playback_progress: Arc::new(Mutex::new(PlaybackProgress::default())),
@@ -885,6 +890,7 @@ async fn dispatch_unredacted(state: CommandState, name: &str, payload: Value) ->
             Ok(Value::String(path.to_string_lossy().into_owned()))
         }
         "fetch_pixabay_videos" => fetch_pixabay_videos_cmd(events, payload),
+        app_core::remote_mic::SONG_BOOK_COMMAND => firesong::song_book_cmd(&state, payload).await,
         "list_noraebang_clips" => {
             let clips =
                 tokio::task::spawn_blocking(app_core::noraebang_clips::list_noraebang_clips)

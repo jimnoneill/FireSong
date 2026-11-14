@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { useNavInput } from '@/features/menu/hooks/use-nav-input';
 import type { ScoreTier } from '@/features/remote-mic/protocol';
 import { t, useTranslation } from '@/i18n';
+import { scorePoseFor } from '@/shared/firesong-score-pose';
 import { playerColorOption } from '@/shared/player-colors';
 import { cn } from '@/shared/utils/cn';
 
@@ -100,6 +101,28 @@ function RollingScore({ value, reducedMotion }: { value: number; reducedMotion: 
   );
 }
 
+/** The mascot's reaction, beside the centred score so it never covers the number or captions. */
+function ScorePoseArt({
+  displayScore,
+  reducedMotion,
+}: {
+  displayScore: number;
+  reducedMotion: boolean;
+}) {
+  const pose = scorePoseFor(displayScore);
+  return (
+    <img
+      src={pose.url}
+      alt={t(pose.alt)}
+      data-testid="score-pose"
+      className={cn(
+        'pointer-events-none absolute inset-y-0 left-[4vw] my-auto h-[46vh] max-w-[24vw] object-contain drop-shadow-[0_1vh_3vh_rgb(0_0_0/0.5)]',
+        !reducedMotion && 'animate-in fade-in slide-in-from-left-12 duration-500',
+      )}
+    />
+  );
+}
+
 function FinalScore({ entry, koreanCaptions }: { entry: RevealEntry; koreanCaptions: boolean }) {
   const { displayScore, tier } = entry.score;
   return (
@@ -180,7 +203,10 @@ function StageView({
       {stage.kind === 'rolling' ? (
         <RollingScore value={rollingValue} reducedMotion={reducedMotion} />
       ) : (
-        <FinalScore entry={entry} koreanCaptions={koreanCaptions} />
+        <>
+          <ScorePoseArt displayScore={entry.score.displayScore} reducedMotion={reducedMotion} />
+          <FinalScore entry={entry} koreanCaptions={koreanCaptions} />
+        </>
       )}
     </div>
   );

@@ -37,6 +37,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/shared/components/ui/sidebar';
+import { SHOW_UPSTREAM_UPDATES } from '@/shared/firesong-brand';
 import { useIsMobile } from '@/shared/hooks/use-is-mobile';
 import { useLatestRef } from '@/shared/hooks/use-latest-ref';
 
@@ -219,16 +220,18 @@ export const Actions = ({ registerCallback, focusedSidebarIndex }: ActionsProps)
                 <CogIcon />
                 {t('common.settings')}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setMode('update')}>
-                <DownloadIcon />
-                <span>{t('menu.sidebar.actions.update')}</span>
-                {updateAvailable && (
-                  <span
-                    aria-label={t('menu.sidebar.actions.updateAvailable')}
-                    className="ml-auto size-2 rounded-full bg-chart-3"
-                  />
-                )}
-              </DropdownMenuItem>
+              {SHOW_UPSTREAM_UPDATES && (
+                <DropdownMenuItem onClick={() => setMode('update')}>
+                  <DownloadIcon />
+                  <span>{t('menu.sidebar.actions.update')}</span>
+                  {updateAvailable && (
+                    <span
+                      aria-label={t('menu.sidebar.actions.updateAvailable')}
+                      className="ml-auto size-2 rounded-full bg-chart-3"
+                    />
+                  )}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => setMode('donate')}>
                 <HeartIcon />
                 <span>{t('menu.sidebar.actions.donate')}</span>

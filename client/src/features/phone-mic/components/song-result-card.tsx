@@ -2,6 +2,7 @@ import type { SongResultView } from '@/features/phone-mic/lib/session';
 import type { ScoreTier } from '@/features/remote-mic/protocol';
 import { formatNumber, t, type TranslationKey } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
+import { scorePoseFor } from '@/shared/firesong-score-pose';
 
 const TIER_CAPTIONS = {
   perfect: 'phoneMic.result.tier.perfect',
@@ -19,6 +20,7 @@ type SongResultCardProps = {
 /** The singer's own 0-100 score, sent by the TV when its score reveal starts. */
 export function SongResultCard({ result, onDismiss }: SongResultCardProps) {
   const ranked = result.rank !== undefined && result.singers !== undefined && result.singers > 1;
+  const pose = scorePoseFor(result.displayScore);
 
   return (
     <section
@@ -32,6 +34,7 @@ export function SongResultCard({ result, onDismiss }: SongResultCardProps) {
       {result.title === undefined ? null : (
         <p className="max-w-full truncate text-sm">{result.title}</p>
       )}
+      <img src={pose.url} alt={t(pose.alt)} className="size-40 object-contain" />
       <p className="text-7xl font-bold tabular-nums">{formatNumber(result.displayScore)}</p>
       <p lang="ko" className="text-2xl font-semibold">
         {t(TIER_CAPTIONS[result.tier])}

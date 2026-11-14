@@ -8,13 +8,13 @@ import {
   type SyntheticEvent,
 } from 'react';
 
-import { Background } from '@/features/playback/components/background';
 import { themeKey } from '@/features/playback/components/theme';
 import { VIDEO_CLASS_NAME } from '@/features/playback/lib/video-styles';
 import { usePlaybackStartupActions } from '@/features/playback/providers/playback-startup-context';
 import { usePlaybackThemeState } from '@/features/playback/providers/playback-theme-context';
 import { usePlaybackTransportState } from '@/features/playback/providers/playback-transport-context';
 import { t, useTranslation } from '@/i18n';
+import { STAGE_BACKDROP_URL } from '@/shared/firesong-brand';
 import { cn } from '@/shared/utils/cn';
 
 import { LICENSE_LABELS } from '../captions';
@@ -39,6 +39,29 @@ function clipCredit(clip: PlayableClip): string {
   return [clip.title, clip.author, t(LICENSE_LABELS[clip.license])]
     .filter((part): part is string => typeof part === 'string' && part !== '')
     .join(' · ');
+}
+
+/** The FireSong stage: behind the clips, and in their place when none can play. */
+function StageBackdrop() {
+  return (
+    <img src={STAGE_BACKDROP_URL} alt="" className="absolute inset-0 size-full object-cover" />
+  );
+}
+
+function StageFallback() {
+  const { theme } = usePlaybackThemeState();
+  const { markBackgroundReady } = usePlaybackStartupActions();
+  const activeThemeKey = themeKey(theme);
+
+  useEffect(() => {
+    markBackgroundReady(activeThemeKey);
+  }, [activeThemeKey, markBackgroundReady]);
+
+  return (
+    <div className="fixed inset-0 bg-black">
+      <StageBackdrop />
+    </div>
+  );
 }
 
 function useFirstClipReady(onFail: () => void) {
@@ -195,6 +218,7 @@ function ClipCrossfader({ clips, onFail }: CrossfaderProps) {
 
   return (
     <div className="fixed inset-0 bg-black">
+      <StageBackdrop />
       <ClipVideo layer={0} clip={layers[0]} isFront={front === 0} videoRef={firstRef} {...shared} />
       <ClipVideo
         layer={1}
@@ -218,16 +242,20 @@ function NoraebangBackgroundImpl() {
   const fail = useCallback(() => setFailed(true), []);
 
   if (pool.isLoading) {
-    return <div className="fixed inset-0 bg-black" />;
+    return (
+      <div className="fixed inset-0 bg-black">
+        <StageBackdrop />
+      </div>
+    );
   }
   if (failed || pool.data === undefined || pool.data.length === 0) {
-    return <Background />;
+    return <StageFallback />;
   }
   return <ClipCrossfader clips={pool.data} onFail={fail} />;
 }
 
 /**
  * Noraebang background: random license-safe stock clips that crossfade into
- * each other. With no usable clip it falls back to the normal background.
+ * each other, in front of the FireSong stage. With no usable clip the stage stays.
  */
 export const NoraebangBackground = memo(NoraebangBackgroundImpl);

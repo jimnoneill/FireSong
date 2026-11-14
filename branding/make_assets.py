@@ -15,6 +15,9 @@ Outputs:
   client/public/apple-touch-icon.png          phone home-screen icon, mascot on the night ground (opaque)
   client/src/assets/images/firesong-logo.webp sidebar wordmark of the web client (TV and phones)
   client/src/assets/images/firesong-mark.webp mascot on the web client's first-run setup dialog
+  client/src/assets/images/firesong-score-<pose>.webp   mascot reacting to a noraebang score (TV reveal, phone result)
+  client/src/assets/images/firesong-mic-mascot.webp     header art of the phone mic page
+  client/src/assets/images/firesong-stage.webp          noraebang background when no clip plays
 
 The source PNGs come out of a background remover: the body is about 99%
 opaque (alpha 252-253) and there are faint specks. clean_alpha() makes the
@@ -104,6 +107,13 @@ def save(image: Image.Image, path: pathlib.Path, **params: int) -> None:
     print(f"{path.relative_to(ROOT)}  {image.width}x{image.height}  {path.stat().st_size // 1024} KB")
 
 
+def square_art(image: Image.Image) -> Image.Image:
+    side = max(image.size)
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.alpha_composite(image, ((side - image.width) // 2, (side - image.height) // 2))
+    return canvas
+
+
 def main() -> None:
     mascot = trim(clean_alpha(Image.open(SRC / "mascot.png")))
     logo = trim(clean_alpha(Image.open(SRC / "logo-glow.png"), drop_below=3))
@@ -156,6 +166,17 @@ def main() -> None:
     save(square.resize((64, 64), Image.LANCZOS), CLIENT / "public" / "favicon.png")
     touch = card(night_gradient(180, 180, glow_at=(0.5, 0.45)), mascot, (144, 144))
     save(touch.convert("RGB"), CLIENT / "public" / "apple-touch-icon.png")
+
+    # Score poses fill about 46% of a 1080 px TV height, so 512 px is enough.
+    # The server sends assets uncompressed and the Cube has 2 GB of RAM: keep them small.
+    for pose in ("score-100", "score-90", "score-80", "score-50s", "score-low"):
+        art = square_art(trim(clean_alpha(Image.open(SRC / f"{pose}.png"))))
+        save(art.resize((512, 512), Image.LANCZOS), images / f"firesong-{pose}.webp", quality=85, method=6)
+    mic = square_art(trim(clean_alpha(Image.open(SRC / "mic-mascot.png"))))
+    save(mic.resize((320, 320), Image.LANCZOS), images / "firesong-mic-mascot.webp", quality=88, method=6)
+    # Below quality 92 the backdrop's dark gradients turn blocky.
+    stage = Image.open(SRC / "stage-backdrop.png").convert("RGB").resize((1920, 1080), Image.LANCZOS)
+    save(stage, images / "firesong-stage.webp", quality=92, method=6)
 
 
 if __name__ == "__main__":

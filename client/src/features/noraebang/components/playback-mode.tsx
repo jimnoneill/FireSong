@@ -1,5 +1,9 @@
 import type { ComponentProps } from 'react';
 
+import {
+  PartyLyricLink,
+  PartyPlaybackLink,
+} from '@/features/party-lobby/components/party-playback-link';
 import { Background } from '@/features/playback/components/background';
 import { ResultDialog } from '@/features/playback/components/dialogs/result';
 import { LyricsDisplay } from '@/features/playback/components/lyrics-display';
@@ -19,19 +23,23 @@ type ModeLyricsProps = ComponentProps<typeof LyricsDisplay> & {
   artist: string;
 };
 
-/** Classic lyrics, or the noraebang two-line wipe bar. */
+/** Classic lyrics, or the noraebang two-line wipe bar; on the TV the singers' phones get the line too. */
 export function ModeLyrics({ noraebang, title, artist, ...props }: ModeLyricsProps) {
-  if (!noraebang) {
-    return <LyricsDisplay {...props} />;
-  }
   return (
-    <NoraebangLyrics
-      segments={props.segments}
-      title={title}
-      artist={artist}
-      scale={props.scale}
-      romanizationMode={props.romanizationMode}
-    />
+    <>
+      <PartyLyricLink segments={props.segments} />
+      {noraebang ? (
+        <NoraebangLyrics
+          segments={props.segments}
+          title={title}
+          artist={artist}
+          scale={props.scale}
+          romanizationMode={props.romanizationMode}
+        />
+      ) : (
+        <LyricsDisplay {...props} />
+      )}
+    </>
   );
 }
 
@@ -40,7 +48,10 @@ type ModeResultProps = ComponentProps<typeof ResultDialog> &
     noraebang: boolean;
   };
 
-/** Classic results, or the noraebang score reveal followed by the same actions. */
+/**
+ * Classic results, or the noraebang score reveal followed by the same actions.
+ * On the TV it also reports the song's stage and carries out the singers' phone remote.
+ */
 export function ModeResult({
   noraebang,
   players,
@@ -48,9 +59,14 @@ export function ModeResult({
   scores,
   ...props
 }: ModeResultProps) {
-  return noraebang ? (
-    <NoraebangResult {...props} players={players} soloMicrophoneId={soloMicrophoneId} />
-  ) : (
-    <ResultDialog {...props} scores={scores} />
+  return (
+    <>
+      <PartyPlaybackLink song={props.song} resultOpen={props.open} />
+      {noraebang ? (
+        <NoraebangResult {...props} players={players} soloMicrophoneId={soloMicrophoneId} />
+      ) : (
+        <ResultDialog {...props} scores={scores} />
+      )}
+    </>
   );
 }

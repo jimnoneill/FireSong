@@ -11,6 +11,8 @@ import {
   GATE_MAX_THRESHOLD_DB,
   GATE_MIN_THRESHOLD_DB,
   gateThresholdFromBleed,
+  mixedEchoWet,
+  slotMixFromPct,
 } from '@/audio/voice-params';
 
 describe('echoSettingsFor (d_i = clamp(L_i, 90, 220), fixed 160 below 60)', () => {
@@ -91,5 +93,20 @@ describe('level helpers', () => {
     expect(clampLatencyMs(-5)).toBe(0);
     expect(clampLatencyMs(400)).toBe(400);
     expect(clampLatencyMs(5000)).toBe(1000);
+  });
+});
+
+describe("a phone's own mix (PROTOCOL.md §13.6 mix)", () => {
+  it('turns percentages into a fader factor and an echo factor, 100 % = unity', () => {
+    expect(slotMixFromPct(100, 100)).toEqual({ volume: 1, echo: 1 });
+    expect(slotMixFromPct(150, 0)).toEqual({ volume: 1.5, echo: 0 });
+    expect(slotMixFromPct(400, 300)).toEqual({ volume: 1.5, echo: 2 });
+  });
+
+  it('scales the echo send and keeps it under the 0.6 cap', () => {
+    expect(mixedEchoWet(ECHO_WET_GAIN, slotMixFromPct(100, 100))).toBeCloseTo(ECHO_WET_GAIN);
+    expect(mixedEchoWet(ECHO_WET_GAIN, slotMixFromPct(100, 50))).toBeCloseTo(ECHO_WET_GAIN / 2);
+    expect(mixedEchoWet(ECHO_WET_GAIN, slotMixFromPct(100, 200))).toBeCloseTo(0.6);
+    expect(mixedEchoWet(ECHO_LATE_WET_GAIN, slotMixFromPct(100, 0))).toBe(0);
   });
 });

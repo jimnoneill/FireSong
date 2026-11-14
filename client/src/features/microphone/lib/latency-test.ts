@@ -14,6 +14,9 @@ const BEEP_GAIN = 0.9;
 const NOOP: StopListening = () => {};
 const CAPTURE_ID = 'latency-test';
 
+/** A running context to beep on instead of a new one; it is not closed afterwards. */
+export type LatencyTestOutput = { context: AudioContext; destination: AudioNode };
+
 function toneAmplitude(samples: number[], sampleRate: number, frequency: number): number {
   if (samples.length === 0 || sampleRate <= 0) {
     return 0;
@@ -55,7 +58,7 @@ async function createUnlockedAudioContext(): Promise<AudioContext> {
   return context;
 }
 
-async function playBeep(context: AudioContext): Promise<number> {
+async function playBeep(context: AudioContext, destination: AudioNode): Promise<number> {
   if (context.state !== 'running') {
     await context.resume();
   }
@@ -71,7 +74,7 @@ async function playBeep(context: AudioContext): Promise<number> {
   gain.gain.setValueAtTime(BEEP_GAIN, startAt + BEEP_DURATION_SEC - 0.02);
   gain.gain.exponentialRampToValueAtTime(0.0001, startAt + BEEP_DURATION_SEC);
 
-  oscillator.connect(gain).connect(context.destination);
+  oscillator.connect(gain).connect(destination);
   oscillator.start(startAt);
   oscillator.stop(startAt + BEEP_DURATION_SEC);
 
@@ -81,6 +84,7 @@ async function playBeep(context: AudioContext): Promise<number> {
 export async function measureMicLatencySec(
   deviceId: string | null,
   adapter: MicrophoneAdapter = microphoneAdapter,
+  output?: LatencyTestOutput,
 ): Promise<number> {
   let stopListening = NOOP;
   let beepWallStart = 0;
@@ -88,7 +92,8 @@ export async function measureMicLatencySec(
   let baselinePeak = 0;
   let baselineCount = 0;
   const startedAt = performance.now();
-  const context = await createUnlockedAudioContext();
+  const context = output?.context ?? (await createUnlockedAudioContext());
+  const closeContext = () => (output === undefined ? context.close() : Promise.resolve());
 
   try {
     await adapter.startCapture(CAPTURE_ID, deviceId, { emit_audio: false });
@@ -104,7 +109,7 @@ export async function measureMicLatencySec(
         done = true;
         stopListening();
         void adapter.stopCapture(CAPTURE_ID).catch(() => {});
-        void context.close().catch(() => {});
+        void closeContext().catch(() => {});
         fn();
       };
 
@@ -146,7 +151,7 @@ export async function measureMicLatencySec(
         () => {
           const baseline = baselineCount > 0 ? baselineSum / baselineCount : 0;
           threshold = Math.max(0.0005, baseline * 3, baselinePeak * 1.5);
-          playBeep(context)
+          playBeep(context, output?.destination ?? context.destination)
             .then((start) => {
               beepWallStart = start;
               return undefined;
@@ -162,7 +167,7 @@ export async function measureMicLatencySec(
   } catch (error) {
     stopListening();
     await adapter.stopCapture(CAPTURE_ID).catch(() => {});
-    await context.close().catch(() => {});
+    await closeContext().catch(() => {});
     throw error;
   }
 }

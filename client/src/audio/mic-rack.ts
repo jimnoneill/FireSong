@@ -9,6 +9,7 @@ import {
   COMPRESSOR_THRESHOLD_DB,
   dbToGain,
   DEFAULT_ECHO_MIX,
+  DEFAULT_SLOT_MIX,
   echoSettingsFor,
   FEEDBACK_DUCK_DB,
   FEEDBACK_NOTCH_DB,
@@ -18,8 +19,10 @@ import {
   GATE_MIN_THRESHOLD_DB,
   gateThresholdFromBleed,
   HPF_HZ,
+  mixedEchoWet,
   type EchoMix,
   type EchoSettings,
+  type SlotMix,
 } from './voice-params';
 
 const GUARD_INTERVAL_MS = 50;
@@ -44,6 +47,8 @@ export type RackSlotStatus = {
   gateThreshold: number;
   feedbackHz: number | null;
   echo: EchoSettings;
+  /** The phone's own volume and echo amount. */
+  mix: SlotMix;
 };
 
 /** What the remote-mics registry needs from the rack. */
@@ -57,6 +62,8 @@ export type MicRackPort = {
   setLatency(slot: MicSlot, latencyMs: number | null): void;
   /** Echo and reverb levels of every slot (the echo preset); delays stay latency-locked. */
   setEchoMix(mix: EchoMix): void;
+  /** The phone's own fader and echo amount (PROTOCOL.md §13.6 `mix`). */
+  setSlotMix(slot: MicSlot, mix: SlotMix): void;
   learnGateFloor(slot: MicSlot): void;
   status(slot: MicSlot): RackSlotStatus | null;
 };
@@ -172,6 +179,7 @@ class SlotStrip {
   private muted = false;
   private duckedUntil = 0;
   private mix: EchoMix = DEFAULT_ECHO_MIX;
+  private slotMix: SlotMix = DEFAULT_SLOT_MIX;
   private latencyMs: number | null = null;
   private echo: EchoSettings = echoSettingsFor(null);
   private gateThreshold = dbToGain(GATE_MIN_THRESHOLD_DB);
@@ -268,6 +276,12 @@ class SlotStrip {
     this.applyEcho();
   }
 
+  setSlotMix(mix: SlotMix): void {
+    this.slotMix = mix;
+    this.applyFader();
+    this.applyEcho();
+  }
+
   learnGateFloor(): void {
     this.learning = [];
     window.setTimeout(() => {
@@ -315,6 +329,7 @@ class SlotStrip {
       gateThreshold: this.gateThreshold,
       feedbackHz: this.feedbackHz,
       echo: this.echo,
+      mix: this.slotMix,
     };
   }
 
@@ -334,7 +349,7 @@ class SlotStrip {
 
   private applyFader(): void {
     const ducked = this.duckedUntil !== 0 ? dbToGain(FEEDBACK_DUCK_DB) : 1;
-    ramp(this.nodes.fader.gain, this.muted ? 0 : ducked, this.engine.context);
+    ramp(this.nodes.fader.gain, this.muted ? 0 : ducked * this.slotMix.volume, this.engine.context);
   }
 
   private applyEcho(): void {
@@ -345,7 +360,7 @@ class SlotStrip {
       ECHO_GLIDE_SEC,
     );
     ramp(this.nodes.dry.gain, this.echo.dryGain, context);
-    ramp(this.nodes.echoSend.gain, this.echo.wetGain, context);
+    ramp(this.nodes.echoSend.gain, mixedEchoWet(this.echo.wetGain, this.slotMix), context);
   }
 
   private meter(data: unknown): void {
@@ -429,6 +444,10 @@ export class MicRack implements MicRackPort {
     for (const strip of this.strips.values()) {
       strip.setMix(mix);
     }
+  }
+
+  setSlotMix(slot: MicSlot, mix: SlotMix): void {
+    this.strip(slot).setSlotMix(mix);
   }
 
   learnGateFloor(slot: MicSlot): void {

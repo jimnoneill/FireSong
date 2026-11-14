@@ -40,6 +40,16 @@ describe('soloMicId', () => {
     expect(soloMicId(null, [device(MIC_B, 2, true)], true)).toBeNull();
   });
 
+  it('scores the singer the party lobby named, even while that phone reconnects', () => {
+    const devices = [device(MIC_B, 1), device(MIC_A, 3, true)];
+    expect(soloMicId(null, devices, true, `remote:${MIC_A}`)).toBe(`remote:${MIC_A}`);
+    expect(soloMicId(`remote:${MIC_B}`, devices, true, `remote:${MIC_A}`)).toBe(
+      `remote:${MIC_A}`,
+    );
+    expect(soloMicId(null, devices, true, null)).toBe(`remote:${MIC_B}`);
+    expect(soloMicId(null, devices, false, `remote:${MIC_A}`)).toBeNull();
+  });
+
   it('leaves other browsers alone', () => {
     expect(soloMicId(`remote:${MIC_A}`, [], false)).toBe(`remote:${MIC_A}`);
     expect(soloMicId('usb', [device(MIC_B, 2)], false)).toBe('usb');

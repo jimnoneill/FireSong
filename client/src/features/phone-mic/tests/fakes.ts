@@ -195,9 +195,12 @@ export class FakePeer implements MicPeerPort {
   readonly candidates: (IceCandidate | null)[] = [];
   private readonly stateListeners: ((state: PeerLinkState) => void)[] = [];
 
+  /** The SDP of the n-th offer; tests put candidate lines in it. */
+  offerSdp = (count: number): string => `offer-${count}`;
+
   readonly open = (): Promise<string | null> => {
     this.opens += 1;
-    return Promise.resolve(`offer-${this.opens}`);
+    return Promise.resolve(this.offerSdp(this.opens));
   };
   readonly restartIce = (): Promise<string | null> => {
     this.iceRestarts += 1;

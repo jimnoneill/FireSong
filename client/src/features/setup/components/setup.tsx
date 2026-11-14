@@ -1,7 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import logoSrc from '@/assets/images/logo_square.png';
 import { exit, EXIT_SUPPORTED } from '@/bridge/exit';
 import { getServerFlags } from '@/bridge/server-flags';
 import { onSetupError, onSetupProgress, triggerSetup } from '@/bridge/setup';
@@ -26,6 +25,7 @@ import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Progress } from '@/shared/components/ui/progress';
 import { useConfig } from '@/shared/config/use-config';
+import { BRAND_MARK_URL, BRAND_NAME } from '@/shared/firesong-brand';
 import { ANALYSIS_QUEUE, CONFIG, MENU, SONGS, SONGS_META } from '@/shared/query-keys';
 import type { CachePaths } from '@/types/CachePaths';
 import type { SetupProgress } from '@/types/SetupProgress';
@@ -61,6 +61,7 @@ const InitialStep = ({ toNextStep }: InitialStepProps) => {
     <>
       <AlertDialogHeader>
         <AlertDialogTitle>{t('setup.welcomeToNightingale')}</AlertDialogTitle>
+        <AlertDialogDescription>{t('firesong.brand.builtOnNightingale')}</AlertDialogDescription>
         <AlertDialogDescription>
           <Trans
             id="setup.beforeYouGetStartedWeDescription"
@@ -482,7 +483,7 @@ export const Setup = () => {
         className="max-h-[calc(100svh-2rem)] overflow-y-auto"
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
-        <img src={logoSrc} width={80} height={80} alt="Nightingale" />
+        <img src={BRAND_MARK_URL} width={80} height={80} alt={BRAND_NAME} />
         {stepContent}
       </AlertDialogContent>
     </AlertDialog>

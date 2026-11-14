@@ -14,6 +14,7 @@ import {
 } from '@/shared/components/ui/dialog';
 import { Separator } from '@/shared/components/ui/separator';
 import { Table, TableBody, TableCell, TableRow } from '@/shared/components/ui/table';
+import { BRAND_NAME } from '@/shared/firesong-brand';
 import { cn } from '@/shared/utils/cn';
 
 import { version } from '../../../../package.json';
@@ -70,9 +71,12 @@ export const InfoDialog = () => {
       <DialogContent className="sm:max-w-lg">
         <div ref={containerRef} className="contents">
           <DialogHeader>
-            <DialogTitle className="text-2xl">Nightingale</DialogTitle>
+            <DialogTitle className="text-2xl">{BRAND_NAME}</DialogTitle>
             <p className="text-sm text-muted-foreground">
               {t('menu.info.karaokeFromYourMusicLibrary')}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {t('firesong.brand.builtOnNightingale')}
             </p>
             <div className="flex items-center gap-1">
               <Button

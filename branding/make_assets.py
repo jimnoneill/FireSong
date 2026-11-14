@@ -11,6 +11,10 @@ Outputs:
     mipmap-<dpi>/ic_launcher_foreground.png   adaptive-icon foreground (108 dp)
     mipmap-<dpi>/ic_launcher_monochrome.png   single-colour silhouette (API 33+ themed icons)
     drawable-<dpi>/ic_firesong_mark.png       mascot on the loading/error overlay (160 dp)
+  client/public/favicon.png                   browser tab icon, mascot on transparency
+  client/public/apple-touch-icon.png          phone home-screen icon, mascot on the night ground (opaque)
+  client/src/assets/images/firesong-logo.webp sidebar wordmark of the web client (TV and phones)
+  client/src/assets/images/firesong-mark.webp mascot on the web client's first-run setup dialog
 
 The source PNGs come out of a background remover: the body is about 99%
 opaque (alpha 252-253) and there are faint specks. clean_alpha() makes the
@@ -29,6 +33,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "branding" / "source"
 OUT = ROOT / "branding"
 RES = ROOT / "android" / "firesong-tv" / "app" / "src" / "main" / "res"
+CLIENT = ROOT / "client"
 
 # Palette shared with android/firesong-tv/app/src/main/res/values/colors.xml.
 PLUM = (0x2A, 0x14, 0x50)
@@ -93,9 +98,9 @@ def card(ground: Image.Image, art: Image.Image, art_box: tuple[int, int], radius
     return canvas
 
 
-def save(image: Image.Image, path: pathlib.Path) -> None:
+def save(image: Image.Image, path: pathlib.Path, **params: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, optimize=True)
+    image.save(path, optimize=True, **params)
     print(f"{path.relative_to(ROOT)}  {image.width}x{image.height}  {path.stat().st_size // 1024} KB")
 
 
@@ -141,6 +146,16 @@ def main() -> None:
                 placed, ((canvas_px - placed.width) // 2, (canvas_px - placed.height) // 2)
             )
             save(canvas, RES / f"mipmap-{name}" / f"ic_launcher_{layer}.png")
+
+    # Web client. The sidebar wordmark keeps the old Nightingale logo's 924 px width
+    # and reads on both the dark and the light theme; WebP keeps the bundle small.
+    wordmark = trim(clean_alpha(Image.open(SRC / "wordmark-glossy.png")))
+    images = CLIENT / "src" / "assets" / "images"
+    save(fit(wordmark, 924, 310), images / "firesong-logo.webp", quality=90, method=6)
+    save(square.resize((320, 320), Image.LANCZOS), images / "firesong-mark.webp", quality=90, method=6)
+    save(square.resize((64, 64), Image.LANCZOS), CLIENT / "public" / "favicon.png")
+    touch = card(night_gradient(180, 180, glow_at=(0.5, 0.45)), mascot, (144, 144))
+    save(touch.convert("RGB"), CLIENT / "public" / "apple-touch-icon.png")
 
 
 if __name__ == "__main__":

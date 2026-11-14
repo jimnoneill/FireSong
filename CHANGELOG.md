@@ -21,6 +21,7 @@ below.
 
 ### Improvements
 
+- The TV and phone screens now show FireSong's name, logo and icons, with a note that FireSong is built on Nightingale.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
 ### Fixes

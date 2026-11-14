@@ -15,7 +15,7 @@ import type { Song } from '@/types/Song';
 import { useRevealSounds } from '../hooks';
 import { buildRevealEntries } from '../reveal-entries';
 import { useNoraebangSettings } from '../settings';
-import { phoneMicSlot, publishSongResult } from '../song-result';
+import { phoneMicName, phoneMicSlot, publishSongResult } from '../song-result';
 import { NoraebangScoreReveal } from './noraebang-score-reveal';
 
 type Props = Omit<ResultActionsProps, 'multiplayer'> & {
@@ -50,7 +50,10 @@ function NoraebangResultScreen({
           players.length > 0
             ? players
             : results.map((result) => ({ id: result.id, microphoneId: soloMicrophoneId })),
-        nameFor: (result) => playerDisplayName(result, results),
+        // Phone singers keep the name they joined with; party songs carry no profile.
+        nameFor: (result, microphoneId) =>
+          (microphoneId === null ? null : phoneMicName(microphoneId)) ??
+          playerDisplayName(result, results),
         slotFor: phoneMicSlot,
       }),
     [players, results, soloMicrophoneId, song.file_hash],

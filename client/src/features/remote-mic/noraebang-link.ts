@@ -31,6 +31,7 @@ export const linkNoraebang = (mics: RemoteMics): (() => void) => {
         }
       },
       slotForMicrophone: (microphoneId) => mics.slotForMicrophone(microphoneId),
+      nameForMicrophone: (microphoneId) => mics.nameForMicrophone(microphoneId),
     }),
     // The reveal mixes into the master limiter of the always-running voice
     // context, so the fanfare needs no gesture and goes out with the voices.

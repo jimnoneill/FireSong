@@ -29,6 +29,8 @@ export type SongResultSink = {
   send: (frame: TvToServer) => void;
   /** The slot a phone-mic device id is in now, or `null` (local mic, unknown, empty). */
   slotForMicrophone: (microphoneId: string) => MicSlot | null;
+  /** The singer's name a phone-mic device id joined with, or `null`. */
+  nameForMicrophone: (microphoneId: string) => string | null;
 };
 
 export function buildSongResultFrame(
@@ -78,6 +80,11 @@ export function registerSongResultSink(next: SongResultSink): () => void {
 /** The slot a microphone is in, from the registered sink; `null` without one. */
 export function phoneMicSlot(microphoneId: string): MicSlot | null {
   return sink?.slotForMicrophone(microphoneId) ?? null;
+}
+
+/** The name a phone singer joined with, from the registered sink; `null` without one. */
+export function phoneMicName(microphoneId: string): string | null {
+  return sink?.nameForMicrophone(microphoneId) ?? null;
 }
 
 /** Sends the result to the phones; `false` when there is no sink or no phone singer. */

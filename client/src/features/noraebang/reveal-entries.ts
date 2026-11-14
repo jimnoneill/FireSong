@@ -31,7 +31,7 @@ export type RevealEntriesInput = {
   results: readonly RevealResult[];
   /** Setup order; results without a player keep their own order after these. */
   players: readonly RevealPlayer[];
-  nameFor: (result: RevealResult) => string;
+  nameFor: (result: RevealResult, microphoneId: string | null) => string;
   /** Phone-mic slot of a microphone, or `null`. */
   slotFor: (microphoneId: string) => number | null;
 };
@@ -63,7 +63,7 @@ export function buildRevealEntries({
     return {
       entry: {
         id: result.id,
-        name: nameFor(result),
+        name: nameFor(result, microphoneId),
         color: result.color,
         microphoneId,
         score: scores[index],

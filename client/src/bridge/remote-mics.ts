@@ -244,6 +244,15 @@ export class RemoteMics {
     return this.roster.find((entry) => entry.micId === micId)?.slot ?? null;
   }
 
+  /** The name the phone in a `remote:<micId>` device id joined with, or `null`. */
+  nameForMicrophone(deviceId: string): string | null {
+    const micId = parseRemoteMicDeviceId(deviceId);
+    if (micId === null) {
+      return null;
+    }
+    return this.roster.find((entry) => entry.micId === micId)?.name ?? null;
+  }
+
   /** Sends the score reveal's per-slot results to the phones (PROTOCOL.md §5.3). */
   sendSongResult(frame: Extract<TvToServer, { type: 'song-result' }>): boolean {
     return this.socket?.send(frame) ?? false;

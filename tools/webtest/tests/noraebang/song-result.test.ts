@@ -4,6 +4,7 @@ import { noraebangScore } from '@/features/noraebang/score';
 import {
   buildSongResultFrame,
   publishSongResult,
+  phoneMicName,
   registerSongResultSink,
   type SongResultEntry,
 } from '@/features/noraebang/song-result';
@@ -74,9 +75,15 @@ describe('song-result sink', () => {
     expect(publishSongResult('t', [entry('remote:mic-aaaa-1111', 500, 1)])).toBe(false);
 
     const send = vi.fn<(frame: TvToServer) => void>();
-    const release = registerSongResultSink({ send, slotForMicrophone: slotFor });
+    const release = registerSongResultSink({
+      send,
+      slotForMicrophone: slotFor,
+      nameForMicrophone: (id) => (id === 'remote:mic-aaaa-1111' ? 'Mina' : null),
+    });
     unregister = release;
     expect(publishSongResult('t', [entry('remote:mic-aaaa-1111', 500, 1)])).toBe(true);
+    expect(phoneMicName('remote:mic-aaaa-1111')).toBe('Mina');
+    expect(phoneMicName('local-mic')).toBeNull();
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0]).toMatchObject({ type: 'song-result', title: 't' });
 

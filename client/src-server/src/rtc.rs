@@ -46,6 +46,10 @@ const CLOSE_OVERLOADED: u16 = 1011;
 
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
+/// A TV that comes back after a network blip republishes its playback state;
+/// one gone this long (HOME, switched off) has stopped playing.
+const TV_GONE_RESET_SECS: u64 = 30;
+
 /// Socket timing. Defaults follow `remote_mic`; tests shorten them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timings {
@@ -57,6 +61,8 @@ pub struct Timings {
     pub party_poll: Duration,
     /// How long the TV may take to finish a phone-started calibration.
     pub calibration_timeout: Duration,
+    /// How long the TV may stay away before the server marks playback stopped.
+    pub tv_gone_reset: Duration,
 }
 
 impl Default for Timings {
@@ -73,6 +79,7 @@ impl Default for Timings {
             reservation: Duration::from_secs(u64::from(RESERVATION_SECS)),
             party_poll: Duration::from_secs(2),
             calibration_timeout: Duration::from_secs(u64::from(CALIBRATION_TIMEOUT_SECS)),
+            tv_gone_reset: Duration::from_secs(TV_GONE_RESET_SECS),
         }
     }
 }

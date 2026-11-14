@@ -224,6 +224,7 @@ fn timings() -> Timings {
         reservation: Duration::from_secs(600),
         party_poll: Duration::from_millis(100),
         calibration_timeout: Duration::from_secs(15),
+        tv_gone_reset: Duration::from_millis(300),
     }
 }
 
@@ -1186,5 +1187,33 @@ async fn the_mixer_is_per_slot_and_resets_when_the_phone_leaves() {
     assert_eq!(
         recv_type(&mut tv, "mix").await,
         json!({"type": "mix", "slot": 1, "volumePct": 100, "echoPct": 100})
+    );
+}
+
+#[tokio::test]
+async fn playback_is_marked_stopped_when_the_tv_leaves_for_good() {
+    let server = start(timings()).await;
+    let playing = json!({"active": true, "paused": false, "finished": false, "hasNext": false, "sessionPlayback": false});
+
+    // A short absence (a network blip) keeps the published state.
+    let tv_socket = tv(&server).await;
+    tv_cmd(&server, "set_playback_status", playing.clone()).await;
+    drop(tv_socket);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let back = tv(&server).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        tv_cmd(&server, "load_playback_status", Value::Null).await["active"],
+        true
+    );
+    drop(back);
+
+    // Gone for longer than the reset delay: nothing will say "stopped", so the server does.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let status = tv_cmd(&server, "load_playback_status", Value::Null).await;
+    assert_eq!(status["active"], false, "{status}");
+    assert_eq!(
+        tv_cmd(&server, "load_playback_progress", Value::Null).await["playing"],
+        false
     );
 }

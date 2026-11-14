@@ -34,6 +34,7 @@ below.
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.
 - Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
 - Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.
+- When the TV leaves in the middle of a song (HOME, or switched off), phones and song prep no longer think the song is still playing.
 
 ## [1.4.1] - 2026-11-09
 

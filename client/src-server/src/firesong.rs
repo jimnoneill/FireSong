@@ -19,6 +19,7 @@ use axum::{
     routing::{any, get, post},
     Json, Router,
 };
+use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::remote::REMOTE_COMMANDS;
@@ -133,7 +134,7 @@ pub fn configure(state: &AppState, config: Config) {
         .firesong
         .hub
         .attach_party(state.commands.party().clone(), timings);
-    start_party_task(state, timings.party_poll);
+    start_party_task(state, timings.party_poll, timings.tv_gone_reset);
     *state
         .firesong
         .settings
@@ -147,24 +148,32 @@ pub fn configure(state: &AppState, config: Config) {
 
 /// Runs the party channel's timers and follows the playback queue and
 /// preparing songs. Needs a Tokio runtime; started once per state.
-fn start_party_task(state: &AppState, poll_every: Duration) {
+fn start_party_task(state: &AppState, poll_every: Duration, tv_gone_reset: Duration) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         tracing::warn!("no async runtime: the party channel runs without timers");
         return;
     };
     let hub = Arc::downgrade(&state.firesong.hub);
     let events = state.events.clone();
+    let commands = state.commands.clone();
     state.firesong.party_task.get_or_init(|| {
         let mut events = events.subscribe();
         runtime.spawn(async move {
             let mut tick = tokio::time::interval(PARTY_TICK);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut polled = tokio::time::Instant::now();
+            let mut reset_for = None;
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
                         let Some(hub) = hub.upgrade() else { return };
                         hub.party_tick();
+                        if let Some((left, away)) = hub.tv_absence() {
+                            if away >= tv_gone_reset && reset_for != Some(left) {
+                                reset_for = Some(left);
+                                tokio::spawn(stop_stale_playback(commands.clone()));
+                            }
+                        }
                         if polled.elapsed() >= poll_every {
                             polled = tokio::time::Instant::now();
                             if tokio::task::spawn_blocking(move || hub.prep_poll()).await.is_err() {
@@ -187,6 +196,41 @@ fn start_party_task(state: &AppState, poll_every: Duration) {
             }
         });
     });
+}
+
+/// The TV published "playing" and then went away (HOME, switched off), so
+/// nothing will ever publish "stopped": do it for the TV, through the same
+/// commands, so phones, `/q` pages and song prep stop waiting for a song.
+async fn stop_stale_playback(commands: app_api::CommandState) {
+    let active = app_api::dispatch(commands.clone(), "load_playback_status", Value::Null)
+        .await
+        .ok()
+        .and_then(|status| status.get("active").and_then(Value::as_bool))
+        .unwrap_or(false);
+    if !active {
+        return;
+    }
+    let reset = [
+        (
+            "set_playback_status",
+            serde_json::to_value(app_api::PlaybackStatus::default()),
+        ),
+        (
+            "set_playback_progress",
+            serde_json::to_value(app_api::PlaybackProgress::default()),
+        ),
+    ];
+    for (name, payload) in reset {
+        let Ok(payload) = payload else { continue };
+        if let Err(error) = app_api::dispatch(commands.clone(), name, payload).await {
+            tracing::warn!(
+                command = name,
+                "could not clear the stale playback state: {error}"
+            );
+            return;
+        }
+    }
+    tracing::info!("the TV left during a song: playback marked stopped");
 }
 
 /// The commands the phone door answers: upstream's queue-page list, or in a

@@ -132,6 +132,8 @@ pub(super) struct Inner {
     ice_servers: Vec<IceServer>,
     reservation: Duration,
     pub(super) tv: Option<Peer>,
+    /// When the last TV socket closed, while no TV is connected.
+    tv_left_at: Option<Instant>,
     pub(super) slots: [Option<Entry>; SLOTS],
     /// Per slot number, not per phone, so rejoining cannot refill it.
     offer_budget: [Bucket; SLOTS],
@@ -156,6 +158,7 @@ impl Hub {
                 ice_servers,
                 reservation,
                 tv: None,
+                tv_left_at: None,
                 slots: Default::default(),
                 offer_budget: std::array::from_fn(|_| Bucket::new(OFFER_BURST, OFFER_PER_SEC)),
                 store,
@@ -193,6 +196,7 @@ impl Hub {
     pub(crate) fn tv_hello(&self, peer: Peer) {
         let mut inner = self.lock();
         inner.drop_held_offers();
+        inner.tv_left_at = None;
         if let Some(old) = inner.tv.replace(peer.clone()) {
             old.send(&ServerToTv::Error {
                 code: RtcErrorCode::TvReplaced,
@@ -215,9 +219,19 @@ impl Hub {
         let mut inner = self.lock();
         if inner.tv.as_ref().is_some_and(|tv| tv.conn == conn) {
             inner.tv = None;
+            inner.tv_left_at = Some(Instant::now());
             inner.drop_held_offers();
             inner.tell_phones_tv_state(false);
             inner.party_tv_gone();
+        }
+    }
+
+    /// When the TV left and for how long, while no TV is connected.
+    pub(crate) fn tv_absence(&self) -> Option<(Instant, Duration)> {
+        let inner = self.lock();
+        match (&inner.tv, inner.tv_left_at) {
+            (None, Some(left)) => Some((left, left.elapsed())),
+            _ => None,
         }
     }
 

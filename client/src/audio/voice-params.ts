@@ -73,6 +73,24 @@ export const DEFAULT_ECHO_MIX: EchoMix = {
 const LATE_WET_RATIO = ECHO_LATE_WET_GAIN / ECHO_WET_GAIN;
 const MAX_WET_GAIN = 0.6;
 
+/**
+ * A phone's own mixer (PROTOCOL.md §13.6 `mix`) as linear factors: `volume`
+ * scales the slot's fader before the limiter, `echo` its echo send.
+ */
+export type SlotMix = { volume: number; echo: number };
+
+export const DEFAULT_SLOT_MIX: SlotMix = { volume: 1, echo: 1 };
+
+/** `volumePct` 0-150 and `echoPct` 0-200 as factors; 100 is unity. */
+export const slotMixFromPct = (volumePct: number, echoPct: number): SlotMix => ({
+  volume: clamp(volumePct, 0, 150) / 100,
+  echo: clamp(echoPct, 0, 200) / 100,
+});
+
+/** The echo send of a slot with its own echo amount, still capped at the engine's maximum. */
+export const mixedEchoWet = (wetGain: number, mix: SlotMix): number =>
+  Math.min(MAX_WET_GAIN, wetGain * mix.echo);
+
 export type EchoSettings = {
   /** `d_i`, the slot's echo delay. */
   delayMs: number;

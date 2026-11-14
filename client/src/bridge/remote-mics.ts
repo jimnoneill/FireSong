@@ -1,7 +1,7 @@
 import { MicRack, type MicRackPort, type RackSlotStatus, type TapListener } from '@/audio/mic-rack';
 import { SlotLatency } from '@/audio/slot-latency';
 import { getVoiceEngine } from '@/audio/voice-engine';
-import type { EchoMix } from '@/audio/voice-params';
+import { slotMixFromPct, type EchoMix, type SlotMix } from '@/audio/voice-params';
 import { installDiag } from '@/features/remote-mic/diag';
 import {
   linkNoraebang,
@@ -10,17 +10,23 @@ import {
 } from '@/features/remote-mic/noraebang-link';
 import {
   isMicSlot,
+  MIC_LINKS_PATH,
   MIC_SLOTS,
+  parseMicLinks,
   parseServerToTv,
+  parseServerToTvParty,
   PROTOCOL_VERSION,
   parseRemoteMicDeviceId,
   remoteMicDeviceId,
   type IceCandidate,
   type IceServer,
   type LatencyMethod,
+  type MicLinks,
   type MicSlot,
   type ServerToTv,
+  type ServerToTvParty,
   type SlotLostReason,
+  type TvPartyToServer,
   type TvSlot,
   type TvToServer,
 } from '@/features/remote-mic/protocol';
@@ -61,11 +67,25 @@ export type RemoteMicsSnapshot = {
   lastError: string | null;
 };
 
-export type TvSocketPort = { send(frame: TvToServer): boolean; stop(): void };
+/** Everything the TV can receive on `/rtc`: signaling (§5.4) and party frames (§13.6). */
+export type TvInbound = ServerToTv | ServerToTvParty;
+
+/** Everything the TV can send on `/rtc`. */
+export type TvOutbound = TvToServer | TvPartyToServer;
+
+export type TvSocketPort = { send(frame: TvOutbound): boolean; stop(): void };
+
+/**
+ * Party traffic for the TV's party client: the frames it handles, and `ready`
+ * each time the TV seat is taken, so it can report its stage again.
+ */
+export type TvPartyEvent =
+  | { kind: 'ready' }
+  | { kind: 'frame'; frame: Exclude<ServerToTvParty, { type: 'mix' }> };
 
 export type RemoteMicsDeps = {
   rack: () => Promise<MicRackPort>;
-  connect: (onFrame: (frame: ServerToTv) => void, onOpen: (open: boolean) => void) => TvSocketPort;
+  connect: (onFrame: (frame: TvInbound) => void, onOpen: (open: boolean) => void) => TvSocketPort;
   createPeer: (init: PeerInit) => PeerPort;
   dispatchFrame: (captureId: string, frame: MicSampleFrame) => void;
   devicesChanged: () => void;
@@ -81,6 +101,18 @@ type Binding = { micId: string; monitor: boolean };
 type SlotFrame = Extract<ServerToTv, { type: 'offer' | 'ice' | 'mute' | 'slot-lost' }>;
 
 type ActiveSlot = TvSlot & { slot: MicSlot; micId: string };
+
+const PARTY_FRAME_TYPES: ReadonlySet<string> = new Set<ServerToTvParty['type']>([
+  'party',
+  'control',
+  'shift-current',
+  'fx',
+  'mix',
+  'calibrate',
+]);
+
+const isPartyFrame = (frame: TvInbound): frame is ServerToTvParty =>
+  PARTY_FRAME_TYPES.has(frame.type);
 
 const isActive = (slot: TvSlot): slot is ActiveSlot =>
   slot.state !== 'empty' && slot.micId !== undefined && isMicSlot(slot.slot);
@@ -98,7 +130,10 @@ const EMPTY_SNAPSHOT: RemoteMicsSnapshot = {
 export class RemoteMics {
   private snapshot: RemoteMicsSnapshot = EMPTY_SNAPSHOT;
   private readonly listeners = new Set<() => void>();
+  private readonly partyListeners = new Set<(event: TvPartyEvent) => void>();
   private readonly bindings = new Map<string, Binding>();
+  private readonly mixes = new Map<MicSlot, SlotMix>();
+  private lastParty: Extract<ServerToTvParty, { type: 'party' }> | null = null;
   private readonly peers = new Map<MicSlot, PeerPort>();
   private readonly latencies = new Map<string, SlotLatency>();
   private readonly tapped = new Set<MicSlot>();
@@ -144,6 +179,22 @@ export class RemoteMics {
   };
 
   getSnapshot = (): RemoteMicsSnapshot => this.snapshot;
+
+  /** Party frames and seat changes for the TV's party client, starting with the latest snapshot. */
+  subscribeParty(listener: (event: TvPartyEvent) => void): () => void {
+    this.partyListeners.add(listener);
+    if (this.lastParty !== null) {
+      listener({ kind: 'frame', frame: this.lastParty });
+    }
+    return () => {
+      this.partyListeners.delete(listener);
+    };
+  }
+
+  /** Sends a TV party frame (PROTOCOL.md §13.5); false while the TV seat is not held. */
+  sendParty(frame: TvPartyToServer): boolean {
+    return this.socket?.send(frame) ?? false;
+  }
 
   devices(): readonly RemoteMicDevice[] {
     return this.snapshot.devices;
@@ -234,7 +285,7 @@ export class RemoteMics {
       return;
     }
     this.socket = this.deps.connect(
-      (frame) => this.onFrame(frame),
+      (frame) => (isPartyFrame(frame) ? this.onPartyFrame(frame) : this.onFrame(frame)),
       (open) => {
         this.connected = open;
         this.publish();
@@ -251,6 +302,7 @@ export class RemoteMics {
     }
     this.tapped.clear();
     this.roster = [];
+    this.lastParty = null;
     this.connected = false;
     this.publish();
   }
@@ -259,6 +311,7 @@ export class RemoteMics {
     switch (frame.type) {
       case 'ready':
         this.iceServers = frame.iceServers;
+        this.emitParty({ kind: 'ready' });
         return;
       case 'roster':
         this.applyRoster(frame.slots);
@@ -275,6 +328,34 @@ export class RemoteMics {
       case 'mute':
       case 'slot-lost':
         this.onSlotFrame(frame);
+    }
+  }
+
+  private onPartyFrame(frame: ServerToTvParty): void {
+    if (frame.type === 'mix') {
+      this.onMix(frame.slot, slotMixFromPct(frame.volumePct, frame.echoPct));
+      return;
+    }
+    if (frame.type === 'party') {
+      this.lastParty = frame;
+    }
+    this.emitParty({ kind: 'frame', frame });
+  }
+
+  private emitParty(event: TvPartyEvent): void {
+    for (const listener of this.partyListeners) {
+      listener(event);
+    }
+  }
+
+  /** The slot's own mixer; kept for the slot's phone and applied once it is in the roster. */
+  private onMix(slot: number, mix: SlotMix): void {
+    if (!isMicSlot(slot)) {
+      return;
+    }
+    this.mixes.set(slot, mix);
+    if (this.roster.some((entry) => entry.slot === slot)) {
+      this.rack?.setSlotMix(slot, mix);
     }
   }
 
@@ -311,6 +392,10 @@ export class RemoteMics {
       latency.setCalibrated(entry.latencyMs ?? null);
       this.rack?.setMuted(entry.slot, entry.muted);
       this.rack?.setLatency(entry.slot, latency.effectiveMs());
+      const mix = this.mixes.get(entry.slot);
+      if (mix !== undefined) {
+        this.rack?.setSlotMix(entry.slot, mix);
+      }
     }
     this.syncSlots();
   }
@@ -394,6 +479,7 @@ export class RemoteMics {
     this.peers.get(slot)?.close();
     this.peers.delete(slot);
     this.tapped.delete(slot);
+    this.mixes.delete(slot);
     this.rack?.release(slot);
   }
 
@@ -502,15 +588,24 @@ const notifyDeviceChange = (): void => {
 };
 
 const connectTv: RemoteMicsDeps['connect'] = (onFrame, onOpen) =>
-  createRtcSocket<ServerToTv, TvToServer>({
+  createRtcSocket<TvInbound, TvOutbound>({
     url: () => rtcSocketUrl(window.location.href),
     hello: () => ({ type: 'hello', v: PROTOCOL_VERSION }),
     ping: (now) => ({ type: 'ping', t: now }),
-    parse: parseServerToTv,
+    parse: (raw) => parseServerToTv(raw) ?? parseServerToTvParty(raw),
     isPong: (frame) => frame.type === 'pong',
     onFrame,
     onStatus: (status) => onOpen(status.state === 'open'),
   });
+
+/** The four per-slot join links and QR codes (PROTOCOL.md §1.1); the TV door only. */
+export const loadMicLinks = async (): Promise<MicLinks> => {
+  const response = await fetch(MIC_LINKS_PATH, { headers: { accept: 'application/json' } });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return parseMicLinks(await response.json());
+};
 
 let rackPromise: Promise<MicRackPort> | null = null;
 

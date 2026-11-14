@@ -9,6 +9,7 @@ import { loadInterfaceLanguage } from '@/bridge/remote-control';
 import { LibraryPage } from '@/features/library/library-page';
 import { MenuLayout } from '@/features/menu/menu';
 import { MenuFocusProvider } from '@/features/menu/providers/menu-focus-context';
+import { PartyTvHost } from '@/features/party-lobby/components/party-tv-host';
 import { Playback } from '@/features/playback/playback';
 import { RemoteMicsHost } from '@/features/remote-mic/remote-mics-host';
 import { RemoteQueuePage } from '@/features/remote/remote-queue';
@@ -49,6 +50,7 @@ const InnerWrapper = () => (
           </Route>
           <Route path="/playback" element={<Playback />} />
         </Routes>
+        <PartyTvHost />
       </BrowserRouter>
     </MenuFocusProvider>
     <Toaster />

@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { fireSongLaunch } from '@/bridge/firesong-launch';
 import type { PlaybackPlayer } from '@/bridge/playback-session';
+import { useLobbyReturn } from '@/features/party-lobby/use-lobby-return';
 import {
   ResultActions,
   type ResultActionsProps,
 } from '@/features/playback/components/dialogs/result';
 import type { PlaybackPlayerResult } from '@/features/playback/hooks/use-playback-result';
 import { playerDisplayName } from '@/features/playback/utils/player-display-name';
+import { tp } from '@/i18n';
 import type { Song } from '@/types/Song';
 
 import { useRevealSounds } from '../hooks';
@@ -34,6 +37,9 @@ function NoraebangResultScreen({
   const settings = useNoraebangSettings();
   const sounds = useRevealSounds();
   const [revealed, setRevealed] = useState(false);
+  // On the TV the party lobby starts the next song with its own singers.
+  const party = fireSongLaunch().tv;
+  const lobbyIn = useLobbyReturn(party && revealed, actions.onBack);
 
   const entries = useMemo(
     () =>
@@ -66,7 +72,17 @@ function NoraebangResultScreen({
       koreanCaptions={settings.koreanCaptions}
       onRevealed={() => setRevealed(true)}
     >
-      <ResultActions open={revealed} multiplayer={results.length > 1} {...actions} />
+      <ResultActions
+        open={revealed}
+        multiplayer={results.length > 1}
+        {...actions}
+        {...(party ? { onNext: undefined, autoContinue: false } : {})}
+      />
+      {lobbyIn !== null && (
+        <p className="text-[2.2vh] font-semibold text-white/80" aria-live="polite">
+          {tp('firesong.party.backToLobby', lobbyIn)}
+        </p>
+      )}
     </NoraebangScoreReveal>
   );
 }

@@ -12,7 +12,7 @@ Host-specific values (LAN addresses, the GPU UUID, the tailnet name, tokens) nev
 | TV door (`firesong-caddy.service`, user unit) | the server machine, `https://<lan-ip>:64443` | Caddy with its own internal CA. Only the Cube, the server machine and loopback get through. |
 | Phone door | Tailscale Funnel `<phone-origin>` (port 8443) to `127.0.0.1:64449` | Only during parties. The existing Funnel on `:443` is never touched. |
 | Data dir (`NIGHTINGALE_DATA_PATH`) | `/mnt/fast/firesong/data` (local NVMe) | `config.json`, the SQLite library, profiles, tokens. Never on NFS. |
-| Song cache | `/mnt/firesong-cache/songs` (NFS, 40 GB hard-capped volume) | Stems, transcripts and downloaded originals. Kept under 36 GB by LRU eviction. |
+| Song cache | `/mnt/firesong-cache/songs` (NFS: a ZFS dataset with a quota, or a hard-capped volume) | Stems, transcripts and downloaded originals, about 14 MB per song. Kept under `FIRESONG_SONG_CACHE_MAX_GB` by LRU eviction. |
 | Models, analyzer vendor tree, uv cache | `/mnt/staging1/firesong/{models,vendor,uv-cache}` | About 10-15 GB once the analyzer is set up. |
 | Releases | `/mnt/fast/firesong/releases/<id>/`, `current` symlink | Built by `build-release.sh`. |
 | Analyzer GPU | RTX 4090, pinned by UUID | Never the RTX PRO 6000 (see "GPU pinning"). |
@@ -39,11 +39,11 @@ These need sudo, the Plex account or the Tailscale admin console, so the owner d
 
 ### 1.1 Song-cache NFS mount
 
-The export is a 40 GB hard-capped volume on the NFS server. On the server machine:
+The export is a size-capped filesystem on the NFS server: a ZFS dataset with a quota (for example `zfs create -o atime=off -o quota=400G <pool>/media/firesong-cache`; the media pool's 1M records suit the large, write-once stem files) or a hard-capped loop volume on an SSD. A prepared song is about 14 MB and is written once, so the load is light even on SMR drives, and the cache can always be rebuilt from the library. Set `FIRESONG_SONG_CACHE_MAX_GB` to about 90% of the cap. On the server machine:
 
 ```sh
 sudo mkdir -p /mnt/firesong-cache
-echo '<nfs-server>:/var/lib/firesong-cache /mnt/firesong-cache nfs rw,soft,intr,_netdev,nofail,bg 0 0' | sudo tee -a /etc/fstab
+echo '<nfs-server>:<nfs-export> /mnt/firesong-cache nfs rw,soft,intr,_netdev,nofail,bg 0 0' | sudo tee -a /etc/fstab
 sudo mount /mnt/firesong-cache
 sudo chown "$USER": /mnt/firesong-cache
 findmnt /mnt/firesong-cache          # FSTYPE nfs4

@@ -33,7 +33,7 @@ function burst(sparks: Spark[], width: number, height: number): void {
 }
 
 function step(context: CanvasRenderingContext2D, sparks: Spark[]): Spark[] {
-  context.globalCompositeOperation = 'source-over';
+  context.globalCompositeOperation = 'destination-out';
   context.fillStyle = 'rgba(0, 0, 0, 0.22)';
   context.fillRect(0, 0, context.canvas.width, context.canvas.height);
   context.globalCompositeOperation = 'lighter';

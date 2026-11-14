@@ -13,7 +13,12 @@ if (withoutToken !== null) {
   window.history.replaceState(null, '', withoutToken);
 }
 
-document.documentElement.classList.add('dark');
+const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+const followColorScheme = (): void => {
+  document.documentElement.classList.toggle('dark', darkScheme.matches);
+};
+followColorScheme();
+darkScheme.addEventListener('change', followColorScheme);
 document.title = t('phoneMic.documentTitle');
 
 const root = document.getElementById('root');
@@ -21,9 +26,8 @@ if (root === null) {
   throw new Error('Missing application root');
 }
 
-const { session, readLevel } = createBrowserPhoneMic();
 createRoot(root).render(
   <StrictMode>
-    <PhoneMicPage session={session} readLevel={readLevel} />
+    <PhoneMicPage app={createBrowserPhoneMic()} />
   </StrictMode>,
 );

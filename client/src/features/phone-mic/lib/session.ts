@@ -3,12 +3,15 @@ import {
   MAX_DIAG_BYTES,
   PROTOCOL_VERSION,
   type IceServer,
+  type MicPartyToServer,
   type MicSlot,
   type MuteSource,
   type RtcErrorCode,
   type ServerToMic,
+  type ServerToMicParty,
 } from '@/features/remote-mic/protocol';
 
+import { summarizeLocalCandidates, type CandidateSummary } from './candidates';
 import { describeError } from './errors';
 import {
   ensureMicIdentity,
@@ -45,6 +48,19 @@ export type PhoneMicSnapshot = {
   problem: PhoneMicProblem | null;
   wakeLock: WakeLockState;
   result: SongResultView | null;
+  /** The voice cannot reach the TV: two connection attempts in a row ended without `connected`. */
+  unreachable: boolean;
+  /** The phone looks like it is on mobile data, which cannot carry the voice to the TV. */
+  mobileDataHint: boolean;
+};
+
+/** Party traffic that rides on the session's socket (PROTOCOL.md §13). */
+export type PartyListener = {
+  onFrame: (frame: ServerToMicParty) => void;
+  /** A v1 `song-result` arrived; a `night-rank` for it follows. */
+  onSongResult: () => void;
+  /** The phone left its slot, or lost it for good. */
+  onReset: () => void;
 };
 
 type InboundFrame = Exclude<ServerToMic, { type: 'pong' }>;
@@ -67,6 +83,8 @@ const VISIBLE_SETTLE_MS = 500;
 const ANSWER_RETRY_MS = 1_000;
 /** An answered session that is still not connected after this starts over. */
 export const CONNECT_TIMEOUT_MS = 8_000;
+/** Connection attempts in a row that end without `connected` before the phone says it cannot reach the TV. */
+export const UNREACHABLE_AFTER_ATTEMPTS = 2;
 
 const INITIAL_SNAPSHOT: PhoneMicSnapshot = {
   stage: 'idle',
@@ -78,6 +96,8 @@ const INITIAL_SNAPSHOT: PhoneMicSnapshot = {
   problem: null,
   wakeLock: 'idle',
   result: null,
+  unreachable: false,
+  mobileDataHint: false,
 };
 
 const toResultView = (frame: SongResultFrame): SongResultView => ({
@@ -112,6 +132,9 @@ export class PhoneMicSession {
   private diagTimer: number | null = null;
   private connectTimer: number | null = null;
   private lastError: string | null = null;
+  private failedAttempts = 0;
+  private candidates: CandidateSummary | null = null;
+  private readonly partyListeners: PartyListener[] = [];
 
   private readonly ports: PhoneMicPorts;
   private readonly linkSlot: MicSlot | null;
@@ -130,6 +153,7 @@ export class PhoneMicSession {
       {
         hello: () => this.hello(),
         onFrame: (frame) => this.handleFrame(frame),
+        onPartyFrame: (frame) => this.partyListeners.forEach((listener) => listener.onFrame(frame)),
         onOpen: () => this.update({ link: 'offline' }),
         onDown: (decision) => this.handleDown(decision),
         onFreshIdentity: () => forgetMicIdentity(ports.storage),
@@ -144,6 +168,7 @@ export class PhoneMicSession {
         this.handleVisible();
       }
     });
+    ports.network.onChange(() => this.handleNetworkChange());
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -203,6 +228,26 @@ export class PhoneMicSession {
     this.signaling.stop(true);
     this.release();
     this.update({ ...INITIAL_SNAPSHOT });
+    this.partyListeners.forEach((listener) => listener.onReset());
+  }
+
+  onParty(listener: PartyListener): void {
+    this.partyListeners.push(listener);
+  }
+
+  /** Sends a party request on the slot's socket; `false` while it is down. */
+  sendParty(frame: MicPartyToServer): boolean {
+    return this.snapshot.stage === 'joined' && this.signaling.send(frame);
+  }
+
+  /** "Try again" after the can't-reach-the-TV guidance: a fresh session with a fresh count. */
+  retryVoice(): void {
+    if (this.snapshot.stage !== 'joined' || !this.tvConnected) {
+      return;
+    }
+    this.failedAttempts = 0;
+    this.update({ unreachable: false });
+    this.detach(this.startPeer());
   }
 
   dismissResult(): void {
@@ -274,6 +319,7 @@ export class PhoneMicSession {
         return;
       case 'song-result':
         this.update({ result: toResultView(frame) });
+        this.partyListeners.forEach((listener) => listener.onSongResult());
         return;
       case 'slot-lost':
         this.ports.peer.close();
@@ -311,7 +357,8 @@ export class PhoneMicSession {
     this.clearConnectTimer();
     this.ports.peer.close();
     this.stopDiag();
-    this.update({ link: 'waiting-tv' });
+    this.failedAttempts = 0;
+    this.update({ link: 'waiting-tv', unreachable: false });
   }
 
   private handleError(code: RtcErrorCode): void {
@@ -330,7 +377,15 @@ export class PhoneMicSession {
       return;
     }
     this.release();
-    this.update({ stage: 'ended', link: 'offline', problem: decision.reason, needsTap: false });
+    this.update({
+      stage: 'ended',
+      link: 'offline',
+      problem: decision.reason,
+      needsTap: false,
+      unreachable: false,
+      mobileDataHint: false,
+    });
+    this.partyListeners.forEach((listener) => listener.onReset());
   }
 
   private async startPeer(): Promise<void> {
@@ -338,6 +393,7 @@ export class PhoneMicSession {
     this.update({ link: 'connecting' });
     const sdp = await this.ports.peer.open(this.iceServers);
     if (sdp !== null) {
+      this.noteLocalCandidates(sdp);
       this.signaling.send({ type: 'offer', sdp, restart: false });
     }
   }
@@ -351,6 +407,7 @@ export class PhoneMicSession {
       await this.startPeer();
       return;
     }
+    this.noteLocalCandidates(sdp);
     this.signaling.send({ type: 'offer', sdp, restart: true });
   }
 
@@ -371,12 +428,15 @@ export class PhoneMicSession {
     switch (state) {
       case 'connected':
         this.clearConnectTimer();
-        this.update({ link: 'live' });
+        this.failedAttempts = 0;
+        this.update({ link: 'live', unreachable: false });
         this.startDiag();
         return;
       case 'failed':
         this.update({ link: 'connecting' });
-        this.detach(this.restartPeer());
+        if (this.attemptFailed()) {
+          this.detach(this.restartPeer());
+        }
         return;
       case 'connecting':
       case 'disconnected':
@@ -395,10 +455,49 @@ export class PhoneMicSession {
     this.clearConnectTimer();
     this.connectTimer = this.ports.timers.setTimeout(() => {
       this.connectTimer = null;
-      if (this.tvConnected && this.snapshot.stage === 'joined' && this.snapshot.link !== 'live') {
+      const stillTrying =
+        this.tvConnected && this.snapshot.stage === 'joined' && this.snapshot.link !== 'live';
+      if (stillTrying && this.attemptFailed()) {
         this.detach(this.startPeer());
       }
     }, CONNECT_TIMEOUT_MS);
+  }
+
+  /**
+   * Counts an attempt that ended without `connected`; `false` once the phone
+   * gives up and waits for "Try again", `online` or a network change.
+   */
+  private attemptFailed(): boolean {
+    if (this.snapshot.unreachable) {
+      return false;
+    }
+    this.failedAttempts += 1;
+    if (this.failedAttempts < UNREACHABLE_AFTER_ATTEMPTS) {
+      return true;
+    }
+    this.update({ unreachable: true });
+    this.detach(this.sendDiag('unreachable'));
+    return false;
+  }
+
+  private noteLocalCandidates(sdp: string): void {
+    this.candidates = summarizeLocalCandidates(sdp);
+    this.updateMobileDataHint();
+  }
+
+  private updateMobileDataHint(): void {
+    const mobileDataHint =
+      this.ports.network.type() === 'cellular' || this.candidates?.reach === 'mobile-like';
+    if (mobileDataHint !== this.snapshot.mobileDataHint) {
+      this.update({ mobileDataHint });
+    }
+  }
+
+  private handleNetworkChange(): void {
+    this.updateMobileDataHint();
+    if (this.snapshot.unreachable) {
+      this.retryVoice();
+    }
   }
 
   private clearConnectTimer(): void {
@@ -505,6 +604,12 @@ export class PhoneMicSession {
       recoveries: this.recoveries,
       lastError: this.lastError,
       ua: this.ports.userAgent,
+      reach: {
+        unreachable: this.snapshot.unreachable,
+        network: this.ports.network.type(),
+        candidates: this.candidates?.counts ?? null,
+        privateSeen: this.candidates?.privateSeen ?? null,
+      },
     };
     const fitted = byteLength(data) <= MAX_DIAG_BYTES ? data : { reason, oversized: true };
     this.signaling.send({ type: 'diag', data: fitted });
@@ -515,6 +620,8 @@ export class PhoneMicSession {
     this.clearConnectTimer();
     this.tvConnected = false;
     this.recoveryPending = false;
+    this.failedAttempts = 0;
+    this.candidates = null;
     this.ports.peer.close();
     this.ports.media.stop();
     this.ports.wakeLock.release();

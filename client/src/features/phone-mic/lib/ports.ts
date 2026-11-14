@@ -79,6 +79,14 @@ export type PagePort = {
   onPageShow: (listener: (persisted: boolean) => void) => void;
 };
 
+/** The phone's network, as far as the browser tells (the Network Information API is Chromium only). */
+export type NetworkPort = {
+  /** `navigator.connection.type` (`wifi`, `cellular`, ...), or `null` where the browser has none. */
+  type: () => string | null;
+  /** The browser went `online`, or the `navigator.connection` type changed (not just its speed). */
+  onChange: (listener: () => void) => void;
+};
+
 export type PhoneMicPorts = {
   socketUrl: string;
   openSocket: OpenSocket;
@@ -86,6 +94,7 @@ export type PhoneMicPorts = {
   peer: MicPeerPort;
   wakeLock: WakeLockPort;
   page: PagePort;
+  network: NetworkPort;
   storage: KeyValueStore;
   timers: TimerPort;
   random: () => number;

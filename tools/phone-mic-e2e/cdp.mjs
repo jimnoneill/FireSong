@@ -38,9 +38,13 @@ export class Chrome extends EventEmitter {
     });
   }
 
-  /** A page target with its own flattened session. */
-  async newPage() {
-    const { targetId } = await this.send('Target.createTarget', { url: 'about:blank' });
+  /**
+   * A page target with its own flattened session. `isolated` puts it in a new
+   * browser context (its own cookies and localStorage), like a second phone.
+   */
+  async newPage({ isolated = false } = {}) {
+    const context = isolated ? await this.send('Target.createBrowserContext') : {};
+    const { targetId } = await this.send('Target.createTarget', { url: 'about:blank', ...context });
     const { sessionId } = await this.send('Target.attachToTarget', { targetId, flatten: true });
     const page = new Page(this, sessionId, targetId);
     await page.send('Page.enable');

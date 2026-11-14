@@ -93,9 +93,10 @@ Allow. Switch the door off when the party ends.
 
 FireSong v1 is built and passes its automated tests end to end: the real
 server, the TV page and two simulated phones singing 440 Hz and 330 Hz in
-headless Chrome, each pitch reading within ±3 Hz. The TV app installs and
-loads on a Fire TV Cube 3rd gen (AFTGAZL, Fire OS 7.7.1). The next step is
-real iPhones in a real room.
+headless Chrome, each pitch reading within ±3 Hz. On a Fire TV Cube 3rd gen
+(AFTGAZL, Fire OS 7.7.1) it has played a whole song from a Plex library in
+noraebang mode, with a laptop standing in for a phone as the mic, through to
+the score reveal. The next step is real iPhones in a real room.
 
 ## Status
 
@@ -105,10 +106,11 @@ real iPhones in a real room.
 | Phone mic page and WebRTC voice to the TV | works in automated end-to-end tests |
 | TV voice engine: gate, compressor, noraebang echo, reverb, limiter | works in automated browser tests |
 | Pitch scoring per phone singer, up to four | works in automated end-to-end tests |
-| Noraebang mode: random clips, wipe lyrics, 0-100 score reveal | built and unit-tested; first TV run next |
-| Fire TV app: install, load, remote keys, HOME and app switching | installs and loads on a Fire TV Cube; lifecycle covered by unit tests |
-| Phone access over Tailscale Funnel, party-only | documented |
-| Mouth-to-speaker latency with real iPhones | not measured yet: next |
+| Noraebang mode: random clips, wipe lyrics, 0-100 score reveal | works on the Fire TV Cube (one full song with a laptop as the phone mic) |
+| Background clips: public-domain Prelinger films, family-safe filter | works (`fetch-clips.py`) |
+| Fire TV app: install, load, remote keys, HOME and app switching | works on the Cube; HOME stops the page and its audio (`cube-lifecycle-check.sh`) |
+| Phone access over Tailscale Funnel, party-only | works (checked from outside the tailnet) |
+| Mouth-to-speaker latency | laptop stand-in: about 0.15-0.25 s phone to TV mixer, plus about 0.39 s of Fire TV audio output; real iPhones not measured yet |
 | Release APK and Downloader short link | planned |
 
 ## How it works

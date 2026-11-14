@@ -14,6 +14,13 @@ Outputs:
     drawable-<dpi>/ic_firesong_mark.png       mascot on the loading/error overlay (160 dp)
     drawable-nodpi/tv_connecting.webp         full-screen art while the TV first connects
     drawable-nodpi/stage_backdrop.webp        full-screen art behind the reconnecting/error overlay
+  client/public/favicon.png                   browser tab icon, mascot on transparency
+  client/public/apple-touch-icon.png          phone home-screen icon, mascot on the night ground (opaque)
+  client/src/assets/images/firesong-logo.webp sidebar wordmark of the web client (TV and phones)
+  client/src/assets/images/firesong-mark.webp mascot on the web client's first-run setup dialog
+  client/src/assets/images/firesong-score-<pose>.webp   mascot reacting to a noraebang score (TV reveal, phone result)
+  client/src/assets/images/firesong-mic-mascot.webp     header art of the phone mic page
+  client/src/assets/images/firesong-stage.webp          noraebang background when no clip plays
 
 The source PNGs come out of a background remover: the body is about 99%
 opaque (alpha 252-253) and there are faint specks. clean_alpha() makes the
@@ -32,6 +39,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "branding" / "source"
 OUT = ROOT / "branding"
 RES = ROOT / "android" / "firesong-tv" / "app" / "src" / "main" / "res"
+CLIENT = ROOT / "client"
 
 # Palette shared with android/firesong-tv/app/src/main/res/values/colors.xml.
 PLUM = (0x2A, 0x14, 0x50)
@@ -126,10 +134,17 @@ def save_jpeg(image: Image.Image, path: pathlib.Path, quality: int = 88) -> None
     print(f"{path.relative_to(ROOT)}  {image.width}x{image.height}  {path.stat().st_size // 1024} KB")
 
 
-def save(image: Image.Image, path: pathlib.Path) -> None:
+def save(image: Image.Image, path: pathlib.Path, **params: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, optimize=True)
+    image.save(path, optimize=True, **params)
     print(f"{path.relative_to(ROOT)}  {image.width}x{image.height}  {path.stat().st_size // 1024} KB")
+
+
+def square_art(image: Image.Image) -> Image.Image:
+    side = max(image.size)
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.alpha_composite(image, ((side - image.width) // 2, (side - image.height) // 2))
+    return canvas
 
 
 def main() -> None:
@@ -180,6 +195,27 @@ def main() -> None:
                 placed, ((canvas_px - placed.width) // 2, (canvas_px - placed.height) // 2)
             )
             save(canvas, RES / f"mipmap-{name}" / f"ic_launcher_{layer}.png")
+
+    # Web client. The sidebar wordmark keeps the old Nightingale logo's 924 px width
+    # and reads on both the dark and the light theme; WebP keeps the bundle small.
+    wordmark = trim(clean_alpha(Image.open(SRC / "wordmark-glossy.png")))
+    images = CLIENT / "src" / "assets" / "images"
+    save(fit(wordmark, 924, 310), images / "firesong-logo.webp", quality=90, method=6)
+    save(square.resize((320, 320), Image.LANCZOS), images / "firesong-mark.webp", quality=90, method=6)
+    save(square.resize((64, 64), Image.LANCZOS), CLIENT / "public" / "favicon.png")
+    touch = card(night_gradient(180, 180, glow_at=(0.5, 0.45)), mascot, (144, 144))
+    save(touch.convert("RGB"), CLIENT / "public" / "apple-touch-icon.png")
+
+    # Score poses fill about 46% of a 1080 px TV height, so 512 px is enough.
+    # The server sends assets uncompressed and the Cube has 2 GB of RAM: keep them small.
+    for pose in ("score-100", "score-90", "score-80", "score-50s", "score-low"):
+        art = square_art(trim(clean_alpha(Image.open(SRC / f"{pose}.png"))))
+        save(art.resize((512, 512), Image.LANCZOS), images / f"firesong-{pose}.webp", quality=85, method=6)
+    mic = square_art(trim(clean_alpha(Image.open(SRC / "mic-mascot.png"))))
+    save(mic.resize((320, 320), Image.LANCZOS), images / "firesong-mic-mascot.webp", quality=88, method=6)
+    # Below quality 92 the backdrop's dark gradients turn blocky.
+    stage = Image.open(SRC / "stage-backdrop.png").convert("RGB").resize((1920, 1080), Image.LANCZOS)
+    save(stage, images / "firesong-stage.webp", quality=92, method=6)
 
 
 if __name__ == "__main__":

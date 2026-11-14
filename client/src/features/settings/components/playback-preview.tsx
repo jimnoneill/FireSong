@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 
 import { t } from '@/i18n';
+import { BRAND_NAME } from '@/shared/firesong-brand';
 
 type PlaybackPreviewProps = {
   lyricsVerticalPosition: string;
@@ -58,7 +59,7 @@ export function PlaybackPreview({
       >
         <div className={hudPosition === 'bottom' ? 'flex flex-col-reverse' : undefined}>
           <p className="leading-tight font-medium" style={{ fontSize: '2cqh' }}>
-            Nightingale
+            {BRAND_NAME}
           </p>
           <p className="text-white/65" style={{ fontSize: '1.45cqh' }}>
             {t('settings.playbackPreview.playbackPreview2')}

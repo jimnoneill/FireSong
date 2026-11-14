@@ -21,6 +21,7 @@ below.
 
 ### Improvements
 
+- The TV and phone screens now show FireSong's name, logo, icons and mascot, with a note that FireSong is built on Nightingale. The mascot reacts to every noraebang score on the TV and on your phone, greets you on the phone mic page in your slot's colour, and a FireSong stage replaces the black screen when no background clip can play. The update menu, which offered Nightingale's releases, is gone.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
 ### Fixes

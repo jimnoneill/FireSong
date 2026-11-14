@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="branding/readme-banner.png" alt="FireSong" width="720">
+  <img src="branding/readme-banner.webp" alt="FireSong" width="720">
 </p>
 
 <p align="center">

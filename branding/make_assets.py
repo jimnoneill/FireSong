@@ -3,7 +3,8 @@
 
 Outputs:
   branding/icon-1024.png            mascot on transparency (store listings, README)
-  branding/readme-banner.png        logo on a dark rounded card (README hero, both themes)
+  branding/readme-banner.webp       social art as a rounded card (README hero, both themes)
+  branding/social-preview-1280x640.jpg  GitHub social preview (Settings -> Social preview)
   branding/banner-1280x720.png      opaque TV banner master (store / promo)
   branding/tile-320x180.png         opaque TV banner at launcher size
   android/firesong-tv/app/src/main/res/
@@ -11,6 +12,8 @@ Outputs:
     mipmap-<dpi>/ic_launcher_foreground.png   adaptive-icon foreground (108 dp)
     mipmap-<dpi>/ic_launcher_monochrome.png   single-colour silhouette (API 33+ themed icons)
     drawable-<dpi>/ic_firesong_mark.png       mascot on the loading/error overlay (160 dp)
+    drawable-nodpi/tv_connecting.webp         full-screen art while the TV first connects
+    drawable-nodpi/stage_backdrop.webp        full-screen art behind the reconnecting/error overlay
 
 The source PNGs come out of a background remover: the body is about 99%
 opaque (alpha 252-253) and there are faint specks. clean_alpha() makes the
@@ -93,6 +96,36 @@ def card(ground: Image.Image, art: Image.Image, art_box: tuple[int, int], radius
     return canvas
 
 
+def cover(image: Image.Image, width: int, height: int) -> Image.Image:
+    """Opaque, scaled to fill width x height, centre-cropped."""
+    image = image.convert("RGB")
+    scale = max(width / image.width, height / image.height)
+    size = (max(width, round(image.width * scale)), max(height, round(image.height * scale)))
+    image = image.resize(size, Image.LANCZOS)
+    left, top = (image.width - width) // 2, (image.height - height) // 2
+    return image.crop((left, top, left + width, top + height))
+
+
+def rounded(image: Image.Image, radius: int) -> Image.Image:
+    canvas = image.convert("RGBA")
+    mask = Image.new("L", canvas.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, canvas.width - 1, canvas.height - 1), radius, fill=255)
+    canvas.putalpha(mask)
+    return canvas
+
+
+def save_webp(image: Image.Image, path: pathlib.Path, quality: int = 80) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, "WEBP", quality=quality, method=6)
+    print(f"{path.relative_to(ROOT)}  {image.width}x{image.height}  {path.stat().st_size // 1024} KB")
+
+
+def save_jpeg(image: Image.Image, path: pathlib.Path, quality: int = 88) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.convert("RGB").save(path, "JPEG", quality=quality, optimize=True, progressive=True)
+    print(f"{path.relative_to(ROOT)}  {image.width}x{image.height}  {path.stat().st_size // 1024} KB")
+
+
 def save(image: Image.Image, path: pathlib.Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, optimize=True)
@@ -101,7 +134,6 @@ def save(image: Image.Image, path: pathlib.Path) -> None:
 
 def main() -> None:
     mascot = trim(clean_alpha(Image.open(SRC / "mascot.png")))
-    logo = trim(clean_alpha(Image.open(SRC / "logo-glow.png"), drop_below=3))
 
     # Square mascot icon, transparent, a little breathing room.
     side = round(max(mascot.size) / 0.9)
@@ -109,16 +141,23 @@ def main() -> None:
     square.alpha_composite(mascot, ((side - mascot.width) // 2, (side - mascot.height) // 2))
     save(square.resize((1024, 1024), Image.LANCZOS), OUT / "icon-1024.png")
 
-    # README hero: a dark rounded card reads the same on GitHub's light and dark themes.
-    save(card(night_gradient(1600, 640), logo, (1440, 560), radius=36), OUT / "readme-banner.png")
+    # README hero: the 2:1 social art as a rounded card (reads the same on GitHub's
+    # light and dark themes); the same art at GitHub's social-preview size.
+    social = cover(Image.open(SRC / "social-preview.png"), 1600, 800)
+    save_webp(rounded(social, 36), OUT / "readme-banner.webp", quality=86)
+    save_jpeg(cover(Image.open(SRC / "social-preview.png"), 1280, 640), OUT / "social-preview-1280x640.jpg")
 
-    # TV banners: opaque, logo inside a 90% safe area.
-    master = card(night_gradient(1280, 720), logo, (1150, 600))
+    # TV banners: the owner's 16:9 banner art.
+    master = cover(Image.open(SRC / "tv-banner.png"), 1280, 720)
     save(master.convert("RGB"), OUT / "banner-1280x720.png")
     save(master.convert("RGB").resize((320, 180), Image.LANCZOS), OUT / "tile-320x180.png")
     for name in ("mdpi", "hdpi", "xhdpi", "xxhdpi"):
         width, height = round(160 * DENSITIES[name]), round(90 * DENSITIES[name])
         save(master.convert("RGB").resize((width, height), Image.LANCZOS), RES / f"drawable-{name}" / "banner.png")
+
+    # Full-screen overlay art at the Cube's 1920x1080 UI size; nodpi, so never rescaled on load.
+    for name, source in (("tv_connecting", "tv-connecting.png"), ("stage_backdrop", "stage-backdrop.png")):
+        save_webp(cover(Image.open(SRC / source), 1920, 1080), RES / "drawable-nodpi" / f"{name}.webp")
 
     # Loading/error overlay mark, shown at 160 dp.
     for name in ("mdpi", "hdpi", "xhdpi", "xxhdpi"):

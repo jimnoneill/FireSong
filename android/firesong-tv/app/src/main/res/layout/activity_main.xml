@@ -9,17 +9,31 @@
 
     <!-- The WebView is added at index 0 from code, so it can be recreated. -->
 
-    <LinearLayout
+    <FrameLayout
         android:id="@+id/overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@drawable/overlay_background"
-        android:focusable="false"
+        android:focusable="false">
+
+    <ImageView
+        android:id="@+id/overlay_art"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop"
+        android:src="@drawable/stage_backdrop" />
+
+    <LinearLayout
+        android:id="@+id/overlay_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:gravity="center"
         android:orientation="vertical"
         android:padding="48dp">
 
         <ImageView
+            android:id="@+id/overlay_mark"
             android:layout_width="160dp"
             android:layout_height="160dp"
             android:contentDescription="@null"
@@ -45,4 +59,5 @@
             android:textColor="@color/fs_text_dim"
             android:textSize="18sp" />
     </LinearLayout>
+    </FrameLayout>
 </FrameLayout>

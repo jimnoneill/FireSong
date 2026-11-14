@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -36,6 +37,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -68,6 +71,9 @@ class MainActivity : Activity() {
 
     private lateinit var root: FrameLayout
     private lateinit var overlay: View
+    private lateinit var overlayArt: ImageView
+    private lateinit var overlayContent: LinearLayout
+    private lateinit var overlayMark: View
     private lateinit var overlayTitle: TextView
     private lateinit var overlayDetail: TextView
     private var overlayState = Overlay.NONE
@@ -120,6 +126,9 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         root = findViewById(R.id.root)
         overlay = findViewById(R.id.overlay)
+        overlayArt = findViewById(R.id.overlay_art)
+        overlayContent = findViewById(R.id.overlay_content)
+        overlayMark = findViewById(R.id.overlay_mark)
         overlayTitle = findViewById(R.id.overlay_title)
         overlayDetail = findViewById(R.id.overlay_detail)
 
@@ -412,6 +421,14 @@ class MainActivity : Activity() {
             },
         )
         overlayDetail.text = detail
+        // The connecting art carries the logo and "Connecting…" itself; the other
+        // states put the mascot and their message on the stage backdrop.
+        val connecting = state == Overlay.LOADING || state == Overlay.NONE
+        overlayArt.setImageResource(if (connecting) R.drawable.tv_connecting else R.drawable.stage_backdrop)
+        overlayArt.contentDescription = if (connecting) getString(R.string.overlay_connecting) else null
+        overlayMark.visibility = if (connecting) View.GONE else View.VISIBLE
+        overlayTitle.visibility = if (connecting) View.GONE else View.VISIBLE
+        overlayContent.gravity = if (connecting) Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL else Gravity.CENTER
         overlay.visibility = View.VISIBLE
     }
 

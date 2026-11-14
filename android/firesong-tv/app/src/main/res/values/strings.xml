@@ -3,6 +3,7 @@
     <string name="app_name">FireSong</string>
 
     <string name="overlay_loading">FireSong</string>
+    <string name="overlay_connecting">Connecting to FireSong…</string>
     <string name="overlay_loading_detail">Connecting to %1$s…</string>
     <string name="overlay_restarting_detail">The screen stopped unexpectedly. Restarting…</string>
     <string name="overlay_reconnecting">Reconnecting to FireSong…</string>

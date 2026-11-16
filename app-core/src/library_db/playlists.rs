@@ -1,6 +1,6 @@
 //! Read-only playlist storage shared by local and remote media sources.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use diesel::prelude::*;
 
@@ -34,6 +34,8 @@ pub(crate) fn replace_all_playlists(
         conn.transaction::<_, NightingaleError, _>(|conn| {
             diesel::delete(playlists::table).execute(conn)?;
 
+            let song_ids = song_ids_by_key(conn, key_kind)?;
+
             for playlist in definitions {
                 if playlist.id.is_empty() || playlist.name.trim().is_empty() {
                     continue;
@@ -47,22 +49,7 @@ pub(crate) fn replace_all_playlists(
 
                 let mut seen_song_ids = HashSet::new();
                 for (position, key) in playlist.song_keys.iter().enumerate() {
-                    let song_id = match key_kind {
-                        PlaylistSongKeyKind::LocalPath => songs::table
-                            .filter(songs::path.eq(key))
-                            .select(songs::id)
-                            .first::<i64>(conn)
-                            .optional()?,
-                        PlaylistSongKeyKind::RemoteItemId { origin_kind } => songs::table
-                            .filter(
-                                json_extract_text(songs::payload, "$.origin.kind").eq(origin_kind),
-                            )
-                            .filter(json_extract_text(songs::payload, "$.origin.item_id").eq(key))
-                            .select(songs::id)
-                            .first::<i64>(conn)
-                            .optional()?,
-                    };
-                    let Some(song_id) = song_id else {
+                    let Some(&song_id) = song_ids.get(key) else {
                         continue;
                     };
                     if !seen_song_ids.insert(song_id) {
@@ -80,4 +67,35 @@ pub(crate) fn replace_all_playlists(
             Ok(())
         })
     })
+}
+
+/// Every song's playlist key mapped to its row id, read in one pass so matching
+/// a playlist entry is a lookup instead of a scan of the songs table. When two
+/// rows share a key the lowest id wins.
+fn song_ids_by_key(
+    conn: &mut SqliteConnection,
+    key_kind: PlaylistSongKeyKind<'_>,
+) -> Result<HashMap<String, i64>, NightingaleError> {
+    let rows: Vec<(String, i64)> = match key_kind {
+        PlaylistSongKeyKind::LocalPath => songs::table
+            .select((songs::path, songs::id))
+            .order(songs::id.asc())
+            .load::<(String, i64)>(conn)?,
+        PlaylistSongKeyKind::RemoteItemId { origin_kind } => songs::table
+            .filter(json_extract_text(songs::payload, "$.origin.kind").eq(origin_kind))
+            .select((
+                json_extract_text(songs::payload, "$.origin.item_id"),
+                songs::id,
+            ))
+            .order(songs::id.asc())
+            .load::<(Option<String>, i64)>(conn)?
+            .into_iter()
+            .filter_map(|(key, id)| key.map(|key| (key, id)))
+            .collect(),
+    };
+    let mut ids = HashMap::with_capacity(rows.len());
+    for (key, id) in rows {
+        ids.entry(key).or_insert(id);
+    }
+    Ok(ids)
 }

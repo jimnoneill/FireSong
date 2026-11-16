@@ -31,6 +31,7 @@ below.
 
 ### Fixes
 
+- Large media-server libraries with big playlists no longer freeze the app for minutes at the end of a library scan.
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.
 - Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
 - Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.

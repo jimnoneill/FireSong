@@ -178,14 +178,30 @@ pub(crate) fn replace_all_songs_sorted(input: &[Song]) -> Result<(), Nightingale
 }
 
 pub(crate) fn delete_songs_not_in_paths(paths: &[String]) -> Result<(), NightingaleError> {
+    let keep: HashSet<&str> = paths.iter().map(String::as_str).collect();
     with_conn_mut(|conn| {
-        if paths.is_empty() {
-            diesel::delete(songs::table).execute(conn)?;
-        } else {
-            diesel::delete(songs::table.filter(songs::path.ne_all(paths))).execute(conn)?;
-        }
-        Ok(())
+        conn.transaction::<_, NightingaleError, _>(|conn| {
+            let gone: Vec<i64> = songs::table
+                .select((songs::id, songs::path))
+                .load::<(i64, String)>(conn)?
+                .into_iter()
+                .filter(|(_, path)| !keep.contains(path.as_str()))
+                .map(|(id, _)| id)
+                .collect();
+            delete_songs_by_id(conn, &gone)?;
+            Ok(())
+        })
     })
+}
+
+/// Ids per DELETE statement, well under SQLite's bound on host parameters.
+const DELETE_CHUNK: usize = 500;
+
+pub(super) fn delete_songs_by_id(conn: &mut SqliteConnection, ids: &[i64]) -> QueryResult<()> {
+    for chunk in ids.chunks(DELETE_CHUNK) {
+        diesel::delete(songs::table.filter(songs::id.eq_any(chunk))).execute(conn)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn load_song_by_hash(file_hash: &str) -> Result<Option<Song>, NightingaleError> {

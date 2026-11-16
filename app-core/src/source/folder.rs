@@ -182,7 +182,7 @@ fn sync_folder_playlists(root: &Path) {
         playlists.push(PlaylistDefinition {
             id: format!("folder:{}", id_path.to_string_lossy()),
             name,
-            song_keys,
+            song_keys: Some(song_keys),
         });
     }
 

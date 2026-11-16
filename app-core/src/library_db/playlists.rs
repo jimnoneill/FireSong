@@ -14,8 +14,9 @@ use super::sql_functions::json_extract_text;
 pub(crate) struct PlaylistDefinition {
     pub id: String,
     pub name: String,
-    /// Local song paths or remote media item ids, depending on `key_kind`.
-    pub song_keys: Vec<String>,
+    /// Local song paths or remote media item ids, depending on `key_kind`;
+    /// `None` when the source could not list the items this scan.
+    pub song_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -25,14 +26,21 @@ pub(crate) enum PlaylistSongKeyKind<'a> {
 }
 
 /// Atomically replace playlist navigation data for the active library source.
-/// Entries not present in the scanned song catalogue are ignored.
+/// Entries not present in the scanned song catalogue are ignored. A playlist
+/// whose items could not be listed keeps the songs stored by an earlier scan.
 pub(crate) fn replace_all_playlists(
     definitions: &[PlaylistDefinition],
     key_kind: PlaylistSongKeyKind<'_>,
 ) -> Result<(), NightingaleError> {
     with_conn_mut(|conn| {
         conn.transaction::<_, NightingaleError, _>(|conn| {
-            diesel::delete(playlists::table).execute(conn)?;
+            let unlisted: Vec<&str> = definitions
+                .iter()
+                .filter(|playlist| playlist.song_keys.is_none())
+                .map(|playlist| playlist.id.as_str())
+                .collect();
+            diesel::delete(playlists::table.filter(playlists::id.ne_all(&unlisted)))
+                .execute(conn)?;
 
             let song_ids = song_ids_by_key(conn, key_kind)?;
 
@@ -40,6 +48,12 @@ pub(crate) fn replace_all_playlists(
                 if playlist.id.is_empty() || playlist.name.trim().is_empty() {
                     continue;
                 }
+                let Some(song_keys) = &playlist.song_keys else {
+                    diesel::update(playlists::table.find(&playlist.id))
+                        .set(playlists::name.eq(playlist.name.trim()))
+                        .execute(conn)?;
+                    continue;
+                };
                 diesel::insert_into(playlists::table)
                     .values((
                         playlists::id.eq(&playlist.id),
@@ -48,7 +62,7 @@ pub(crate) fn replace_all_playlists(
                     .execute(conn)?;
 
                 let mut seen_song_ids = HashSet::new();
-                for (position, key) in playlist.song_keys.iter().enumerate() {
+                for (position, key) in song_keys.iter().enumerate() {
                     let Some(&song_id) = song_ids.get(key) else {
                         continue;
                     };

@@ -32,6 +32,8 @@ below.
 ### Fixes
 
 - Large media-server libraries with big playlists no longer freeze the app for minutes at the end of a library scan.
+- A playlist the media server is too slow to list during a scan keeps its songs instead of disappearing until the next scan.
+- Libraries with more than about 32,000 songs now drop songs removed from the media server.
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.
 - Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
 - Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.

@@ -265,25 +265,30 @@ impl JellyfinSource {
                 continue;
             }
             let detail_path = format!("/Playlists/{}/Items", urlencoding::encode(&playlist.id));
-            let detail: ItemQueryResult = match self.client.get_json(
+            let song_keys = match self.client.get_json::<ItemQueryResult>(
                 "list playlist items",
                 &detail_path,
                 &[("UserId", self.auth.user_id.as_str())],
             ) {
-                Ok(detail) => detail,
+                Ok(detail) => Some(
+                    detail
+                        .items
+                        .into_iter()
+                        .filter_map(|item| (!item.id.is_empty()).then_some(item.id))
+                        .collect(),
+                ),
                 Err(error) => {
-                    warn!("[jellyfin] skipping playlist {}: {error}", playlist.id);
-                    continue;
+                    warn!(
+                        "[jellyfin] keeping the stored songs of playlist {}: {error}",
+                        playlist.id
+                    );
+                    None
                 }
             };
             playlists.push(PlaylistDefinition {
                 id: format!("jellyfin:{}", playlist.id),
                 name: pick_string(playlist.name.as_deref(), "Playlist"),
-                song_keys: detail
-                    .items
-                    .into_iter()
-                    .filter_map(|item| (!item.id.is_empty()).then_some(item.id))
-                    .collect(),
+                song_keys,
             });
         }
         Ok(playlists)

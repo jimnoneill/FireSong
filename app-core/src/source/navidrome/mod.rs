@@ -142,26 +142,31 @@ impl NavidromeSource {
             if playlist.id.is_empty() {
                 continue;
             }
-            let detail: PlaylistResult = match self.client.get_json(
+            let song_keys = match self.client.get_json::<PlaylistResult>(
                 "list playlist songs",
                 "/rest/getPlaylist",
                 &[("id", playlist.id.as_str())],
             ) {
-                Ok(detail) => detail,
+                Ok(detail) => Some(
+                    detail
+                        .playlist
+                        .entry
+                        .into_iter()
+                        .filter_map(|song| (!song.id.is_empty()).then_some(song.id))
+                        .collect(),
+                ),
                 Err(error) => {
-                    warn!("[navidrome] skipping playlist {}: {error}", playlist.id);
-                    continue;
+                    warn!(
+                        "[navidrome] keeping the stored songs of playlist {}: {error}",
+                        playlist.id
+                    );
+                    None
                 }
             };
             playlists.push(PlaylistDefinition {
                 id: format!("navidrome:{}", playlist.id),
                 name: pick_string(Some(&playlist.name), "Playlist"),
-                song_keys: detail
-                    .playlist
-                    .entry
-                    .into_iter()
-                    .filter_map(|song| (!song.id.is_empty()).then_some(song.id))
-                    .collect(),
+                song_keys,
             });
         }
         Ok(playlists)

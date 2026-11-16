@@ -10,7 +10,7 @@ use crate::song::Song;
 
 use super::connection::{with_conn, with_conn_mut};
 use super::schema::songs;
-use super::songs::update_song_fields;
+use super::songs::{delete_songs_by_id, update_song_fields};
 use super::sql_functions::json_extract_text;
 
 pub(crate) fn load_remote_item_ids(kind: &str) -> Result<HashSet<String>, NightingaleError> {
@@ -78,20 +78,25 @@ pub(crate) fn delete_remote_songs_not_in_item_ids(
     kind: &str,
     item_ids: &[String],
 ) -> Result<(), NightingaleError> {
+    let keep: HashSet<&str> = item_ids.iter().map(String::as_str).collect();
     with_conn_mut(|conn| {
-        let matching_kind = json_extract_text(songs::payload, "$.origin.kind").eq(kind);
-        if item_ids.is_empty() {
-            diesel::delete(songs::table.filter(matching_kind)).execute(conn)?;
-        } else {
-            diesel::delete(
-                songs::table.filter(
-                    matching_kind.and(
-                        json_extract_text(songs::payload, "$.origin.item_id").ne_all(item_ids),
-                    ),
-                ),
-            )
-            .execute(conn)?;
-        }
-        Ok(())
+        conn.transaction::<_, NightingaleError, _>(|conn| {
+            let gone: Vec<i64> = songs::table
+                .filter(json_extract_text(songs::payload, "$.origin.kind").eq(kind))
+                .select((
+                    songs::id,
+                    json_extract_text(songs::payload, "$.origin.item_id"),
+                ))
+                .load::<(i64, Option<String>)>(conn)?
+                .into_iter()
+                .filter(|(_, item_id)| match item_id {
+                    Some(item_id) => !keep.contains(item_id.as_str()),
+                    None => keep.is_empty(),
+                })
+                .map(|(id, _)| id)
+                .collect();
+            delete_songs_by_id(conn, &gone)?;
+            Ok(())
+        })
     })
 }

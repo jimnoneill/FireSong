@@ -324,26 +324,31 @@ impl PlexSource {
                 .key
                 .filter(|key| safe_server_path(key))
                 .unwrap_or_else(|| format!("/playlists/{}/items", playlist.rating_key));
-            let detail: MetadataEnvelope = match self.client.get_json(
+            let song_keys = match self.client.get_json::<MetadataEnvelope>(
                 "list playlist items",
                 &path,
                 &[("X-Plex-Container-Size", "10000")],
             ) {
-                Ok(detail) => detail,
+                Ok(detail) => Some(
+                    detail
+                        .media_container
+                        .metadata
+                        .into_iter()
+                        .filter_map(|item| (!item.rating_key.is_empty()).then_some(item.rating_key))
+                        .collect(),
+                ),
                 Err(error) => {
-                    warn!("[plex] skipping playlist {}: {error}", playlist.rating_key);
-                    continue;
+                    warn!(
+                        "[plex] keeping the stored songs of playlist {}: {error}",
+                        playlist.rating_key
+                    );
+                    None
                 }
             };
             playlists.push(PlaylistDefinition {
                 id: format!("plex:{}", playlist.rating_key),
                 name: pick_string(playlist.title.as_deref(), "Playlist"),
-                song_keys: detail
-                    .media_container
-                    .metadata
-                    .into_iter()
-                    .filter_map(|item| (!item.rating_key.is_empty()).then_some(item.rating_key))
-                    .collect(),
+                song_keys,
             });
         }
         Ok(playlists)

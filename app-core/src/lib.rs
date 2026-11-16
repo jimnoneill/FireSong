@@ -29,8 +29,8 @@ mod vendor_scripts;
 
 pub use analyzer::{
     AnalysisQueue, AnalyzerView, QueuedStatus, analyzer_view, cancel_analysis, delete_cache,
-    enqueue, realign, reanalyze_force_transcribe, reanalyze_full, reanalyze_transcript,
-    refresh_metadata, rekeyed_hash, shutdown_server,
+    enqueue, enqueue_urgent, realign, reanalyze_force_transcribe, reanalyze_full,
+    reanalyze_transcript, refresh_metadata, rekeyed_hash, shutdown_server,
 };
 pub use backgrounds::{
     BackgroundSelection, CustomBackground, CustomBackgroundKind, CustomBackgroundSource,

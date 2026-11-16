@@ -22,7 +22,7 @@ import { nextNoraebangClip, useNoraebangClipPool, type PlayableClip } from '../c
 
 /** Length of the crossfade between two clips, ms. */
 const CROSSFADE_MS = 1200;
-/** Give up on the clip pool if the first clip cannot play within this, ms. */
+/** Start the song on the stage if the first clip cannot play within this, ms; the clip follows once it can. */
 const FIRST_CLIP_TIMEOUT_MS = 8000;
 
 type Layer = 0 | 1;
@@ -64,7 +64,7 @@ function StageFallback() {
   );
 }
 
-function useFirstClipReady(onFail: () => void) {
+function useFirstClipReady() {
   const { theme } = usePlaybackThemeState();
   const { markBackgroundReady } = usePlaybackStartupActions();
   const activeThemeKey = themeKey(theme);
@@ -75,9 +75,12 @@ function useFirstClipReady(onFail: () => void) {
       markBackgroundReady(activeThemeKey);
       return undefined;
     }
-    const timer = window.setTimeout(onFail, FIRST_CLIP_TIMEOUT_MS);
+    const timer = window.setTimeout(
+      () => markBackgroundReady(activeThemeKey),
+      FIRST_CLIP_TIMEOUT_MS,
+    );
     return () => window.clearTimeout(timer);
-  }, [activeThemeKey, markBackgroundReady, onFail, ready]);
+  }, [activeThemeKey, markBackgroundReady, ready]);
 
   return { ready, markReady: useCallback(() => setReady(true), []) };
 }
@@ -141,7 +144,7 @@ type CrossfaderProps = {
 function ClipCrossfader({ clips, onFail }: CrossfaderProps) {
   useTranslation();
   const { isPlaying } = usePlaybackTransportState();
-  const { ready, markReady } = useFirstClipReady(onFail);
+  const { ready, markReady } = useFirstClipReady();
   const firstRef = useRef<HTMLVideoElement>(null);
   const secondRef = useRef<HTMLVideoElement>(null);
   // A random pick per song is this component's initial state.

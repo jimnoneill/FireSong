@@ -26,12 +26,15 @@ below.
 - The TV and phone screens now show FireSong's name, logo, icons and mascot, with a note that FireSong is built on Nightingale. The mascot reacts to every noraebang score on the TV and on your phone, greets you on the phone mic page in your slot's colour, and a FireSong stage replaces the black screen when no background clip can play. The update menu, which offered Nightingale's releases, is gone.
 - Scanning a party QR code opens the phone page, and guests can no longer change the queue or playback through the old queue page.
 - Song analysis waits while the GPU is reserved or short of memory.
+- A song a guest reserved before it was ready now gets prepared ahead of background preparation.
 - If a phone can't reach the TV, it says to join the home Wi-Fi instead of spinning.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
 ### Fixes
 
 - Large media-server libraries with big playlists no longer freeze the app for minutes at the end of a library scan.
+- Songs from compilation albums show who sings them instead of "Various Artists".
+- A background clip that is slow to load now joins the song when it is ready instead of leaving the whole song on the stage backdrop.
 - A playlist the media server is too slow to list during a scan keeps its songs instead of disappearing until the next scan.
 - Libraries with more than about 32,000 songs now drop songs removed from the media server.
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.

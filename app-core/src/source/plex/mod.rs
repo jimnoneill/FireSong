@@ -113,6 +113,7 @@ pub struct PlexSource {
 struct PlexScanState {
     known: HashSet<String>,
     known_covers: HashMap<String, Option<String>>,
+    known_artists: HashMap<String, String>,
     seen_ids: HashSet<String>,
     batch: Vec<Song>,
     expected_total: usize,
@@ -204,12 +205,7 @@ impl PlexSource {
             path: source_cache_path(cache, &file_hash, container.as_deref()),
             file_hash,
             title: pick_string(item.title.as_deref(), "Unknown"),
-            artist: pick_string(
-                item.grandparent_title
-                    .as_deref()
-                    .or(item.original_title.as_deref()),
-                "Unknown Artist",
-            ),
+            artist: track_artist(item),
             album: pick_string(item.parent_title.as_deref(), "Unknown Album"),
             duration_secs: item
                 .duration
@@ -291,6 +287,14 @@ impl PlexSource {
                                     .as_deref()
                                     .and_then(|path| self.fetch_cover(ctx.cache, path))
                             },
+                        );
+                    }
+                    let artist = track_artist(&item);
+                    if state.known_artists.get(&item.rating_key) != Some(&artist) {
+                        let _ = library_db::remote::set_remote_artist(
+                            ORIGIN_KIND,
+                            &item.rating_key,
+                            &artist,
                         );
                     }
                     continue;
@@ -379,6 +383,7 @@ impl MediaSource for PlexSource {
             known: library_db::remote::load_remote_item_ids(ORIGIN_KIND).unwrap_or_default(),
             known_covers: library_db::remote::load_remote_cover_tags(ORIGIN_KIND)
                 .unwrap_or_default(),
+            known_artists: library_db::remote::load_remote_artists(ORIGIN_KIND).unwrap_or_default(),
             seen_ids: HashSet::new(),
             batch: Vec::new(),
             expected_total: 0,
@@ -528,6 +533,18 @@ fn safe_server_path(path: &str) -> bool {
         && !parsed
             .query_pairs()
             .any(|(key, _)| key.eq_ignore_ascii_case("X-Plex-Token"))
+}
+
+/// The track's own artist: Plex sets `originalTitle` when it differs from the album artist (a
+/// compilation's "Various Artists"); otherwise the album artist is the track artist.
+fn track_artist(item: &PlexMetadata) -> String {
+    pick_string(
+        item.original_title
+            .as_deref()
+            .filter(|artist| !artist.trim().is_empty())
+            .or(item.grandparent_title.as_deref()),
+        "Unknown Artist",
+    )
 }
 
 fn pick_string(value: Option<&str>, fallback: &str) -> String {

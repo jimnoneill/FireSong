@@ -334,6 +334,8 @@ fn ensure_server(
 
 struct AnalyzerState {
     queue: VecDeque<String>,
+    /// Queued songs someone is waiting to sing; they stay at the front of `queue`.
+    urgent: HashSet<String>,
     active_hash: Option<String>,
     cancelled: HashSet<String>,
     worker_running: bool,
@@ -342,6 +344,7 @@ struct AnalyzerState {
 static ANALYZER: LazyLock<Mutex<AnalyzerState>> = LazyLock::new(|| {
     Mutex::new(AnalyzerState {
         queue: VecDeque::new(),
+        urgent: HashSet::new(),
         active_hash: None,
         cancelled: HashSet::new(),
         worker_running: false,
@@ -518,6 +521,39 @@ fn enqueue_hashes(mut hashes: Vec<String>, skip_persisted: bool) -> usize {
     newly_queued.len()
 }
 
+/// Queue a song someone is waiting to sing ahead of background preparation, behind the songs
+/// queued the same way earlier. A song already queued moves up.
+pub fn enqueue_urgent(file_hash: &str) {
+    if is_usdx_song(file_hash) {
+        return;
+    }
+    let mut state = lock_unpoisoned(&ANALYZER);
+    if state.active_hash.as_deref() == Some(file_hash) {
+        return;
+    }
+    let was_queued = state.queue.iter().any(|hash| hash == file_hash);
+    state.queue.retain(|hash| hash != file_hash);
+    let at = state
+        .queue
+        .iter()
+        .take_while(|hash| state.urgent.contains(*hash))
+        .count();
+    state.queue.insert(at, file_hash.to_string());
+    state.urgent.insert(file_hash.to_string());
+    let should_start = !state.worker_running;
+    if should_start {
+        state.worker_running = true;
+    }
+    drop(state);
+
+    if !was_queued {
+        let _ = library_db::analysis_queue_upsert_row(file_hash, "queued", None, None);
+    }
+    if should_start {
+        spawn_worker();
+    }
+}
+
 pub(crate) fn enqueue_one(file_hash: &str) {
     enqueue_hashes(vec![file_hash.to_string()], false);
 }
@@ -558,6 +594,7 @@ pub fn cancel_analysis(target: SongTarget) -> Result<usize, String> {
         }
 
         state.queue.retain(|queued_hash| queued_hash != &hash);
+        state.urgent.remove(&hash);
         let persisted_analyzing = matches!(
             persisted.entries.get(&hash),
             Some(QueuedStatus::Analyzing(_))
@@ -819,6 +856,7 @@ fn spawn_worker() {
                 let mut state = lock_unpoisoned(&ANALYZER);
                 match state.queue.pop_front() {
                     Some(hash) => {
+                        state.urgent.remove(&hash);
                         state.active_hash = Some(hash.clone());
                         hash
                     }

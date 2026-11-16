@@ -41,6 +41,47 @@ pub(crate) fn load_remote_cover_tags(
     })
 }
 
+/// Stored artist of every song from this source, by remote item id.
+pub(crate) fn load_remote_artists(kind: &str) -> Result<HashMap<String, String>, NightingaleError> {
+    with_conn(|conn| {
+        let rows = songs::table
+            .filter(json_extract_text(songs::payload, "$.origin.kind").eq(kind))
+            .select((
+                json_extract_text(songs::payload, "$.origin.item_id"),
+                songs::artist,
+            ))
+            .load::<(Option<String>, String)>(conn)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, artist)| id.map(|id| (id, artist)))
+            .collect())
+    })
+}
+
+/// Store the artist the source now reports for an item already in the library.
+pub(crate) fn set_remote_artist(
+    kind: &str,
+    item_id: &str,
+    artist: &str,
+) -> Result<(), NightingaleError> {
+    let song_row = with_conn(|conn| {
+        Ok(songs::table
+            .filter(json_extract_text(songs::payload, "$.origin.kind").eq(kind))
+            .filter(json_extract_text(songs::payload, "$.origin.item_id").eq(item_id))
+            .select((songs::file_hash, songs::payload))
+            .first::<(String, String)>(conn)
+            .optional()?)
+    })?;
+    let Some((file_hash, payload)) = song_row else {
+        return Ok(());
+    };
+    let Ok(mut song) = serde_json::from_str::<Song>(&payload) else {
+        return Ok(());
+    };
+    song.artist = artist.to_owned();
+    update_song_fields(&file_hash, &song)
+}
+
 pub(crate) fn refresh_remote_cover_for_item<F>(
     kind: &str,
     item_id: &str,

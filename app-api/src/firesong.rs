@@ -360,10 +360,8 @@ impl AnalysisPort for Analyzer {
     }
 
     fn enqueue(&self, file_hash: &str) -> Result<(), String> {
-        app_core::enqueue(SongTarget::Hashes {
-            hashes: vec![file_hash.to_string()],
-        })
-        .map(|_| ())
+        app_core::enqueue_urgent(file_hash);
+        Ok(())
     }
 
     fn cancel(&self, file_hash: &str) {

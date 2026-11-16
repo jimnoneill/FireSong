@@ -61,6 +61,8 @@ http://127.0.0.1:64448/?host=<contents of /mnt/fast/firesong/data/firesong/host-
 
 Then **Connect Plex → Sign in with Plex**, approve the code at plex.tv/link, pick the server and the music library. The PIN flow makes FireSong a separate Plex device, which can be revoked on its own. Leave auto-analyze off: prep decides what to analyse.
 
+**Reach Plex over the LAN.** Sign-in picks the first Plex connection that answers. When the router's DNS rebinding protection hides the server's LAN `plex.direct` name (`<lan-ip-with-dashes>.<hash>.plex.direct`), that is the public one, so every scan, playlist read and song download loops out through the router; and it breaks if the public address changes. Check with `getent hosts <lan-ip-with-dashes>.<hash>.plex.direct`. If nothing comes back, add that name with the Plex server's LAN address to `/etc/hosts` on the server machine. Then, with `firesong.service` stopped, set `library_source.base_url` in `<data>/config.json` to `https://<lan-ip-with-dashes>.<hash>.plex.direct:32400`. The library is keyed by the Plex machine id, so no songs or analyses are lost. On a 28k-track library this cut a scan's Plex sync from up to 7 minutes to about one.
+
 ### 1.3 Phone door on Tailscale Funnel (parties only)
 
 ```sh

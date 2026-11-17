@@ -1,5 +1,15 @@
-import { forwardRef, memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react';
 
+import { fireSongLaunch } from '@/bridge/firesong-launch';
 import { usePlaybackConfigPersist } from '@/features/playback/hooks/use-playback-config-persist';
 import type { VideoFlavor } from '@/features/playback/lib/video-flavor';
 import {
@@ -156,6 +166,15 @@ function SettingsInfo({
   );
 }
 
+/** The TV is driven by a remote: one hint in place of the keyboard shortcuts. */
+function HudSettings(props: ComponentProps<typeof SettingsInfo>) {
+  return fireSongLaunch().tv ? (
+    <HintText>{t('firesong.playback.tvKeys')}</HintText>
+  ) : (
+    <SettingsInfo {...props} />
+  );
+}
+
 function TouchControls({
   config,
   hasTouch,
@@ -271,6 +290,10 @@ function Disclaimer({
   noStems: boolean;
   micActive: boolean;
 }) {
+  // Analysis notes are for the operator's screen, not the party's TV.
+  if (fireSongLaunch().tv) {
+    return null;
+  }
   // No stems means we score against the original mix, so pitch scoring suffers.
   if (noStems && micActive) {
     return (
@@ -497,7 +520,7 @@ function PlaybackHudImpl({
             <div className="my-1.5 hidden h-px w-full bg-white/20 sm:block" aria-hidden="true" />
           </div>
           <div className="hidden sm:block">
-            <SettingsInfo
+            <HudSettings
               guideVolume={guideVolume}
               guideAvailable={guideAvailable}
               micUserEnabled={micUserEnabled}

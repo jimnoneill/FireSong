@@ -999,6 +999,7 @@
   "firesong.party.clearBest": "Clear tonight's best",
   "firesong.party.clearBest.confirm": "Press OK again to clear",
   "firesong.party.keys": "Arrows: move · OK: select · Hold Back: exit",
+  "firesong.playback.tvKeys": "Back: pause",
   "firesong.party.pickSong": "Pick a song",
   "firesong.songBook.title": "Pick a song",
   "firesong.songBook.search": "Search by song or artist",

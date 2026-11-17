@@ -30,6 +30,7 @@ below.
 - If a phone can't reach the TV, it says to join the home Wi-Fi instead of spinning.
 - The TV has its own song book for the remote: press OK on "Pick a song" in the party lobby, browse or search the songs that are ready in big rows, and OK adds one to the queue. It replaces the desktop library, whose small controls and analysis tools the remote could not use.
 - The party lobby always highlights the button the remote is on.
+- While a song plays, the TV shows a hint for the remote in place of keyboard shortcuts and analysis notes.
 - Party QR codes work whenever FireSong is on the TV: the self-hosted server opens the guests' door by itself, and closes it again 20 minutes after you leave the app.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 

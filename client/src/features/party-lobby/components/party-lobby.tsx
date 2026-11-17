@@ -18,12 +18,22 @@ type Props = {
   connected: boolean;
   linksError: boolean;
   onStartNow: () => void;
+  onPickSong: () => void;
   onClearBest: () => void;
-  onDismiss: () => void;
 };
 
 const CLEAR_CONFIRM_MS = 4000;
-const ARROWS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+const NEXT_KEYS = new Set(['ArrowDown', 'ArrowRight']);
+const PREVIOUS_KEYS = new Set(['ArrowUp', 'ArrowLeft']);
+const BUTTON_FOCUS = 'outline-none focus:scale-105 focus:ring-[0.8vh] focus:ring-white';
+
+/** Where an arrow key moves between the lobby's buttons: 1, -1, or 0 for any other key. */
+const arrowStep = (key: string): number => {
+  if (NEXT_KEYS.has(key)) {
+    return 1;
+  }
+  return PREVIOUS_KEYS.has(key) ? -1 : 0;
+};
 
 const qrDataUrl = (svg: string): string => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 
@@ -253,8 +263,9 @@ function SlotCard({ slot }: { slot: LobbySlot }) {
 
 /**
  * The TV's party lobby between songs: join codes, up next, the countdown and
- * tonight's best. Operated with the remote only: OK starts now, the arrows
- * reach "Clear tonight's best", Back opens the library.
+ * tonight's best. Operated with the remote only: the arrows move between the
+ * buttons and OK presses the highlighted one. Back does nothing here; holding
+ * it leaves the app.
  */
 export function PartyLobby({
   model,
@@ -262,20 +273,22 @@ export function PartyLobby({
   connected,
   linksError,
   onStartNow,
+  onPickSong,
   onClearBest,
-  onDismiss,
 }: Props) {
   useTranslation();
   const rootRef = useRef<HTMLDialogElement>(null);
   const startRef = useRef<HTMLButtonElement>(null);
+  const pickRef = useRef<HTMLButtonElement>(null);
   const clearRef = useRef<HTMLButtonElement>(null);
   const [armed, setArmed] = useState(false);
   const canStart = status.kind !== 'empty' && status.kind !== 'starting';
   const { main, sub } = headline(status, model);
 
+  // The remote starts on "Start now" whenever a song can start.
   useEffect(() => {
-    startRef.current?.focus();
-  }, []);
+    (canStart ? startRef : pickRef).current?.focus();
+  }, [canStart]);
 
   useEffect(() => {
     if (!armed) {
@@ -299,27 +312,29 @@ export function PartyLobby({
     setArmed(false);
     onClearBest();
     // The button goes once the board is empty; keep the remote on the lobby.
-    startRef.current?.focus();
+    pickRef.current?.focus();
   };
 
   // OK presses the focused button; Back and the arrows are handled here.
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      onDismiss();
+    const step = arrowStep(event.key);
+    if (step === 0 && event.key !== 'Escape') {
       return;
     }
-    if (ARROWS.has(event.key)) {
-      event.preventDefault();
-      event.stopPropagation();
-      const onStart = event.currentTarget === startRef.current;
-      (onStart ? (clearRef.current ?? startRef.current) : startRef.current)?.focus();
+    event.preventDefault();
+    event.stopPropagation();
+    if (step === 0) {
+      return;
     }
+    const buttons = [startRef.current, pickRef.current, clearRef.current].filter(
+      (button) => button !== null,
+    );
+    const next = buttons.indexOf(event.currentTarget) + step;
+    buttons.at(next % buttons.length)?.focus();
   };
 
   // Keep the remote's keys here: focus that wanders off (the library behind
-  // grabbing it) comes back to "Start now".
+  // grabbing it) comes back to the lobby's buttons.
   const onBlur = (event: FocusEvent<HTMLButtonElement>) => {
     const root = rootRef.current;
     if (
@@ -330,7 +345,7 @@ export function PartyLobby({
     }
     requestAnimationFrame(() => {
       if (root.isConnected && !root.contains(document.activeElement)) {
-        startRef.current?.focus();
+        (startRef.current ?? pickRef.current)?.focus();
       }
     });
   };
@@ -370,20 +385,34 @@ export function PartyLobby({
       </section>
 
       <footer className="flex items-center gap-[2vw]">
+        {canStart && (
+          <button
+            ref={startRef}
+            type="button"
+            onClick={start}
+            onKeyDown={onKeyDown}
+            onBlur={onBlur}
+            className={cn(
+              'rounded-full bg-amber-400 px-[3vh] py-[1.4vh] text-[2.8vh] font-black text-slate-950',
+              BUTTON_FOCUS,
+            )}
+          >
+            {t('firesong.party.startNow')}
+          </button>
+        )}
         <button
-          ref={startRef}
+          ref={pickRef}
           type="button"
-          aria-disabled={!canStart}
-          onClick={start}
+          onClick={onPickSong}
           onKeyDown={onKeyDown}
           onBlur={onBlur}
           className={cn(
-            'rounded-full bg-amber-400 px-[3vh] py-[1.4vh] text-[2.8vh] font-black text-slate-950 outline-none',
-            'focus-visible:ring-[0.6vh] focus-visible:ring-white',
-            !canStart && 'opacity-50',
+            'rounded-full px-[3vh] py-[1.4vh] text-[2.8vh] font-black',
+            canStart ? 'border-[0.3vh] border-white/40 text-white' : 'bg-amber-400 text-slate-950',
+            BUTTON_FOCUS,
           )}
         >
-          {t('firesong.party.startNow')}
+          {t('firesong.party.pickSong')}
         </button>
         {model.best.length > 0 && (
           <button
@@ -392,7 +421,10 @@ export function PartyLobby({
             onClick={clear}
             onKeyDown={onKeyDown}
             onBlur={onBlur}
-            className="rounded-full border-[0.3vh] border-white/40 px-[3vh] py-[1.2vh] text-[2.4vh] font-bold text-white outline-none focus-visible:ring-[0.6vh] focus-visible:ring-white"
+            className={cn(
+              'rounded-full border-[0.3vh] border-white/40 px-[3vh] py-[1.2vh] text-[2.4vh] font-bold text-white',
+              BUTTON_FOCUS,
+            )}
           >
             {t(armed ? 'firesong.party.clearBest.confirm' : 'firesong.party.clearBest')}
           </button>

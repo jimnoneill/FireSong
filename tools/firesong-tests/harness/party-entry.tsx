@@ -375,8 +375,8 @@ const renderLobby = (withFx: boolean) => {
         connected
         linksError={false}
         onStartNow={() => undefined}
+        onPickSong={() => undefined}
         onClearBest={() => undefined}
-        onDismiss={() => undefined}
       />
       <PartyOverlays />
     </>,

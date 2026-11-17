@@ -28,6 +28,8 @@ below.
 - Song analysis waits while the GPU is reserved or short of memory.
 - A song a guest reserved before it was ready now gets prepared ahead of background preparation.
 - If a phone can't reach the TV, it says to join the home Wi-Fi instead of spinning.
+- The TV has its own song book for the remote: press OK on "Pick a song" in the party lobby, browse or search the songs that are ready in big rows, and OK adds one to the queue. It replaces the desktop library, whose small controls and analysis tools the remote could not use.
+- The party lobby always highlights the button the remote is on.
 - Party QR codes work whenever FireSong is on the TV: the self-hosted server opens the guests' door by itself, and closes it again 20 minutes after you leave the app.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
@@ -41,6 +43,7 @@ below.
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.
 - Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
 - Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.
+- Songs whose lyric lines drift seconds away from the singing now use LRCLIB's line timing too.
 - When the TV leaves in the middle of a song (HOME, or switched off), phones and song prep no longer think the song is still playing.
 
 ## [1.4.1] - 2026-11-09

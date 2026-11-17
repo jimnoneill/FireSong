@@ -1,9 +1,11 @@
 //! FireSong lyric-timing repair (PHONE-V2.md, feature 9). Forced alignment
 //! sometimes squeezes most lyric lines into a fraction of a second (Blur,
-//! "Song 2": 31 of 35 lines). After a full analysis whose lyrics came from
-//! LRCLIB, such a transcript is rebuilt from LRCLIB's line-synced lyrics of the
-//! same pick, when those pass sanity checks, and the repair is recorded in the
-//! transcript as `timing_repair`.
+//! "Song 2": 31 of 35 lines), and sometimes drifts: lines land many seconds
+//! from where they are sung, mostly after a break or towards the end (50 Cent,
+//! "21 Questions": the last lines 30 s early). After a full analysis whose
+//! lyrics came from LRCLIB, such a transcript is rebuilt from LRCLIB's
+//! line-synced lyrics of the same pick, when those pass sanity checks, and the
+//! repair is recorded in the transcript as `timing_repair`.
 
 use serde_json::{Value, json};
 use tracing::{info, warn};
@@ -21,6 +23,12 @@ const SQUEEZED_LINE_SECS: f64 = 0.5;
 const MIN_LINES: usize = 6;
 /// Squeezed lines, in percent of all lines, that make the alignment squeezed.
 const SQUEEZED_PERCENT: usize = 40;
+/// A line this far from LRCLIB's start for it has drifted.
+const DRIFTED_LINE_SECS: f64 = 3.0;
+/// Drifted lines, in percent of the lines compared, that make the alignment drifted.
+const DRIFTED_PERCENT: usize = 10;
+/// How many words either side of its expected place a line's first word is looked for.
+const ANCHOR_WINDOW_WORDS: usize = 6;
 /// Synced lyrics may have this share more or fewer lines than the plain ones.
 const LINE_COUNT_TOLERANCE: f64 = 0.25;
 /// The last synced line must start before the song's end plus this.
@@ -30,6 +38,32 @@ const END_SLACK_SECS: f64 = 5.0;
 struct Squeeze {
     squeezed: usize,
     lines: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Drift {
+    drifted: usize,
+    lines: usize,
+}
+
+/// Why an alignment gives way to LRCLIB's line timing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    Squeezed(Squeeze),
+    Drifted(Drift),
+}
+
+impl Fault {
+    fn describe(self) -> String {
+        match self {
+            Self::Squeezed(Squeeze { squeezed, lines }) => {
+                format!("{squeezed} of {lines} lyric lines are squeezed")
+            }
+            Self::Drifted(Drift { drifted, lines }) => {
+                format!("{drifted} of {lines} lyric lines are over {DRIFTED_LINE_SECS} s off")
+            }
+        }
+    }
 }
 
 /// Runs in `finalize_song`, before the song is marked analysed.
@@ -45,9 +79,7 @@ pub(super) fn repair_after_analysis(file_hash: &str, cache: &CacheDir, lyrics_fr
     else {
         return;
     };
-    let Some(squeeze) = squeezed(&transcript) else {
-        return;
-    };
+    let squeeze = squeezed(&transcript);
     let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
         return;
     };
@@ -59,29 +91,38 @@ pub(super) fn repair_after_analysis(file_hash: &str, cache: &CacheDir, lyrics_fr
         .filter(|pick| pick.lines == plain)
         .and_then(|pick| pick.synced_lyrics)
     else {
-        warn!(
-            "[analyzer] {file_hash}: {} of {} lyric lines are squeezed; LRCLIB has no synced lyrics for the same pick, keeping the alignment",
-            squeeze.squeezed, squeeze.lines
-        );
+        if let Some(squeeze) = squeeze {
+            warn!(
+                "[analyzer] {file_hash}: {}; LRCLIB has no synced lyrics for the same pick, keeping the alignment",
+                Fault::Squeezed(squeeze).describe()
+            );
+        }
         return;
     };
     let parsed = match checked_lrc(&synced, plain.len(), song.duration_secs) {
         Ok(parsed) => parsed,
         Err(reason) => {
-            warn!(
-                "[analyzer] {file_hash}: {} of {} lyric lines are squeezed; LRCLIB's synced lyrics {reason}, keeping the alignment",
-                squeeze.squeezed, squeeze.lines
-            );
+            if let Some(squeeze) = squeeze {
+                warn!(
+                    "[analyzer] {file_hash}: {}; LRCLIB's synced lyrics {reason}, keeping the alignment",
+                    Fault::Squeezed(squeeze).describe()
+                );
+            }
             return;
         }
     };
-    let repaired = rebuilt(&transcript, &parsed, squeeze);
+    let Some(fault) = squeeze
+        .map(Fault::Squeezed)
+        .or_else(|| drifted(&transcript, &parsed).map(Fault::Drifted))
+    else {
+        return;
+    };
+    let repaired = rebuilt(&transcript, &parsed, fault);
     cache.delete_transcript_variants(file_hash);
     match write_transcript_json(cache, file_hash, &repaired) {
         Ok(()) => info!(
-            "[analyzer] {file_hash}: {} of {} lyric lines were squeezed; using LRCLIB line timing ({} lines)",
-            squeeze.squeezed,
-            squeeze.lines,
+            "[analyzer] {file_hash}: {}; using LRCLIB line timing ({} lines)",
+            fault.describe(),
             parsed.segments.len()
         ),
         Err(error) => {
@@ -104,6 +145,67 @@ fn squeezed(transcript: &Value) -> Option<Squeeze> {
         .count();
     (lines >= MIN_LINES && squeezed * 100 >= lines * SQUEEZED_PERCENT)
         .then_some(Squeeze { squeezed, lines })
+}
+
+/// A word as the two timings share it: lowercase letters and digits only.
+fn plain_word(word: &str) -> String {
+    word.chars()
+        .filter(|char| char.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// `Some` when at least [`DRIFTED_PERCENT`] of the synced lines start more
+/// than [`DRIFTED_LINE_SECS`] from where the alignment put them. A line is
+/// found in the alignment by its first word, near the place its share of the
+/// words predicts; lines whose first word is not there are not compared, and
+/// fewer than [`MIN_LINES`] compared lines are never judged.
+fn drifted(transcript: &Value, parsed: &ParsedLrc) -> Option<Drift> {
+    let aligned: Vec<(f64, String)> = transcript
+        .get("segments")?
+        .as_array()?
+        .iter()
+        .filter_map(|segment| segment.get("words")?.as_array())
+        .flatten()
+        .filter_map(|word| {
+            let text = plain_word(word.get("word")?.as_str()?);
+            (!text.is_empty()).then_some((word.get("start")?.as_f64()?, text))
+        })
+        .collect();
+    let synced: Vec<(f64, Vec<String>)> = parsed
+        .segments
+        .iter()
+        .map(|line| {
+            let words = line.text.split_whitespace().map(plain_word);
+            (line.start, words.filter(|word| !word.is_empty()).collect())
+        })
+        .collect();
+    let total: usize = synced.iter().map(|(_, words)| words.len()).sum();
+    if aligned.is_empty() || total == 0 {
+        return None;
+    }
+
+    let (mut before, mut lines, mut drifted) = (0, 0, 0);
+    for (start, words) in &synced {
+        let expected = before * aligned.len() / total;
+        before += words.len();
+        let Some(first) = words.first() else {
+            continue;
+        };
+        let from = expected.saturating_sub(ANCHOR_WINDOW_WORDS);
+        let to = (expected + ANCHOR_WINDOW_WORDS + 1).min(aligned.len());
+        let anchor = (from..to)
+            .filter(|index| &aligned[*index].1 == first)
+            .min_by_key(|index| index.abs_diff(expected));
+        if let Some(anchor) = anchor {
+            lines += 1;
+            if (aligned[anchor].0 - start).abs() > DRIFTED_LINE_SECS {
+                drifted += 1;
+            }
+        }
+    }
+    (lines >= MIN_LINES && drifted * 100 >= lines * DRIFTED_PERCENT)
+        .then_some(Drift { drifted, lines })
 }
 
 /// LRCLIB's synced lyrics, if they are usable: at least [`MIN_LINES`] lines
@@ -143,19 +245,27 @@ fn checked_lrc(
 
 /// The LRC transcript, as `apply_timed_lyrics` builds it at the base key and
 /// tempo, plus the repair record.
-fn rebuilt(transcript: &Value, parsed: &ParsedLrc, squeeze: Squeeze) -> Value {
+fn rebuilt(transcript: &Value, parsed: &ParsedLrc, fault: Fault) -> Value {
     let text = |key: &str| transcript.get(key).and_then(Value::as_str);
     let no_stems = transcript
         .get("no_stems")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let mut value = build_lrc_transcript(parsed, text("language"), text("key"), 1.0, no_stems);
-    value["timing_repair"] = json!({
-        "method": "lrclib-lines",
-        "reason": "squeezed-alignment",
-        "squeezed": squeeze.squeezed,
-        "lines": squeeze.lines,
-    });
+    value["timing_repair"] = match fault {
+        Fault::Squeezed(Squeeze { squeezed, lines }) => json!({
+            "method": "lrclib-lines",
+            "reason": "squeezed-alignment",
+            "squeezed": squeezed,
+            "lines": lines,
+        }),
+        Fault::Drifted(Drift { drifted, lines }) => json!({
+            "method": "lrclib-lines",
+            "reason": "drifted-alignment",
+            "drifted": drifted,
+            "lines": lines,
+        }),
+    };
     value
 }
 
@@ -218,7 +328,7 @@ mod tests {
         );
 
         let parsed = checked_lrc(&lrc(35, 14.5), 35, 200.0).expect("usable LRC");
-        let repaired = rebuilt(&transcript, &parsed, squeeze);
+        let repaired = rebuilt(&transcript, &parsed, Fault::Squeezed(squeeze));
         assert_eq!(repaired["source"], "lrc");
         assert_eq!(repaired["key"], "A major");
         assert_eq!(repaired["language"], "en");
@@ -241,6 +351,74 @@ mod tests {
                 .zip(&expected)
                 .all(|(got, want)| (got - want).abs() < 0.01)
         );
+    }
+
+    /// 20 lines of three words; the alignment sings line `n` at `at(n)`.
+    fn three_word_lines(at: impl Fn(u32) -> f64) -> Value {
+        let segments: Vec<Value> = (0..20)
+            .map(|index| {
+                let start = at(index);
+                let words: Vec<Value> = ["one", "two", "three"]
+                    .iter()
+                    .enumerate()
+                    .map(|(n, word)| {
+                        let from = start + n as f64;
+                        json!({"word": format!("{word}{index},"), "start": from, "end": from + 0.8})
+                    })
+                    .collect();
+                json!({"text": format!("One{index} two{index} three{index}"),
+                       "start": start, "end": start + 3.0, "words": words})
+            })
+            .collect();
+        json!({"language": "en", "source": "lyrics", "key": "A major", "tempo": 1.0,
+               "no_stems": false, "segments": segments})
+    }
+
+    fn three_word_lrc() -> ParsedLrc {
+        let text = (0..20)
+            .map(|index| {
+                let secs = 10.0 + f64::from(index) * 5.0;
+                format!(
+                    "[{:02}:{:05.2}]One{index} two{index} three{index}",
+                    (secs / 60.0) as u32,
+                    secs % 60.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        checked_lrc(&text, 20, 200.0).expect("usable LRC")
+    }
+
+    #[test]
+    fn a_drifted_alignment_takes_lrclib_line_timing() {
+        let parsed = three_word_lrc();
+        let on_time = three_word_lines(|index| 10.3 + f64::from(index) * 5.0);
+        assert_eq!(drifted(&on_time, &parsed), None);
+        // One late line of 20 is under 10 %.
+        let one_late = three_word_lines(|index| {
+            10.0 + f64::from(index) * 5.0 + if index == 19 { 4.0 } else { 0.0 }
+        });
+        assert_eq!(drifted(&one_late, &parsed), None);
+        // The last five lines run early, more and more, like "21 Questions".
+        let early_end = three_word_lines(|index| {
+            10.0 + f64::from(index) * 5.0 - f64::from(index.saturating_sub(14)) * 4.0
+        });
+        let drift = drifted(&early_end, &parsed).expect("drifted");
+        assert_eq!(
+            drift,
+            Drift {
+                drifted: 5,
+                lines: 20
+            }
+        );
+
+        let repaired = rebuilt(&early_end, &parsed, Fault::Drifted(drift));
+        assert_eq!(repaired["source"], "lrc");
+        assert_eq!(
+            repaired["timing_repair"],
+            json!({"method": "lrclib-lines", "reason": "drifted-alignment", "drifted": 5, "lines": 20})
+        );
+        assert_eq!(repaired["segments"][19]["start"], 105.0);
     }
 
     #[test]

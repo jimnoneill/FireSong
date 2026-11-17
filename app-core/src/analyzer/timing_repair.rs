@@ -27,6 +27,11 @@ const SQUEEZED_PERCENT: usize = 40;
 const DRIFTED_LINE_SECS: f64 = 3.0;
 /// Drifted lines, in percent of the lines compared, that make the alignment drifted.
 const DRIFTED_PERCENT: usize = 10;
+/// A line this near LRCLIB's start for it agrees with it.
+const CLOSE_LINE_SECS: f64 = 1.5;
+/// Agreeing lines, in percent of the lines compared, that show LRCLIB's lyrics
+/// are timed to this recording and not to another edit of the song.
+const CLOSE_PERCENT: usize = 25;
 /// How many words either side of its expected place a line's first word is looked for.
 const ANCHOR_WINDOW_WORDS: usize = 6;
 /// Synced lyrics may have this share more or fewer lines than the plain ones.
@@ -156,7 +161,10 @@ fn plain_word(word: &str) -> String {
 }
 
 /// `Some` when at least [`DRIFTED_PERCENT`] of the synced lines start more
-/// than [`DRIFTED_LINE_SECS`] from where the alignment put them. A line is
+/// than [`DRIFTED_LINE_SECS`] from where the alignment put them, while at
+/// least [`CLOSE_PERCENT`] start within [`CLOSE_LINE_SECS`]: the two timings
+/// follow the same recording and part of the alignment has slipped. Lyrics
+/// timed to another edit are off everywhere and are left alone. A line is
 /// found in the alignment by its first word, near the place its share of the
 /// words predicts; lines whose first word is not there are not compared, and
 /// fewer than [`MIN_LINES`] compared lines are never judged.
@@ -185,7 +193,7 @@ fn drifted(transcript: &Value, parsed: &ParsedLrc) -> Option<Drift> {
         return None;
     }
 
-    let (mut before, mut lines, mut drifted) = (0, 0, 0);
+    let (mut before, mut lines, mut drifted, mut close) = (0, 0, 0, 0);
     for (start, words) in &synced {
         let expected = before * aligned.len() / total;
         before += words.len();
@@ -198,13 +206,18 @@ fn drifted(transcript: &Value, parsed: &ParsedLrc) -> Option<Drift> {
             .filter(|index| &aligned[*index].1 == first)
             .min_by_key(|index| index.abs_diff(expected));
         if let Some(anchor) = anchor {
+            let gap = (aligned[anchor].0 - start).abs();
             lines += 1;
-            if (aligned[anchor].0 - start).abs() > DRIFTED_LINE_SECS {
+            if gap > DRIFTED_LINE_SECS {
                 drifted += 1;
+            } else if gap <= CLOSE_LINE_SECS {
+                close += 1;
             }
         }
     }
-    (lines >= MIN_LINES && drifted * 100 >= lines * DRIFTED_PERCENT)
+    (lines >= MIN_LINES
+        && drifted * 100 >= lines * DRIFTED_PERCENT
+        && close * 100 >= lines * CLOSE_PERCENT)
         .then_some(Drift { drifted, lines })
 }
 
@@ -399,6 +412,9 @@ mod tests {
             10.0 + f64::from(index) * 5.0 + if index == 19 { 4.0 } else { 0.0 }
         });
         assert_eq!(drifted(&one_late, &parsed), None);
+        // Every line 13 s late: lyrics timed to another edit of the song.
+        let other_edit = three_word_lines(|index| 23.0 + f64::from(index) * 5.0);
+        assert_eq!(drifted(&other_edit, &parsed), None);
         // The last five lines run early, more and more, like "21 Questions".
         let early_end = three_word_lines(|index| {
             10.0 + f64::from(index) * 5.0 - f64::from(index.saturating_sub(14)) * 4.0

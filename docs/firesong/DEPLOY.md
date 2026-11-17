@@ -24,14 +24,16 @@ Host-specific values (LAN addresses, the GPU UUID, the tailnet name, tokens) nev
 | `deploy/server/firesong.env.example` | Every variable the server and the tooling read, with placeholders. |
 | `deploy/server/firesong.service` | Server user unit template (`@RELEASE_ROOT@`). |
 | `deploy/server/firesong-caddy.service` | Caddy user unit template (`@CADDY@`, `@RELEASE_ROOT@`). |
+| `deploy/server/firesong-party-door.service` | Party door user unit template (`@RELEASE_ROOT@`). |
 | `deploy/server/Caddyfile.tv` | TV door config. Reads everything host-specific from the env file. |
 | `scripts/firesong/server-install.sh` | `env`, `unit`, `owner-steps`, `check`, `self-test`. |
 | `scripts/firesong/build-release.sh` | Builds the client bundle and the server binary into a release. |
 | `scripts/firesong/preflight.sh` | The unit's `ExecStartPre` guard; also runs by hand. |
 | `scripts/firesong/party-prep.py` (+ `firesong_prep.py`) | Song prep: `prep`, `status`, `evict`, `gpu-check`, `configure`, `self-test`. |
 | `scripts/firesong/cube.sh` | Fire TV Cube helper over adb. |
+| `scripts/firesong/party-door.sh` | Opens the phone door's Funnel while FireSong is on the TV: `run`, `once`, `status`, `self-test`. |
 
-None of the scripts installs packages, enables a service or touches Tailscale.
+None of the scripts installs packages or enables a service. Only `party-door.sh` touches Tailscale, and only the phone door's own Funnel port.
 
 ## 1. Owner one-time steps
 
@@ -64,6 +66,16 @@ Then **Connect Plex → Sign in with Plex**, approve the code at plex.tv/link, p
 **Reach Plex over the LAN.** Sign-in picks the first Plex connection that answers. When the router's DNS rebinding protection hides the server's LAN `plex.direct` name (`<lan-ip-with-dashes>.<hash>.plex.direct`), that is the public one, so every scan, playlist read and song download loops out through the router; and it breaks if the public address changes. Check with `getent hosts <lan-ip-with-dashes>.<hash>.plex.direct`. If nothing comes back, add that name with the Plex server's LAN address to `/etc/hosts` on the server machine. Then, with `firesong.service` stopped, set `library_source.base_url` in `<data>/config.json` to `https://<lan-ip-with-dashes>.<hash>.plex.direct:32400`. The library is keyed by the Plex machine id, so no songs or analyses are lost. On a 28k-track library this cut a scan's Plex sync from up to 7 minutes to about one.
 
 ### 1.3 Phone door on Tailscale Funnel (parties only)
+
+Every phone link and QR code points at `<phone-origin>`, so phones reach nothing while this Funnel is off. Safari then says it "couldn't establish a secure connection", on Wi-Fi and on mobile data alike. `firesong-party-door.service` opens the door while the FireSong TV app is on screen and closes it once the app has been away for `FIRESONG_DOOR_IDLE_MIN` minutes (default 20):
+
+```sh
+sudo tailscale set --operator=$USER                    # once, so Funnel needs no sudo
+systemctl --user enable --now firesong-party-door
+/mnt/fast/firesong/current/party-door.sh status        # is the TV app on screen, is the door open
+```
+
+It sees the TV app by its connections to the TV door from `FIRESONG_CUBE_IP`: the app holds them while it is in front and drops them when it leaves the screen. Stopping the unit closes the door unless FireSong is on the TV. By hand instead:
 
 ```sh
 tailscale funnel --bg --https=8443 http://127.0.0.1:64449     # on
@@ -261,14 +273,14 @@ Before:
 
 1. `party-prep.py prep "<playlist>"` well ahead of time (it yields to GPU reservations, so start early).
 2. Rotate the phone pairing token: `curl -fsS -X POST -H "x-firesong-host-token: $(cat /mnt/fast/firesong/data/firesong/host-token)" http://127.0.0.1:64448/api/firesong/rotate-pairing-token -o /dev/null`. It writes a new token, disconnects every phone, and old QR codes and cookies get 401 from then on (PROTOCOL.md §2.1). With the service stopped, deleting `/mnt/fast/firesong/data/remote-control.json` does the same on the next start.
-3. Funnel on (1.3). Check that `tailscale funnel status` still lists `:443`.
+3. Funnel on (1.3): open FireSong on the TV, or turn it on by hand. Check that `tailscale funnel status` lists `:8443` and still lists `:443`.
 4. Check key expiry is disabled (1.4).
 5. At the TV: the Cube on Ethernet, Fire TV audio set to PCM/Stereo, the TV in Game Mode.
 6. `cube.sh status`, then `cube.sh launch --url … --host-token-file …` when the TV is idle.
 
 After:
 
-1. Funnel off: `tailscale funnel --https=8443 off`.
+1. Funnel off: it closes by itself 20 minutes after FireSong leaves the TV, or now with `tailscale funnel --https=8443 off`.
 2. `cube.sh home`; `cube.sh unreverse` if any reverses were made.
 3. Optionally `party-prep.py evict` to bring the cache back under the cap.
 
@@ -279,6 +291,7 @@ scripts/firesong/party-prep.py self-test        # all of the below, with unittes
 /usr/bin/python3 -m unittest discover -s scripts/firesong/tests -t scripts/firesong
 scripts/firesong/cube.sh self-test              # fake adb: idle guard, package check, quoting, reverses, adbkey guard
 scripts/firesong/server-install.sh self-test      # env, unit rendering, owner steps
+scripts/firesong/party-door.sh self-test          # stub ss/tailscale: opens for the TV only, closes after idle, never :443
 scripts/firesong/server-install.sh check          # preflight with the real env file + systemd-analyze verify
 scripts/firesong/build-release.sh --dry-run --allow-dirty
 ```
@@ -289,6 +302,7 @@ The prep tests run the real prep loop against a fake Nightingale server on an ep
 
 | Symptom | Cause and fix |
 |---|---|
+| A phone that scans the QR code gets "couldn't establish a secure connection" | The phone door's Funnel is off (1.3). `party-door.sh status` shows it; `journalctl --user -u firesong-party-door` shows why it did not open (most often: the user is not the Tailscale operator). |
 | `firesong.service` fails at start, journal shows `preflight: FAIL` | The message names the problem: song cache not mounted, a placeholder in the env file, a non-loopback bind, the wrong GPU. Fix it, then run `systemctl --user reset-failed firesong` and start again. |
 | `party-prep.py` exit 2 "not mounted" | The NFS mount is missing (1.1), or the NFS server is down. |
 | `party-prep.py` exit 5 "not set up" | The analyzer setup has not been done in the UI (section 2). |

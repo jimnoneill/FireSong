@@ -28,6 +28,7 @@ below.
 - Song analysis waits while the GPU is reserved or short of memory.
 - A song a guest reserved before it was ready now gets prepared ahead of background preparation.
 - If a phone can't reach the TV, it says to join the home Wi-Fi instead of spinning.
+- Party QR codes work whenever FireSong is on the TV: the self-hosted server opens the guests' door by itself, and closes it again 20 minutes after you leave the app.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
 ### Fixes

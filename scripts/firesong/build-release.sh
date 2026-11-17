@@ -20,7 +20,7 @@
 #   3. server: cargo build --release --locked -p server. rust-embed bakes
 #      client/dist into the binary, so the client must be built first.
 #   4. assemble <release-root>/releases/<UTC-stamp>-<git-sha>/ with the server,
-#      preflight.sh, party-prep.py + firesong_prep.py, cube.sh, Caddyfile.tv,
+#      preflight.sh, party-prep.py + firesong_prep.py, cube.sh, party-door.sh, Caddyfile.tv,
 #      a copy of client/dist (for inspection; the server serves its embedded
 #      copy), release.json and SHA256SUMS.
 #   5. prune old releases (never the current one).
@@ -120,13 +120,13 @@ run cargo build --manifest-path "$REPO/Cargo.toml" --release --locked -p server
 STAGE="$ROOT/releases/.staging-$ID"
 run mkdir -p "$STAGE"
 run install -m 755 "$BIN" "$STAGE/server"
-for f in preflight.sh party-prep.py firesong_prep.py cube.sh; do
+for f in preflight.sh party-prep.py firesong_prep.py cube.sh party-door.sh; do
   run install -m 755 "$HERE/$f" "$STAGE/$f"
 done
 run install -m 644 "$REPO/deploy/server/Caddyfile.tv" "$STAGE/Caddyfile.tv"
 run cp -a "$REPO/client/dist" "$STAGE/client-dist"
 if [ "$DRY" = 0 ]; then
-  (cd "$STAGE" && sha256sum server preflight.sh party-prep.py firesong_prep.py cube.sh Caddyfile.tv > SHA256SUMS)
+  (cd "$STAGE" && sha256sum server preflight.sh party-prep.py firesong_prep.py cube.sh party-door.sh Caddyfile.tv > SHA256SUMS)
   python3 -I - "$STAGE/release.json" "$ID" "$SHA" "$BRANCH" "${DIRTY:+true}" \
     "$(node -v)" "$(cd "$REPO/client" && pnpm -v)" "$(cargo -V)" <<'PY'
 import json, sys
@@ -135,7 +135,8 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump({"id": rid, "git_sha": sha, "branch": branch, "dirty": dirty == "true",
                "node": node, "pnpm": pnpm, "cargo": cargo,
                "contents": ["server (client bundle embedded)", "client-dist/", "preflight.sh",
-                            "party-prep.py", "firesong_prep.py", "cube.sh", "Caddyfile.tv"]},
+                            "party-prep.py", "firesong_prep.py", "cube.sh", "party-door.sh",
+                            "Caddyfile.tv"]},
               f, indent=2)
     f.write("\n")
 PY

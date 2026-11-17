@@ -1,0 +1,25 @@
+# FireSong party door: a systemd USER unit (template).
+#
+# Opens the phone door (Tailscale Funnel on the port of NIGHTINGALE_REMOTE_URL) while the
+# FireSong TV app is on screen, and closes it once the TV app has been away for
+# FIRESONG_DOOR_IDLE_MIN minutes (default 20). Rendered and installed (not enabled, not
+# started) by:
+#   scripts/firesong/server-install.sh unit
+# which fills @RELEASE_ROOT@. The user must be the Tailscale operator.
+
+[Unit]
+Description=FireSong party door (Funnel for guests' phones while FireSong is on the TV)
+After=firesong.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=@RELEASE_ROOT@/current/party-door.sh --env %h/.config/firesong/firesong.env run
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

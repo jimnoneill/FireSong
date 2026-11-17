@@ -10,8 +10,9 @@
 #       stay <placeholders> for you to fill in. Refuses to overwrite without --force.
 #
 #   server-install.sh unit [--print] [--dest DIR] [--release-root DIR] [--caddy PATH]
-#       Render deploy/server/firesong.service (and firesong-caddy.service when a
-#       caddy binary is found) into DIR (default ~/.config/systemd/user).
+#       Render deploy/server/firesong.service, firesong-party-door.service (and
+#       firesong-caddy.service when a caddy binary is found) into DIR (default
+#       ~/.config/systemd/user).
 #       --print writes the rendered units to stdout instead.
 #
 #   server-install.sh owner-steps [--env FILE]
@@ -142,6 +143,8 @@ cmd_unit() {
   [ -n "$caddy" ] || caddy="$(find_caddy || true)"
   if [ "$print" = 1 ]; then
     render "$TEMPLATE_DIR/firesong.service" "$root" "$caddy"
+    echo "### firesong-party-door.service"
+    render "$TEMPLATE_DIR/firesong-party-door.service" "$root" "$caddy"
     if [ -n "$caddy" ]; then
       echo "### firesong-caddy.service"
       render "$TEMPLATE_DIR/firesong-caddy.service" "$root" "$caddy"
@@ -151,6 +154,8 @@ cmd_unit() {
   mkdir -p "$dest"
   render "$TEMPLATE_DIR/firesong.service" "$root" "$caddy" > "$dest/firesong.service"
   say "wrote $dest/firesong.service"
+  render "$TEMPLATE_DIR/firesong-party-door.service" "$root" "$caddy" > "$dest/firesong-party-door.service"
+  say "wrote $dest/firesong-party-door.service"
   if [ -n "$caddy" ]; then
     render "$TEMPLATE_DIR/firesong-caddy.service" "$root" "$caddy" > "$dest/firesong-caddy.service"
     say "wrote $dest/firesong-caddy.service"
@@ -197,7 +202,11 @@ FireSong owner one-time steps (values from $env)
      then Connect Plex -> Sign in with Plex, approve the code at plex.tv/link,
      pick the server and the music library.
 
-3. Phone door on Tailscale Funnel, only during parties:
+3. Phone door on Tailscale Funnel, only during parties. Make this user the Tailscale
+   operator once, then let firesong-party-door open it while FireSong is on the TV:
+     sudo tailscale set --operator=\$USER
+     systemctl --user enable --now firesong-party-door
+   By hand instead:
      on:     tailscale funnel --bg --https=$port http://${remote_bind:-127.0.0.1:64449}
      check:  tailscale funnel status      (the existing :443 entry must still be there)
      off:    tailscale funnel --https=$port off
@@ -229,8 +238,10 @@ cmd_check() {
     cp "$HERE/preflight.sh" "$t/root/current/preflight.sh"
     printf '#!/bin/sh\n' > "$t/root/current/server"; chmod +x "$t/root/current/server"
     render "$TEMPLATE_DIR/firesong.service" "$t/root" "/bin/true" > "$t/firesong.service"
+    cp "$HERE/party-door.sh" "$t/root/current/party-door.sh"
     render "$TEMPLATE_DIR/firesong-caddy.service" "$t/root" "/bin/true" > "$t/firesong-caddy.service"
-    if systemd-analyze --user verify "$t/firesong.service" "$t/firesong-caddy.service"; then
+    render "$TEMPLATE_DIR/firesong-party-door.service" "$t/root" "/bin/true" > "$t/firesong-party-door.service"
+    if systemd-analyze --user verify "$t/firesong.service" "$t/firesong-caddy.service" "$t/firesong-party-door.service"; then
       say "unit templates verify cleanly"
     else
       rc=1
@@ -274,12 +285,14 @@ FAKE
   CADDY=/opt/caddy "${BASH_SOURCE[0]}" unit --dest "$t/units" --release-root /srv/fs 2>/dev/null
   expect "unit renders the release root" grep -q '^ExecStart=/srv/fs/current/server$' "$t/units/firesong.service"
   expect "caddy unit renders" grep -q '^ExecStart=/opt/caddy run ' "$t/units/firesong-caddy.service"
-  expect "no template markers left" no_markers "$t/units/firesong.service" "$t/units/firesong-caddy.service"
+  expect "party door unit renders" grep -q '^ExecStart=/srv/fs/current/party-door.sh ' "$t/units/firesong-party-door.service"
+  expect "no template markers left" no_markers "$t/units/firesong.service" "$t/units/firesong-caddy.service" "$t/units/firesong-party-door.service"
 
   "${BASH_SOURCE[0]}" owner-steps --env "$e" > "$t/steps" 2>/dev/null
   expect "owner steps carry the fstab line" grep -q "10.0.0.7:/var/lib/firesong-cache /mnt/firesong-cache nfs rw,soft,intr,_netdev,nofail,bg 0 0" "$t/steps"
   expect "owner steps carry the Funnel command" grep -q "tailscale funnel --bg --https=8443 http://127.0.0.1:64449" "$t/steps"
   expect "owner steps carry Funnel off" grep -q "funnel --https=8443 off" "$t/steps"
+  expect "owner steps carry the party door" grep -q "enable --now firesong-party-door" "$t/steps"
   expect "owner steps carry the TV door firewall rule" grep -q "ufw allow proto tcp from 10.0.0.6 to 10.0.0.5 port 64443" "$t/steps"
   echo "self-test: $pass passed, $failn failed"
   [ "$failn" = 0 ]

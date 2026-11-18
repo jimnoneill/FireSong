@@ -61,12 +61,24 @@ def data_path() -> pathlib.Path:
 def song(file_hash: str) -> dict:
     db = sqlite3.connect(f"file:{data_path() / 'songs.db'}?mode=ro", uri=True, timeout=30)
     try:
-        row = db.execute("select title, is_analyzed from songs where file_hash = ?", (file_hash,)).fetchone()
+        row = db.execute("select title, is_analyzed, artist from songs where file_hash = ?", (file_hash,)).fetchone()
     finally:
         db.close()
     if row is None:
         raise SystemExit(f"no song {file_hash}")
-    return {"title": row[0], "is_analyzed": bool(row[1])}
+    return {"title": row[0], "artist": row[2], "is_analyzed": bool(row[1])}
+
+
+def prepared(info: dict) -> bool:
+    """Whether the song is ready. Preparing a media-server song moves it to its
+    content's hash, so this finds it by title and artist."""
+    db = sqlite3.connect(f"file:{data_path() / 'songs.db'}?mode=ro", uri=True, timeout=30)
+    try:
+        row = db.execute("select max(is_analyzed) from songs where title = ? and artist = ?",
+                         (info["title"], info["artist"])).fetchone()
+    finally:
+        db.close()
+    return bool(row and row[0])
 
 
 def visible(sel: str) -> str:
@@ -310,7 +322,7 @@ def main() -> int:
         print(f"step: phone reserves unprepared '{prep['title']}'", flush=True)
         t_prep = time.time()
         reserve(phone, prep["title"])
-        L.wait_for("song prepared", lambda: song(args.prep_song).get("is_analyzed"), args.prep_limit + 60, every=3)
+        L.wait_for("song prepared", lambda: prepared(prep), args.prep_limit + 60, every=3)
         prep_secs = round(time.time() - t_prep, 1)
         L.wait_for("the lobby starts it", playing, 60)
         time.sleep(15)

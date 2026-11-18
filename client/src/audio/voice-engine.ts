@@ -1,3 +1,5 @@
+import { addFlightSampler, flight } from '@/bridge/flight';
+
 import { rackWorkletUrl } from './rack-worklets';
 import {
   BUS_COMPRESSOR_RATIO,
@@ -23,12 +25,15 @@ export type VoiceEngine = {
   resume(): Promise<void>;
   /** WebView output path, `baseLatency + outputLatency`, in milliseconds. */
   outputLatencyMs(): number;
+  /** RMS of the last output block, the voices as they leave for the speakers. */
+  outputRms(): number;
 };
 
 const REVERB_DECAY = 6.9;
 const LIMITER_ATTACK_SEC = 0.001;
 const LIMITER_RELEASE_SEC = 0.1;
 const GESTURES = ['pointerdown', 'keydown'] as const;
+const METER_FFT_SIZE = 2048;
 
 /** Decaying noise, from a fixed seed so every TV gets the same room. */
 const reverbImpulse = (context: BaseAudioContext): AudioBuffer => {
@@ -70,6 +75,10 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
   bus.connect(busCompressor);
   reverbSend.connect(reverb).connect(busCompressor);
   busCompressor.connect(limiter).connect(context.destination);
+  const meter = context.createAnalyser();
+  meter.fftSize = METER_FFT_SIZE;
+  limiter.connect(meter);
+  const block = new Float32Array(meter.fftSize);
 
   const ready = context.audioWorklet.addModule(rackWorkletUrl());
 
@@ -81,6 +90,10 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
     ready,
     resume: () => context.resume(),
     outputLatencyMs: () => (context.baseLatency + context.outputLatency) * 1000,
+    outputRms: () => {
+      meter.getFloatTimeDomainData(block);
+      return Math.sqrt(block.reduce((sum, sample) => sum + sample * sample, 0) / block.length);
+    },
   };
 };
 
@@ -104,6 +117,12 @@ const keepRunning = (engine: VoiceEngine): void => {
       resume();
     }
   });
+  context.addEventListener('statechange', () => flight('voice-context', { state: context.state }));
+  addFlightSampler('voice', () => ({
+    state: context.state,
+    outputRms: Number(engine.outputRms().toFixed(4)),
+    latencyMs: Math.round(engine.outputLatencyMs()),
+  }));
   resume();
 };
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
+import { flight } from '@/bridge/flight';
 import { remoteMics } from '@/bridge/remote-mics';
 import {
   useMovePlaybackQueueEntry,
@@ -53,17 +54,22 @@ export function usePartyConductor({
     const ports: ConductorPorts = {
       stage: (report) => partyTv.reportStage(report),
       start: ({ entryId, players, soloMicrophoneId }) => {
+        flight('party-start', { entryId, singers: players.length });
         setPartySoloMic(soloMicrophoneId);
         partyTv.setPlayingEntry(entryId);
         actions.current.playNext(players);
       },
       move: (id, targetIndex) => actions.current.move({ id, targetIndex }),
       remove: (id) => {
+        flight('party-start-failed', { entryId: id });
         setPartySoloMic(null);
         partyTv.setPlayingEntry(null);
         actions.current.remove(id);
       },
-      notify: (slot, code, title) => partyTv.notify(slot, code, title),
+      notify: (slot, code, title) => {
+        flight('party-notice', { slot, code });
+        partyTv.notify(slot, code, title);
+      },
     };
     return new LobbyConductor(ports, () => Date.now());
   });

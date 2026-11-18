@@ -3,6 +3,7 @@ mod bootstrap;
 mod commands;
 mod events;
 pub mod firesong;
+mod flight;
 mod host_auth;
 mod jukebox;
 mod media;

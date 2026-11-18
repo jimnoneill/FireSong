@@ -35,6 +35,7 @@ import { PLAYER_COLOR_OPTIONS } from '@/shared/player-colors';
 import type { MicSampleFrame } from '@/types/MicSampleFrame';
 
 import { fireSongLaunch } from './firesong-launch';
+import { addFlightSampler, flight, type FlightFields } from './flight';
 import { dispatchMicFrame } from './microphone-samples';
 import { TvMicPeer, type PeerInit, type PeerPort, type PeerStats } from './remote-mic-peer';
 import { createRtcSocket, rtcSocketUrl } from './rtc-socket';
@@ -125,6 +126,20 @@ const EMPTY_SNAPSHOT: RemoteMicsSnapshot = {
   latencyMs: new Map(),
   connected: false,
   lastError: null,
+};
+
+/** Entries of `from` whose phone is not in `to`. */
+const missingFrom = (from: readonly ActiveSlot[], to: readonly ActiveSlot[]): ActiveSlot[] =>
+  from.filter((entry) => !to.some((other) => other.micId === entry.micId));
+
+/** Flight-recorder events for phones that joined or left between rosters. */
+const recordRosterChange = (previous: readonly ActiveSlot[], next: readonly ActiveSlot[]): void => {
+  for (const entry of missingFrom(previous, next)) {
+    flight('slot-left', { slot: entry.slot });
+  }
+  for (const entry of missingFrom(next, previous)) {
+    flight('slot-joined', { slot: entry.slot });
+  }
 };
 
 export class RemoteMics {
@@ -268,6 +283,31 @@ export class RemoteMics {
     return this.rack?.status(slot) ?? null;
   }
 
+  /** The flight recorder's view: the TV seat and each joined slot's voice path. */
+  flightSample(): FlightFields {
+    const slots = this.roster.map((entry) => {
+      const status = this.rack?.status(entry.slot) ?? null;
+      return {
+        slot: entry.slot,
+        peer: this.peers.has(entry.slot),
+        jitterMs: this.latencies.get(entry.micId)?.currentJitterMs() ?? null,
+        ...(status === null
+          ? { attached: false }
+          : {
+              attached: status.attached,
+              monitored: status.monitored,
+              muted: status.muted,
+              levelRms: Number(status.levelRms.toFixed(4)),
+              gateOpen: status.gateOpen,
+              gateThresholdDb: status.gateThreshold,
+              feedbackHz: status.feedbackHz,
+              volume: status.mix.volume,
+            }),
+      };
+    });
+    return { connected: this.connected, slots };
+  }
+
   /** Sends a calibrated mouth-to-speaker latency for the mic's slot. */
   reportLatency(micId: string, latencyMs: number, method: LatencyMethod): boolean {
     const slot = this.roster.find((entry) => entry.micId === micId);
@@ -395,6 +435,7 @@ export class RemoteMics {
         this.releaseSlot(previous.slot);
       }
     }
+    recordRosterChange(this.roster, next);
     this.roster = next;
     for (const entry of next) {
       const latency = this.latencyFor(entry.micId);
@@ -604,7 +645,10 @@ const connectTv: RemoteMicsDeps['connect'] = (onFrame, onOpen) =>
     parse: (raw) => parseServerToTv(raw) ?? parseServerToTvParty(raw),
     isPong: (frame) => frame.type === 'pong',
     onFrame,
-    onStatus: (status) => onOpen(status.state === 'open'),
+    onStatus: (status) => {
+      flight('tv-socket', { state: status.state, closeCode: status.closeCode });
+      onOpen(status.state === 'open');
+    },
   });
 
 /** The four per-slot join links and QR codes (PROTOCOL.md §1.1); the TV door only. */
@@ -643,7 +687,9 @@ export const startRemoteMics = (): (() => void) => {
   const release = remoteMics.start();
   const unlink = linkNoraebang(remoteMics);
   const uninstallDiag = installDiag(remoteMics);
+  const removeSampler = addFlightSampler('mics', () => remoteMics.flightSample());
   return () => {
+    removeSampler();
     uninstallDiag();
     unlink();
     release();

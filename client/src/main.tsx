@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 
 import { App } from '@/app/app';
+import { fireSongLaunch } from '@/bridge/firesong-launch';
+import { startFlightRecorder } from '@/bridge/flight';
 import { getMediaEndpoint } from '@/bridge/playback.tauri';
 import { isTauri } from '@/bridge/runtime';
 import { webBootstrapSchema } from '@/bridge/schemas';
@@ -38,6 +40,10 @@ async function loadBootstrap(): Promise<void> {
       libraryPinned: Boolean(bootstrap.libraryPinned),
     };
   } catch {}
+}
+
+if (fireSongLaunch().tv) {
+  startFlightRecorder();
 }
 
 void loadBootstrap().then(() => {

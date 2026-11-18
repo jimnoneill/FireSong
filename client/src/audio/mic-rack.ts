@@ -44,6 +44,9 @@ export type RackSlotStatus = {
   attached: boolean;
   monitored: boolean;
   levelRms: number;
+  /** The gate let the voice through on its last meter block. */
+  gateOpen: boolean;
+  muted: boolean;
   gateThreshold: number;
   feedbackHz: number | null;
   echo: EchoSettings;
@@ -184,6 +187,7 @@ class SlotStrip {
   private echo: EchoSettings = echoSettingsFor(null);
   private gateThreshold = dbToGain(GATE_MIN_THRESHOLD_DB);
   private levelRms = 0;
+  private gateOpen = false;
   private learning: number[] | null = null;
   private feedbackHz: number | null = null;
   private readonly tracker = new FeedbackTracker();
@@ -326,6 +330,8 @@ class SlotStrip {
       attached: this.source !== null,
       monitored: this.monitored,
       levelRms: this.levelRms,
+      gateOpen: this.gateOpen,
+      muted: this.muted,
       gateThreshold: this.gateThreshold,
       feedbackHz: this.feedbackHz,
       echo: this.echo,
@@ -369,6 +375,7 @@ class SlotStrip {
       return;
     }
     this.levelRms = meter.rms;
+    this.gateOpen = meter.open;
     this.learning?.push(meter.rms);
   }
 

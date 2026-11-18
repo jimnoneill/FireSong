@@ -13,7 +13,7 @@ use app_core::remote_mic::{
     SONG_BOOK_COMMAND,
 };
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     response::Redirect,
     routing::{any, get, post},
@@ -22,6 +22,7 @@ use axum::{
 use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::flight::{self, Flight};
 use crate::remote::REMOTE_COMMANDS;
 pub use crate::rtc::Timings;
 use crate::rtc::{self, Hub, MicStore};
@@ -78,6 +79,7 @@ pub(crate) struct FireSong {
     settings: Arc<RwLock<Settings>>,
     hub: Arc<Hub>,
     party_task: Arc<OnceLock<()>>,
+    flight: Flight,
 }
 
 #[derive(Default)]
@@ -94,6 +96,10 @@ impl FireSong {
             .unwrap_or_else(PoisonError::into_inner)
             .host_token
             .clone()
+    }
+
+    pub(crate) fn flight(&self) -> &Flight {
+        &self.flight
     }
 
     pub(crate) fn hub(&self) -> Arc<Hub> {
@@ -280,6 +286,7 @@ pub async fn start(state: &AppState, options: &Options) -> Result<(), String> {
     };
     tracing::info!(path = %token_path.display(), "full listener requires the FireSong host token");
 
+    let data_dir_for_flight = data_dir.clone();
     let config = Config {
         host_token: Some(host_token),
         data_dir: Some(data_dir),
@@ -291,6 +298,16 @@ pub async fn start(state: &AppState, options: &Options) -> Result<(), String> {
     tokio::task::spawn_blocking(move || configure(&state_for_load, config))
         .await
         .map_err(|error| format!("FireSong setup: {error}"))?;
+
+    let flight = state.firesong.flight().clone();
+    let recorder = flight.clone();
+    let recorder_dir = data_dir_for_flight;
+    let on = tokio::task::spawn_blocking(move || recorder.start(&recorder_dir))
+        .await
+        .map_err(|error| format!("flight recorder: {error}"))?;
+    if on {
+        tokio::spawn(flight.runtime_watchdog());
+    }
 
     if let Some(remote_bind) = options.remote_bind {
         serve_phones(state.clone(), remote_bind).await?;
@@ -376,6 +393,10 @@ pub(crate) fn tv_routes() -> Router<AppState> {
         .route(
             "/api/firesong/rotate-pairing-token",
             post(handle_rotate_pairing_token),
+        )
+        .route(
+            "/api/firesong/flight",
+            post(flight::handle_tv).layer(DefaultBodyLimit::max(flight::MAX_BODY_BYTES)),
         )
 }
 

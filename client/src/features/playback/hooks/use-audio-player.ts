@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { addFlightSampler, flight } from '@/bridge/flight';
 import type { PlaybackAdapter } from '@/bridge/playback';
 import { playbackAdapter } from '@/bridge/playback';
 import { t } from '@/i18n';
@@ -201,6 +202,16 @@ export function useAudioPlayer(
 
     const ctx = new AudioContext();
     ctxRef.current = ctx;
+    const loadStarted = performance.now();
+    const elapsedMs = () => Math.round(performance.now() - loadStarted);
+    flight('song-load', { hash: fileHash });
+    ctx.addEventListener('statechange', () => flight('song-context', { state: ctx.state }));
+    const removeSampler = addFlightSampler('song', () => ({
+      hash: fileHash,
+      state: ctx.state,
+      playing: playingRef.current,
+      timeSec: Math.round(currentTimeRef.current),
+    }));
 
     const masterGainNode = ctx.createGain();
     masterGainNode.gain.value = Math.max(0, Math.min(1, initialMasterVolume));
@@ -248,6 +259,11 @@ export function useAudioPlayer(
           return undefined;
         }
 
+        flight('song-fetched', {
+          hash: fileHash,
+          ms: elapsedMs(),
+          mib: Math.round((instData.byteLength + (vocData?.byteLength ?? 0)) / 1048576),
+        });
         if (ctx.state === 'suspended') {
           await ctx.resume();
         }
@@ -263,12 +279,23 @@ export function useAudioPlayer(
 
         instrumentalBufRef.current = instBuf;
         vocalsBufRef.current = vocBuf;
+        flight('song-ready', {
+          hash: fileHash,
+          ms: elapsedMs(),
+          seconds: Math.round(instBuf.duration),
+        });
 
         setDuration(instBuf.duration);
         setIsReady(true);
         return undefined;
       })
       .catch((e: unknown) => {
+        flight('song-error', {
+          hash: fileHash,
+          ms: elapsedMs(),
+          message: e instanceof Error ? e.message : String(e),
+          cancelled: isCancelled(),
+        });
         if (!isCancelled()) {
           setError(
             t('playback.audio.loadError', {
@@ -307,6 +334,8 @@ export function useAudioPlayer(
 
     return () => {
       cancelled = true;
+      removeSampler();
+      flight('song-unload', { hash: fileHash, timeSec: Math.round(currentTimeRef.current) });
       cancelAnimationFrame(rafRef.current);
       stopSources();
       instrumentalBufRef.current = null;
@@ -324,6 +353,7 @@ export function useAudioPlayer(
     }
     startSources(startOffsetRef.current);
     setIsPlaying(playingRef.current);
+    flight('song-play', { timeSec: Math.round(startOffsetRef.current) });
   }, [startSources]);
 
   const pause = useCallback(() => {
@@ -334,11 +364,13 @@ export function useAudioPlayer(
 
     stopSources();
     setIsPlaying(false);
+    flight('song-pause', { timeSec: Math.round(startOffsetRef.current) });
   }, [stopSources]);
 
   const resume = useCallback(() => {
     startSources(startOffsetRef.current);
     setIsPlaying(true);
+    flight('song-resume', { timeSec: Math.round(startOffsetRef.current) });
   }, [startSources]);
 
   const seek = useCallback(

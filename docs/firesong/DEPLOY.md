@@ -31,7 +31,8 @@ Host-specific values (LAN addresses, the GPU UUID, the tailnet name, tokens) nev
 | `scripts/firesong/preflight.sh` | The unit's `ExecStartPre` guard; also runs by hand. |
 | `scripts/firesong/party-prep.py` (+ `firesong_prep.py`) | Song prep: `prep`, `status`, `evict`, `gpu-check`, `configure`, `self-test`. |
 | `scripts/firesong/cube.sh` | Fire TV Cube helper over adb. |
-| `scripts/firesong/party-door.sh` | Opens the phone door's Funnel while FireSong is on the TV: `run`, `once`, `status`, `self-test`. |
+| `scripts/firesong/party-door.sh` | Opens the phone door's Funnel while FireSong is on the TV, and keeps the Cube's log meanwhile: `run`, `once`, `status`, `self-test`. |
+| `scripts/firesong/flight-report.py` | Prints a party's flight record (docs/firesong/FLIGHT.md). |
 
 None of the scripts installs packages or enables a service. Only `party-door.sh` touches Tailscale, and only the phone door's own Funnel port.
 
@@ -302,6 +303,7 @@ The prep tests run the real prep loop against a fake Nightingale server on an ep
 
 | Symptom | Cause and fix |
 |---|---|
+| A white screen, a silent microphone, a song that never starts | Read the party's flight record: `scripts/firesong/flight-report.py --from HH:MM` (docs/firesong/FLIGHT.md). |
 | A phone that scans the QR code gets "couldn't establish a secure connection" | The phone door's Funnel is off (1.3). `party-door.sh status` shows it; `journalctl --user -u firesong-party-door` shows why it did not open (most often: the user is not the Tailscale operator). |
 | `firesong.service` fails at start, journal shows `preflight: FAIL` | The message names the problem: song cache not mounted, a placeholder in the env file, a non-loopback bind, the wrong GPU. Fix it, then run `systemctl --user reset-failed firesong` and start again. |
 | `party-prep.py` exit 2 "not mounted" | The NFS mount is missing (1.1), or the NFS server is down. |

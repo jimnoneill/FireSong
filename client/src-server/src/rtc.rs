@@ -27,10 +27,12 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use serde_json::json;
 
 pub(crate) use hub::Hub;
 pub(crate) use mic_store::MicStore;
 
+use crate::flight::Flight;
 use crate::state::AppState;
 use hub::{ConnId, MicHello, Outbound, Peer};
 
@@ -112,10 +114,11 @@ fn accept(state: AppState, headers: &HeaderMap, upgrade: WebSocketUpgrade, role:
     }
     let hub = state.firesong.hub();
     let timings = state.firesong.timings();
+    let flight = state.firesong.flight().clone();
     upgrade
         .max_message_size(TRANSPORT_LIMIT)
         .max_frame_size(TRANSPORT_LIMIT)
-        .on_upgrade(move |socket| run(hub, timings, role, socket))
+        .on_upgrade(move |socket| run(hub, timings, flight, role, socket))
 }
 
 /// The browser's `Origin` must name this server (`Host`, `X-Forwarded-Host`)
@@ -353,7 +356,7 @@ impl Session {
     }
 }
 
-async fn run(hub: Arc<Hub>, timings: Timings, role: Role, mut socket: WebSocket) {
+async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut socket: WebSocket) {
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let (peer, mut outbound, overflow) = Peer::new(conn, OUTBOUND_CAPACITY);
     let mut session = Session {
@@ -366,6 +369,11 @@ async fn run(hub: Arc<Hub>, timings: Timings, role: Role, mut socket: WebSocket)
         bucket: Bucket::for_socket(role),
     };
     tracing::debug!(conn, ?role, "rtc connected");
+    flight.record(
+        "server",
+        "rtc-open",
+        json!({ "conn": conn, "role": format!("{role:?}") }),
+    );
 
     let hello_deadline = tokio::time::sleep(timings.hello_timeout);
     tokio::pin!(hello_deadline);
@@ -375,34 +383,34 @@ async fn run(hub: Arc<Hub>, timings: Timings, role: Role, mut socket: WebSocket)
     );
     let mut last_heard = Instant::now();
 
-    loop {
+    let why = loop {
         tokio::select! {
             inbound = socket.recv() => {
-                let Some(Ok(message)) = inbound else { break };
+                let Some(Ok(message)) = inbound else { break "client gone" };
                 last_heard = Instant::now();
                 match message {
                     Message::Text(text) => session.on_frame(Some(&text)),
                     Message::Binary(_) => session.on_frame(None),
                     Message::Ping(_) | Message::Pong(_) => {}
-                    Message::Close(_) => break,
+                    Message::Close(_) => break "client closed",
                 }
             }
             queued = outbound.recv() => match queued {
                 Some(Outbound::Text(text)) => {
                     if socket.send(Message::Text(text)).await.is_err() {
-                        break;
+                        break "send failed";
                     }
                 }
                 Some(Outbound::Close(code)) => {
                     close(&mut socket, code).await;
-                    break;
+                    break "server closed";
                 }
-                None => break,
+                None => break "server closed",
             },
             () = overflow.notified() => {
                 tracing::warn!(conn, ?role, "rtc client stopped reading; closing");
                 close(&mut socket, CLOSE_OVERLOADED).await;
-                break;
+                break "client stopped reading";
             }
             () = &mut hello_deadline, if !session.greeted && !session.closing => {
                 session.fail(RtcErrorCode::NoHello);
@@ -410,18 +418,23 @@ async fn run(hub: Arc<Hub>, timings: Timings, role: Role, mut socket: WebSocket)
             _ = ping.tick() => {
                 if last_heard.elapsed() >= timings.idle_timeout {
                     close(&mut socket, close_code::TIMEOUT).await;
-                    break;
+                    break "idle timeout";
                 }
                 hub.sweep();
                 if socket.send(Message::Ping(Vec::new())).await.is_err() {
-                    break;
+                    break "ping failed";
                 }
             }
         }
-    }
+    };
 
     session.gone();
-    tracing::debug!(conn, ?role, "rtc disconnected");
+    tracing::debug!(conn, ?role, why, "rtc disconnected");
+    flight.record(
+        "server",
+        "rtc-close",
+        json!({ "conn": conn, "role": format!("{role:?}"), "why": why }),
+    );
 }
 
 async fn close(socket: &mut WebSocket, code: u16) {

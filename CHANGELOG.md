@@ -32,6 +32,7 @@ below.
 - The party lobby always highlights the button the remote is on.
 - While a song plays, the TV shows a hint for the remote in place of keyboard shortcuts and analysis notes.
 - Party QR codes work whenever FireSong is on the TV: the self-hosted server opens the guests' door by itself, and closes it again 20 minutes after you leave the app.
+- The self-hosted server keeps a record of each party night (dropped connections, slowdowns, song load times and microphone levels), so problems can be traced afterwards.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
 ### Fixes

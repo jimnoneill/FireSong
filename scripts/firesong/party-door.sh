@@ -5,6 +5,9 @@
 # gone for FIRESONG_DOOR_IDLE_MIN minutes (default 20). The TV app holds connections to the TV
 # door (FIRESONG_TV_PORT) while it is in front and tears its page down when it leaves the screen,
 # so those connections are the signal; FIRESONG_CUBE_IP, when set, limits it to the Fire TV.
+# With FIRESONG_CUBE_SERIAL set it also keeps the Fire TV's log (adb logcat, info and up) while
+# FireSong is on screen, in <NIGHTINGALE_DATA_PATH>/firesong/sessions/cube-<UTC date>.log next to
+# the server's flight record, so a crash or reboot of the Cube still leaves its log behind.
 #
 # It only ever touches its own Funnel port. It never runs `tailscale funnel reset` or
 # `tailscale serve reset` (they would drop every other Funnel on the machine), and it refuses
@@ -36,6 +39,9 @@ load_config() {
   REMOTE_BIND="$(env_get "$ENV_FILE" NIGHTINGALE_REMOTE_BIND)"
   TV_PORT="$(env_get "$ENV_FILE" FIRESONG_TV_PORT)"
   CUBE_IP="$(env_get "$ENV_FILE" FIRESONG_CUBE_IP)"
+  CUBE_SERIAL="$(env_get "$ENV_FILE" FIRESONG_CUBE_SERIAL)"
+  DATA_PATH="$(env_get "$ENV_FILE" NIGHTINGALE_DATA_PATH)"
+  ADB="${ADB:-${ANDROID_HOME:-$HOME/Android/Sdk}/platform-tools/adb}"
   IDLE_MIN="${FIRESONG_DOOR_IDLE_MIN:-$(env_get "$ENV_FILE" FIRESONG_DOOR_IDLE_MIN)}"
   IDLE_MIN="${IDLE_MIN:-20}"
   case "$origin" in https://*:[0-9]*) ;; *) die "NIGHTINGALE_REMOTE_URL must look like https://host.example:8443 (got '$origin')" ;; esac
@@ -47,6 +53,7 @@ load_config() {
   [[ "$TV_PORT" =~ ^[0-9]+$ ]] || die "FIRESONG_TV_PORT is not set"
   [[ "$IDLE_MIN" =~ ^[0-9]+$ ]] || die "FIRESONG_DOOR_IDLE_MIN must be whole minutes"
   case "$CUBE_IP" in *"<"*) CUBE_IP="" ;; esac
+  case "$CUBE_SERIAL" in *"<"*) CUBE_SERIAL="" ;; esac
 }
 
 tv_on_screen() {  # true while the TV app holds a connection to the TV door
@@ -75,21 +82,43 @@ close_door() {
   fi
 }
 
+LOGCAT_PID=""
+KEEP_LOG=0  # only the long-running watcher keeps the log; `once` would leave adb orphaned
+cube_log_running() { [ -n "$LOGCAT_PID" ] && kill -0 "$LOGCAT_PID" 2>/dev/null; }
+
+keep_cube_log() {  # (re)start the Fire TV log while FireSong is on screen
+  [ "$KEEP_LOG" = 1 ] && [ -n "$CUBE_SERIAL" ] && [ -n "$DATA_PATH" ] && [ -x "$ADB" ] || return 0
+  cube_log_running && return 0
+  local dir="$DATA_PATH/firesong/sessions"
+  mkdir -p "$dir" || return 0
+  "$ADB" connect "$CUBE_SERIAL" >/dev/null 2>&1 || true
+  "$ADB" -s "$CUBE_SERIAL" logcat -v threadtime -T 1 '*:I' >>"$dir/cube-$(date -u +%F).log" 2>/dev/null &
+  LOGCAT_PID=$!
+}
+
+stop_cube_log() {
+  if cube_log_running; then kill "$LOGCAT_PID" 2>/dev/null || true; fi
+  LOGCAT_PID=""
+}
+
 LAST_SEEN=0
 tick() {  # tick NOW
   if tv_on_screen; then
     LAST_SEEN="$1"
     door_open || open_door
-  elif [ $(($1 - LAST_SEEN)) -ge $((IDLE_MIN * 60)) ] && door_open; then
-    close_door "FireSong left the TV ${IDLE_MIN} min ago"
+    keep_cube_log
+  elif [ $(($1 - LAST_SEEN)) -ge $((IDLE_MIN * 60)) ]; then
+    stop_cube_log
+    if door_open; then close_door "FireSong left the TV ${IDLE_MIN} min ago"; fi
   fi
 }
 
 cmd_run() {
   load_config
+  KEEP_LOG=1
   say "watching the TV door :$TV_PORT${CUBE_IP:+ for $CUBE_IP}; door :$DOOR_PORT -> $REMOTE_BIND, closes after ${IDLE_MIN} min away"
   # A stopped watcher leaves a running party alone, but does not leave an idle door open.
-  trap 'tv_on_screen || { door_open && close_door "watcher stopped while FireSong is off the TV"; }; exit 0' TERM INT
+  trap 'stop_cube_log; tv_on_screen || { door_open && close_door "watcher stopped while FireSong is off the TV"; }; exit 0' TERM INT
   LAST_SEEN="$(date +%s)"
   while true; do
     tick "$(date +%s)"

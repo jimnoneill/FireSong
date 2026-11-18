@@ -141,12 +141,24 @@ def open_firesong(cube, tvctl: str, lan_url: str, token_file: pathlib.Path):
     devtools = subprocess.run([tvctl, "devtools", str(L.TV_CDP)], capture_output=True, text=True, timeout=30)
     if devtools.returncode != 0:
         raise SetupError(f"no DevTools on the TV page: {devtools.stderr.strip()[-300:]}")
+    tv = devtools_page(L.TV_CDP, "the TV page")
     try:
-        tv = L.Cdp(L.TV_CDP)
         L.wait_for("TV seat", lambda: tv.eval("!!(window.fireSongDiag && fireSongDiag.snapshot().connected)"), 40)
     except Exception as error:
         raise SetupError(f"TV page not reachable: {error}") from error
     return tv
+
+
+def devtools_page(port: int, what: str, timeout: float = 30.0):
+    """A page's DevTools once its browser listens; Chrome takes several seconds on a busy host."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            return L.Cdp(port)
+        except (OSError, IndexError, ValueError) as error:
+            if time.time() >= deadline:
+                raise SetupError(f"{what} did not open DevTools within {timeout:.0f} s: {error}") from error
+            time.sleep(0.5)
 
 
 def playing() -> bool:
@@ -267,8 +279,7 @@ def main() -> int:
                                    "--autoplay-policy=no-user-gesture-required", "--mute-audio",
                                    "--window-size=390,844", "about:blank"],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(3)
-        phone = L.Cdp(PHONE_CDP)
+        phone = devtools_page(PHONE_CDP, "the phone browser")
         phone.call("Page.navigate", {"url": f"http://127.0.0.1:64449/m?t={L.pairing_token()}&slot=1"})
         L.wait_for("join card", lambda: phone.eval("document.body.innerText.includes('Join as')"), 20)
         phone.eval(L.FAKE_MIC % {"hz": TONE_HZ, "gain": args.tone_gain})

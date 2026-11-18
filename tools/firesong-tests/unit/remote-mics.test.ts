@@ -67,9 +67,6 @@ class FakeRack implements MicRackPort {
   setSlotMix(slot: number, mix: SlotMix) {
     this.slotMixes.set(slot, mix);
   }
-  learnGateFloor(slot: number) {
-    this.calls.push(`learn:${slot}`);
-  }
   status() {
     return null;
   }
@@ -216,7 +213,7 @@ describe('capture bindings', () => {
     mics.bind('player-1', MIC_A, false);
     mics.bind('player-2', MIC_A, false);
     expect(rack.calls.filter((call) => call.startsWith('tap'))).toEqual(['tap:1:on']);
-    expect(rack.calls).toContain('learn:1');
+    expect(rack.calls.some((call) => call.startsWith('learn'))).toBe(false);
 
     rack.taps.get(1)?.(new Float32Array(512).fill(0.25), 48_000);
     expect(frames.map(([id]) => id)).toEqual(['player-1', 'player-2']);

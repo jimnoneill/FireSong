@@ -15,9 +15,7 @@ import {
   FEEDBACK_NOTCH_DB,
   FEEDBACK_NOTCH_Q,
   FEEDBACK_RELEASE_MS,
-  GATE_LEARN_MS,
-  GATE_MIN_THRESHOLD_DB,
-  gateThresholdFromBleed,
+  GATE_THRESHOLD_DB,
   HPF_HZ,
   mixedEchoWet,
   type EchoMix,
@@ -67,7 +65,6 @@ export type MicRackPort = {
   setEchoMix(mix: EchoMix): void;
   /** The phone's own fader and echo amount (PROTOCOL.md §13.6 `mix`). */
   setSlotMix(slot: MicSlot, mix: SlotMix): void;
-  learnGateFloor(slot: MicSlot): void;
   status(slot: MicSlot): RackSlotStatus | null;
 };
 
@@ -185,10 +182,9 @@ class SlotStrip {
   private slotMix: SlotMix = DEFAULT_SLOT_MIX;
   private latencyMs: number | null = null;
   private echo: EchoSettings = echoSettingsFor(null);
-  private gateThreshold = dbToGain(GATE_MIN_THRESHOLD_DB);
+  private readonly gateThreshold = dbToGain(GATE_THRESHOLD_DB);
   private levelRms = 0;
   private gateOpen = false;
-  private learning: number[] | null = null;
   private feedbackHz: number | null = null;
   private readonly tracker = new FeedbackTracker();
   private readonly spectrum: Float32Array<ArrayBuffer>;
@@ -286,20 +282,6 @@ class SlotStrip {
     this.applyEcho();
   }
 
-  learnGateFloor(): void {
-    this.learning = [];
-    window.setTimeout(() => {
-      const threshold = this.learning === null ? null : gateThresholdFromBleed(this.learning);
-      this.learning = null;
-      if (threshold !== null) {
-        this.gateThreshold = threshold;
-        this.nodes.gate.parameters
-          .get('threshold')
-          ?.setValueAtTime(threshold, this.engine.context.currentTime);
-      }
-    }, GATE_LEARN_MS);
-  }
-
   /** One feedback-guard step: notch and duck a confirmed howl. */
   guard(nowMs: number): void {
     if (this.duckedUntil !== 0 && nowMs >= this.duckedUntil) {
@@ -376,7 +358,6 @@ class SlotStrip {
     }
     this.levelRms = meter.rms;
     this.gateOpen = meter.open;
-    this.learning?.push(meter.rms);
   }
 
   private chunk(data: unknown): void {
@@ -455,10 +436,6 @@ export class MicRack implements MicRackPort {
 
   setSlotMix(slot: MicSlot, mix: SlotMix): void {
     this.strip(slot).setSlotMix(mix);
-  }
-
-  learnGateFloor(slot: MicSlot): void {
-    this.strip(slot).learnGateFloor();
   }
 
   status(slot: MicSlot): RackSlotStatus | null {

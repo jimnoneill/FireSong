@@ -8,9 +8,6 @@ import {
   ECHO_WET_GAIN,
   echoSettingsFor,
   gainToDb,
-  GATE_MAX_THRESHOLD_DB,
-  GATE_MIN_THRESHOLD_DB,
-  gateThresholdFromBleed,
   mixedEchoWet,
   slotMixFromPct,
 } from '@/audio/voice-params';
@@ -53,31 +50,6 @@ describe('echoSettingsFor (d_i = clamp(L_i, 90, 220), fixed 160 below 60)', () =
     expect(late.wetGain).toBeGreaterThan(0.42);
     expect(late.wetGain).toBeLessThanOrEqual(0.6);
     expect(echoSettingsFor(150, { ...hall, wet: 0 }).wetGain).toBe(0);
-  });
-});
-
-describe('gate threshold learning (+12 dB over bleed)', () => {
-  it('returns null without readings', () => {
-    expect(gateThresholdFromBleed([])).toBeNull();
-    expect(gateThresholdFromBleed([Number.NaN, -1])).toBeNull();
-  });
-
-  it('puts the threshold 12 dB above the quiet percentile', () => {
-    const bleed = dbToGain(-54);
-    const readings = [...Array.from({ length: 16 }, () => bleed), 0.3, 0.3, 0.3, 0.3];
-    const threshold = gateThresholdFromBleed(readings);
-    expect(threshold).not.toBeNull();
-    expect(gainToDb(threshold ?? 0)).toBeCloseTo(-42, 5);
-  });
-
-  it('never gates normal singing even when the room is loud', () => {
-    const threshold = gateThresholdFromBleed([0.2, 0.25, 0.3]);
-    expect(gainToDb(threshold ?? 0)).toBeCloseTo(GATE_MAX_THRESHOLD_DB, 5);
-  });
-
-  it('keeps a floor for digital silence', () => {
-    const threshold = gateThresholdFromBleed([0, 0, 0]);
-    expect(gainToDb(threshold ?? 0)).toBeCloseTo(GATE_MIN_THRESHOLD_DB, 5);
   });
 });
 

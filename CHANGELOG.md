@@ -47,6 +47,7 @@ below.
 - Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
 - Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.
 - Songs whose lyric lines drift seconds away from the singing now use LRCLIB's line timing too.
+- Phone microphones no longer go quiet on the TV once a song starts: the noise gate no longer learns the song's loudness as if it were background noise.
 - When the TV leaves in the middle of a song (HOME, or switched off), phones and song prep no longer think the song is still playing.
 
 ## [1.4.1] - 2026-11-09

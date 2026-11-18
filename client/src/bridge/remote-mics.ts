@@ -299,7 +299,6 @@ export class RemoteMics {
               muted: status.muted,
               levelRms: Number(status.levelRms.toFixed(4)),
               gateOpen: status.gateOpen,
-              gateThresholdDb: status.gateThreshold,
               feedbackHz: status.feedbackHz,
               volume: status.mix.volume,
             }),
@@ -564,7 +563,6 @@ export class RemoteMics {
     }
     this.tapped.add(entry.slot);
     this.rack?.setTap(entry.slot, this.tapListener(entry.micId));
-    this.rack?.learnGateFloor(entry.slot);
   }
 
   private tapListener(micId: string): TapListener {

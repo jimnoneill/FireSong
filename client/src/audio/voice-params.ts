@@ -26,11 +26,12 @@ export const ECHO_LATE_DRY_GAIN = 0.75;
 export const REVERB_SEND = 0.2;
 export const REVERB_SECONDS = 1.4;
 
-export const GATE_FLOOR_MARGIN_DB = 12;
-export const GATE_MIN_THRESHOLD_DB = -60;
-export const GATE_MAX_THRESHOLD_DB = -30;
-export const GATE_LEARN_MS = 3000;
-const GATE_BLEED_PERCENTILE = 0.2;
+/**
+ * The gate only removes a phone's own hiss between phrases. It is fixed: a
+ * threshold learned while a song plays learns the music, and phones send their
+ * microphones without automatic gain, so it then cut normal singing.
+ */
+export const GATE_THRESHOLD_DB = -60;
 
 export const FEEDBACK_PROMINENCE_DB = 15;
 export const FEEDBACK_HOLD_MS = 300;
@@ -126,27 +127,6 @@ export const echoSettingsFor = (
     wetGain: mix.wet,
     late: false,
   };
-};
-
-const percentile = (values: readonly number[], fraction: number): number => {
-  const sorted = values.toSorted((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(fraction * sorted.length))];
-};
-
-/**
- * Gate threshold (linear RMS) learned from level readings taken while the
- * singer is quiet: the low percentile of the bleed plus 12 dB, kept inside a
- * range that never gates normal singing. `null` keeps the current threshold.
- */
-export const gateThresholdFromBleed = (rmsReadings: readonly number[]): number | null => {
-  const usable = rmsReadings.filter((rms) => Number.isFinite(rms) && rms >= 0);
-  if (usable.length === 0) {
-    return null;
-  }
-  const bleedDb = gainToDb(percentile(usable, GATE_BLEED_PERCENTILE));
-  return dbToGain(
-    clamp(bleedDb + GATE_FLOOR_MARGIN_DB, GATE_MIN_THRESHOLD_DB, GATE_MAX_THRESHOLD_DB),
-  );
 };
 
 export const clampLatencyMs = (latencyMs: number): number => clamp(latencyMs, 0, MAX_LATENCY_MS);

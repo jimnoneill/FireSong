@@ -292,7 +292,10 @@ pub async fn start(state: &AppState, options: &Options) -> Result<(), String> {
         data_dir: Some(data_dir),
         ice_servers: ice_servers_from_env()?,
         allowed_origins: allowed_origins(options),
-        timings: Timings::default(),
+        timings: Timings {
+            party_hold: party_hold_from_env(),
+            ..Timings::default()
+        },
     };
     let state_for_load = state.clone();
     tokio::task::spawn_blocking(move || configure(&state_for_load, config))
@@ -376,6 +379,16 @@ fn allowed_origins(options: &Options) -> Vec<String> {
         .collect()
 }
 
+/// `FIRESONG_PARTY_HOLD_MIN`: whole minutes party mode outlasts the TV.
+fn party_hold_from_env() -> Duration {
+    std::env::var("FIRESONG_PARTY_HOLD_MIN")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map_or(Duration::from_secs(rtc::PARTY_HOLD_SECS), |minutes| {
+            Duration::from_secs(minutes * 60)
+        })
+}
+
 fn ice_servers_from_env() -> Result<Vec<IceServer>, String> {
     match std::env::var("FIRESONG_ICE_SERVERS") {
         Ok(raw) if !raw.trim().is_empty() => serde_json::from_str(&raw).map_err(|error| {
@@ -385,7 +398,8 @@ fn ice_servers_from_env() -> Result<Vec<IceServer>, String> {
     }
 }
 
-/// `/rtc` (TV role), the phone links and token rotation; host token required.
+/// `/rtc` (TV role), the phone links, token rotation, party mode and the
+/// flight recorder; host token required.
 pub(crate) fn tv_routes() -> Router<AppState> {
     Router::new()
         .route(RTC_PATH, any(rtc::tv_upgrade))
@@ -394,6 +408,7 @@ pub(crate) fn tv_routes() -> Router<AppState> {
             "/api/firesong/rotate-pairing-token",
             post(handle_rotate_pairing_token),
         )
+        .route("/api/firesong/party", get(handle_party))
         .route(
             "/api/firesong/flight",
             post(flight::handle_tv).layer(DefaultBodyLimit::max(flight::MAX_BODY_BYTES)),
@@ -403,6 +418,11 @@ pub(crate) fn tv_routes() -> Router<AppState> {
 /// `/rtc` (phone role); pairing token required.
 pub(crate) fn phone_routes() -> Router<AppState> {
     Router::new().route(RTC_PATH, any(rtc::mic_upgrade))
+}
+
+/// Party mode (docs/firesong/FLIGHT.md): background prep waits while it is on.
+async fn handle_party() -> Json<Value> {
+    Json(serde_json::json!({ "active": app_core::party_active() }))
 }
 
 async fn handle_mic_links(State(state): State<AppState>, headers: HeaderMap) -> Json<MicLinks> {

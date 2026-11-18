@@ -52,6 +52,9 @@ static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 /// one gone this long (HOME, switched off) has stopped playing.
 const TV_GONE_RESET_SECS: u64 = 30;
 
+/// Default for [`Timings::party_hold`]: the party door's idle time.
+pub(crate) const PARTY_HOLD_SECS: u64 = 20 * 60;
+
 /// Socket timing. Defaults follow `remote_mic`; tests shorten them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timings {
@@ -65,6 +68,8 @@ pub struct Timings {
     pub calibration_timeout: Duration,
     /// How long the TV may stay away before the server marks playback stopped.
     pub tv_gone_reset: Duration,
+    /// How long party mode outlasts the TV (`FIRESONG_PARTY_HOLD_MIN`).
+    pub party_hold: Duration,
 }
 
 impl Default for Timings {
@@ -82,6 +87,7 @@ impl Default for Timings {
             party_poll: Duration::from_secs(2),
             calibration_timeout: Duration::from_secs(u64::from(CALIBRATION_TIMEOUT_SECS)),
             tv_gone_reset: Duration::from_secs(TV_GONE_RESET_SECS),
+            party_hold: Duration::from_secs(PARTY_HOLD_SECS),
         }
     }
 }
@@ -222,6 +228,7 @@ impl Bucket {
 
 struct Session {
     hub: Arc<Hub>,
+    party_hold: Duration,
     role: Role,
     peer: Peer,
     conn: ConnId,
@@ -338,6 +345,7 @@ impl Session {
                 }
                 self.greeted = true;
                 self.hub.tv_hello(self.peer.clone());
+                app_core::party_started();
                 Ok(())
             }
             _ if !self.greeted => Err(RtcErrorCode::NoHello),
@@ -350,7 +358,11 @@ impl Session {
             return;
         }
         match self.role {
-            Role::Tv => self.hub.tv_gone(self.conn),
+            Role::Tv => {
+                if self.hub.tv_gone(self.conn) {
+                    app_core::party_paused(self.party_hold);
+                }
+            }
             Role::Mic => self.hub.mic_gone(self.conn),
         }
     }
@@ -361,6 +373,7 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
     let (peer, mut outbound, overflow) = Peer::new(conn, OUTBOUND_CAPACITY);
     let mut session = Session {
         hub: hub.clone(),
+        party_hold: timings.party_hold,
         role,
         peer,
         conn,

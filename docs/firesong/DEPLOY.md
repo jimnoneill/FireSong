@@ -66,6 +66,10 @@ Then **Connect Plex → Sign in with Plex**, approve the code at plex.tv/link, p
 
 **Reach Plex over the LAN.** Sign-in picks the first Plex connection that answers. When the router's DNS rebinding protection hides the server's LAN `plex.direct` name (`<lan-ip-with-dashes>.<hash>.plex.direct`), that is the public one, so every scan, playlist read and song download loops out through the router; and it breaks if the public address changes. Check with `getent hosts <lan-ip-with-dashes>.<hash>.plex.direct`. If nothing comes back, add that name with the Plex server's LAN address to `/etc/hosts` on the server machine. Then, with `firesong.service` stopped, set `library_source.base_url` in `<data>/config.json` to `https://<lan-ip-with-dashes>.<hash>.plex.direct:32400`. The library is keyed by the Plex machine id, so no songs or analyses are lost. On a 28k-track library this cut a scan's Plex sync from up to 7 minutes to about one.
 
+### 1.2b Party mode
+
+While the FireSong TV app holds its seat, and for `FIRESONG_PARTY_HOLD_MIN` minutes after it leaves (default 20), the server is in party mode: the analyzer prepares only songs a guest is waiting for and stays loaded between them, background songs stay queued, and `party-prep.py` waits before its next batch or library rescan. `curl -H "x-firesong-host-token: $(cat <data>/firesong/host-token)" http://127.0.0.1:64448/api/firesong/party` shows it. The unit gives the server four times a default service's CPU share and keeps its memory out of swap (`CPUWeight=400`, `MemorySwapMax=0`), so other work on the machine cannot make the TV wait.
+
 ### 1.3 Phone door on Tailscale Funnel (parties only)
 
 Every phone link and QR code points at `<phone-origin>`, so phones reach nothing while this Funnel is off. Safari then says it "couldn't establish a secure connection", on Wi-Fi and on mobile data alike. `firesong-party-door.service` opens the door while the FireSong TV app is on screen and closes it once the app has been away for `FIRESONG_DOOR_IDLE_MIN` minutes (default 20):

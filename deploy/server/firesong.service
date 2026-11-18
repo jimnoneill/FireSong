@@ -39,10 +39,13 @@ TimeoutStopSec=20s
 LimitNOFILE=65536
 NoNewPrivileges=yes
 UMask=0027
-# Analysis is batch work; keep the desktop and other services responsive.
-Nice=5
-IOSchedulingClass=best-effort
-IOSchedulingPriority=6
+# A party must not stall when the machine is busy with other work: the server
+# (and its analyzer) get four times a default service's CPU share among the
+# user's services, and their memory is never swapped out (a swapped-out server
+# answers the TV seconds late). Outside a party the analyzer only runs
+# background prep, which party mode pauses while FireSong is on the TV.
+CPUWeight=400
+MemorySwapMax=0
 
 [Install]
 WantedBy=default.target

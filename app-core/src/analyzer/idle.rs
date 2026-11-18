@@ -1,7 +1,8 @@
 //! Optional idle exit for the analyzer server. A running `server.py` keeps its
 //! GPU context and models loaded between jobs; with
 //! `NIGHTINGALE_ANALYZER_IDLE_EXIT_SECS` set, the server is stopped once it has
-//! been unused that long, and the next job starts it again.
+//! been unused that long, and the next job starts it again. During a party it
+//! keeps running.
 
 use std::sync::{LazyLock, Mutex, Once};
 use std::time::{Duration, Instant};
@@ -41,7 +42,8 @@ fn parse(raw: Option<&str>) -> Option<Duration> {
 }
 
 fn stop_if_idle(idle: Duration) {
-    if lock_unpoisoned(&LAST_USE).elapsed() < idle {
+    // A party keeps the server warm for the next song a guest asks for.
+    if lock_unpoisoned(&LAST_USE).elapsed() < idle || super::party_gate::party_active() {
         return;
     }
     {

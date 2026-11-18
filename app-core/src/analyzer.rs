@@ -22,10 +22,12 @@ use crate::source::{MediaSource, active_source};
 
 mod gpu_gate;
 mod idle;
+mod party_gate;
 mod rekeys;
 mod timing_repair;
 
 pub use gpu_gate::{AnalyzerView, analyzer_view};
+pub use party_gate::{party_active, party_paused, party_started};
 pub use rekeys::rekeyed_hash;
 
 // ─── Analysis queue (persisted to disk) ──────────────────────────────
@@ -851,6 +853,10 @@ fn spawn_worker() {
         let cache = CacheDir::new();
 
         loop {
+            party_gate::wait_for_turn(|| {
+                let state = lock_unpoisoned(&ANALYZER);
+                state.queue.front().map(|hash| !state.urgent.contains(hash))
+            });
             gpu_gate::wait_for_gpu(|| !lock_unpoisoned(&ANALYZER).queue.is_empty());
             let file_hash = {
                 let mut state = lock_unpoisoned(&ANALYZER);

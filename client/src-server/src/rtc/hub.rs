@@ -215,15 +215,18 @@ impl Hub {
         inner.tell_phones_tv_state(true);
     }
 
-    pub(crate) fn tv_gone(&self, conn: ConnId) {
+    /// Frees the TV seat if `conn` holds it; returns whether it did.
+    pub(crate) fn tv_gone(&self, conn: ConnId) -> bool {
         let mut inner = self.lock();
-        if inner.tv.as_ref().is_some_and(|tv| tv.conn == conn) {
-            inner.tv = None;
-            inner.tv_left_at = Some(Instant::now());
-            inner.drop_held_offers();
-            inner.tell_phones_tv_state(false);
-            inner.party_tv_gone();
+        if inner.tv.as_ref().is_none_or(|tv| tv.conn != conn) {
+            return false;
         }
+        inner.tv = None;
+        inner.tv_left_at = Some(Instant::now());
+        inner.drop_held_offers();
+        inner.tell_phones_tv_state(false);
+        inner.party_tv_gone();
+        true
     }
 
     /// When the TV left and for how long, while no TV is connected.

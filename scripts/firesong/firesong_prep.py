@@ -562,6 +562,15 @@ class Api:
         except ApiError:
             return False
 
+    def party_on(self) -> bool:
+        """Whether the server is in party mode (FireSong on the TV, or left it less than
+        FIRESONG_PARTY_HOLD_MIN ago). An older server without the endpoint never is."""
+        try:
+            answer = self._request("GET", "/api/firesong/party")
+        except ApiError:
+            return False
+        return isinstance(answer, dict) and answer.get("active") is True
+
 
 def read_host_token(path: Path) -> str | None:
     try:
@@ -871,6 +880,16 @@ class Prep:
         ok, reason = gpu_verdict(st, need)
         return ok, st, reason
 
+    def wait_for_party(self) -> None:
+        """Block while a party is on: the server prepares only guests' songs then, and a
+        library rescan would compete with the party for the server."""
+        last_note = -1e9
+        while self.api.party_on():
+            if self.now() - last_note >= 300:
+                self.log.info("a party is on (FireSong is on the TV); background prep waits")
+                last_note = self.now()
+            self.sleep(max(self.o.poll, 1.0))
+
     def wait_for_gpu(self) -> bool:
         """Block until the GPU may be used for a new batch. False with --no-wait."""
         clear_since: float | None = None
@@ -1095,6 +1114,7 @@ class Prep:
         if self.api.cmd("is_ready") is False:
             raise GuardError("the analyzer is not set up yet (python, models). Finish the setup in "
                              "the FireSong UI first; prep never downloads models.", EXIT_SERVER)
+        self.wait_for_party()
         if self.o.scan:
             self.wait_for_library(names)
         playlists = resolve_playlists(self.api.cmd("load_library_menu_items") or {}, names)
@@ -1119,6 +1139,7 @@ class Prep:
         done: list[str] = []
         rc = EXIT_OK
         while pending:
+            self.wait_for_party()
             if not self.wait_for_gpu():
                 rc = EXIT_GPU
                 break
@@ -1234,7 +1255,10 @@ class Prep:
                 for k in unfinished:
                     result[k] = "yielded"
                 return result
-            if self.now() > deadline:
+            if self.api.party_on():
+                # The server holds background songs during a party; the clock stops meanwhile.
+                deadline += self.o.poll
+            elif self.now() > deadline:
                 self.log.warn(f"batch took longer than {self.o.song_timeout / 60:.0f} min per song; cancelling")
                 hashes = sorted({songs[k].hash for k in unfinished} | {initial[k] for k in unfinished})
                 self.api.cmd("cancel_analysis", {"target": {"kind": "hashes", "hashes": hashes}})

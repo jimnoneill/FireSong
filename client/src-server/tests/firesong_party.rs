@@ -225,6 +225,7 @@ fn timings() -> Timings {
         party_poll: Duration::from_millis(100),
         calibration_timeout: Duration::from_secs(15),
         tv_gone_reset: Duration::from_millis(300),
+        party_hold: Duration::from_millis(300),
     }
 }
 

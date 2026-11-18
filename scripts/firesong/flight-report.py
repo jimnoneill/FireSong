@@ -42,6 +42,9 @@ def load(data, dates):
                 rows.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
+    for r in rows:
+        if isinstance(r.get("wall"), (int, float)):
+            r["t"] = int(r["wall"])  # the TV's own clock; the server's t is when the batch arrived
     rows.sort(key=lambda r: r.get("t", 0))
     return rows
 
@@ -51,7 +54,7 @@ def local(t):
 
 
 def short(row):
-    skip = {"t", "src", "ev", "at"}
+    skip = {"t", "src", "ev", "wall"}
     return " ".join(f"{k}={json.dumps(v)}" for k, v in row.items() if k not in skip)
 
 

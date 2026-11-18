@@ -14,7 +14,8 @@ const MAX_BATCH = 200;
 
 export type FlightFields = Record<string, unknown>;
 
-type FlightEvent = FlightFields & { ev: string; at: number };
+/** `wall` is the TV's clock (Unix ms) when the event happened; the server's `t` is arrival. */
+type FlightEvent = FlightFields & { ev: string; wall: number };
 
 type Recorder = {
   on: boolean;
@@ -39,7 +40,7 @@ export const flight = (ev: string, fields: FlightFields = {}): void => {
   if (!recorder.on) {
     return;
   }
-  recorder.buffer.push({ ...fields, ev, at: Math.round(performance.now()) });
+  recorder.buffer.push({ ...fields, ev, wall: Date.now() });
   if (recorder.buffer.length > MAX_BUFFER) {
     recorder.buffer.splice(0, recorder.buffer.length - MAX_BUFFER);
   }

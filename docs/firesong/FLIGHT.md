@@ -33,7 +33,8 @@ lyrics or audio. Song identity is the file hash.
 | `tv` | `sample` | every 10 s: heap, voice context state and output level, the song player, and each slot's level, gate, monitor and mute |
 
 The TV page posts its events to `POST /api/firesong/flight` on the TV door (host token) every
-5 s; the server adds `t` and `src`.
+5 s; the server adds `t` (arrival) and `src`. TV events also carry `wall`, the TV's own clock when
+the event happened, which the report uses for ordering.
 
 ## Reading it
 

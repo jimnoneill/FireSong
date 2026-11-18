@@ -18,7 +18,7 @@ use super::connection::with_conn;
 use super::migrations::{is_song_migration_in_progress, song_migration_done, song_migration_total};
 use super::schema::{analysis_queue, library_meta, playlist_songs, playlists, songs};
 use super::sql_functions::{
-    CastInteger, CastOpen, NoCase, instr, json_extract_text, normalize_search, search_normalize,
+    CastInteger, CastOpen, NoCase, instr, json_extract_text, normalize_search,
 };
 type SongQuery = songs::BoxedQuery<'static, Sqlite>;
 
@@ -117,18 +117,7 @@ macro_rules! any_analysis_exists {
 fn apply_search(mut query: SongQuery, words: &[String]) -> SongQuery {
     for word in words {
         let pattern = format!("%{word}%");
-        query = query.filter(
-            search_normalize(songs::title)
-                .like(pattern.clone())
-                .escape('\\')
-                .or(search_normalize(songs::artist)
-                    .like(pattern.clone())
-                    .escape('\\'))
-                .or(search_normalize(songs::album)
-                    .like(pattern.clone())
-                    .escape('\\'))
-                .or(search_normalize(songs::path).like(pattern).escape('\\')),
-        );
+        query = query.filter(songs::search_text.like(pattern).escape('\\'));
     }
     query
 }

@@ -21,6 +21,7 @@ diesel::table! {
         transcript_source -> Nullable<Text>,
         is_video -> Bool,
         payload -> Text,
+        search_text -> Text,
     }
 }
 

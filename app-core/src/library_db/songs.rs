@@ -12,7 +12,7 @@ use crate::song::{Song, TranscriptSource};
 use super::connection::{with_conn, with_conn_mut};
 use super::scan_generation_is_current;
 use super::schema::{analysis_queue, library_meta, songs};
-use super::sql_functions::NoCase;
+use super::sql_functions::{NoCase, song_search_text};
 
 #[derive(Insertable)]
 #[diesel(table_name = songs)]
@@ -29,6 +29,7 @@ struct NewSongRow {
     transcript_source: Option<String>,
     is_video: bool,
     payload: String,
+    search_text: String,
 }
 
 impl NewSongRow {
@@ -49,8 +50,19 @@ impl NewSongRow {
             transcript_source: transcript_source_to_db(song.transcript_source),
             is_video: song.is_video,
             payload: song_to_payload(song)?,
+            search_text: search_text_of(song),
         })
     }
+}
+
+/// `songs.search_text` for `song`.
+pub(super) fn search_text_of(song: &Song) -> String {
+    song_search_text(
+        &song.title,
+        &song.artist,
+        &song.album,
+        &song.path.to_string_lossy(),
+    )
 }
 
 pub(crate) fn song_to_payload(song: &Song) -> Result<String, NightingaleError> {
@@ -252,6 +264,7 @@ pub(crate) fn rekey_song(
                     songs::language.eq(&row.language),
                     songs::transcript_source.eq(&row.transcript_source),
                     songs::is_video.eq(row.is_video),
+                    songs::search_text.eq(&row.search_text),
                 ))
                 .execute(conn)?;
             diesel::delete(analysis_queue::table.filter(analysis_queue::file_hash.eq(new_hash)))
@@ -279,6 +292,7 @@ pub(crate) fn update_song_fields(file_hash: &str, song: &Song) -> Result<(), Nig
                 songs::transcript_source.eq(&row.transcript_source),
                 songs::is_video.eq(row.is_video),
                 songs::payload.eq(&row.payload),
+                songs::search_text.eq(&row.search_text),
             ))
             .execute(conn)?;
         Ok(())

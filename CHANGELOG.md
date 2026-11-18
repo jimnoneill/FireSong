@@ -55,6 +55,7 @@ below.
 - A guest's song that is still getting ready after 3 minutes is dropped with a message to the singer instead of waiting forever, and wait estimates during a party no longer count songs that are only being prepared in the background.
 - An unexpected error no longer leaves a blank screen: the TV starts again by itself within a few seconds and the party carries on, and other screens offer a reload.
 - When the TV leaves in the middle of a song (HOME, or switched off), phones and song prep no longer think the song is still playing.
+- Searching the song book of a large library takes a fraction of a second instead of several, and no longer stalls the TV and the phones while it runs: each song's searchable text is stored once instead of being worked out for every song on every search.
 
 ## [1.4.1] - 2026-11-09
 

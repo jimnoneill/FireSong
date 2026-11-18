@@ -18,10 +18,10 @@ use crate::song::{Song, SongOrigin};
 
 use super::connection::{with_conn, with_conn_mut};
 use super::schema::songs;
-use super::songs::{append_songs, update_library_meta};
+use super::songs::{append_songs, search_text_of, update_library_meta};
 use super::sql_functions::json_extract_text;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 static MIGRATING: AtomicBool = AtomicBool::new(false);
 static MIGRATION_TOTAL: AtomicUsize = AtomicUsize::new(0);
@@ -131,6 +131,19 @@ pub(super) fn run_migrations(conn: &mut SqliteConnection) -> Result<(), Nighting
         ",
         )?;
     }
+    if version < 3 {
+        // Normalizing four columns of every row for every search query made a
+        // song book search take seconds while holding the one connection.
+        // `search_normalize` is registered on the connection before this runs.
+        conn.batch_execute(
+            "
+            ALTER TABLE songs ADD COLUMN search_text TEXT NOT NULL DEFAULT '';
+            UPDATE songs SET search_text =
+                search_normalize(title) || char(10) || search_normalize(artist) || char(10)
+                || search_normalize(album) || char(10) || search_normalize(path);
+        ",
+        )?;
+    }
     conn.batch_execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     Ok(())
 }
@@ -229,6 +242,7 @@ pub(crate) fn rewrite_legacy_jellyfin_paths(cache_dir: &Path) -> Result<(), Nigh
                     .set((
                         songs::path.eq(new_path.to_string_lossy().as_ref()),
                         songs::payload.eq(new_payload),
+                        songs::search_text.eq(search_text_of(&song)),
                     ))
                     .execute(conn)?;
             }

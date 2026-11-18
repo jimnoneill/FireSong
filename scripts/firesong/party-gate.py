@@ -80,7 +80,9 @@ def by_text(sel: str, text: str) -> str:
 def reserve(phone, title: str) -> None:
     phone.tap(by_text("[role=tab]", "Songs"))
     L.wait_for("search box", lambda: phone.eval(f"{visible('#phone-panel-songs input[type=search]')}.length > 0"), 15)
-    phone.eval("document.querySelector('#phone-panel-songs input[type=search]').focus()")
+    # Replace what an earlier search left in the box.
+    phone.eval("(() => { const box = document.querySelector('#phone-panel-songs input[type=search]');"
+               " box.focus(); box.select(); })()")
     phone.call("Input.insertText", {"text": title})
     row = (f"{visible('#phone-panel-songs li button')}"
            f".find((b) => b.querySelector('span span')?.textContent === {json.dumps(title)})")
@@ -268,6 +270,7 @@ def main() -> int:
     profile = tempfile.mkdtemp(prefix="fs-gate-phone-", dir=str(out))
     since = int(time.time() * 1000)
     prep_secs = None
+    paused = None
     setup_failed = False
     try:
         set_master(config, QUIET_MASTER, saved)
@@ -330,7 +333,6 @@ def main() -> int:
         setup_failed = True
     except Exception as error:
         print(f"run error: {error}", flush=True)
-        paused = None
     finally:
         run_end = int(time.time() * 1000)
         if chrome is not None:

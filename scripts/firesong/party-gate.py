@@ -18,7 +18,8 @@ of the lobby, and the TV page's memory does not keep growing.
 
     party-gate.py --ready-song <hash> --prep-song <hash> [--tone-gain 0.02]
 
-Needs the TV idle (launcher or asleep, nothing in front). Song playback is
+Needs the TV idle: asleep, or awake on the launcher, with nothing playing (a
+screensaver may hide a paused app, so it counts as busy); exit 2 otherwise. Song playback is
 turned almost silent for the run; the tone and voices come out of the TV
 quietly. Restores the Cube (URL, HOME, sleep) and the volume. Exit 0 = PASS,
 1 = FAIL, 2 = could not run.
@@ -29,6 +30,8 @@ import argparse
 import importlib.util
 import json
 import math
+import os
+import re
 import pathlib
 import shutil
 import sqlite3
@@ -84,6 +87,22 @@ def reserve(phone, title: str) -> None:
     L.wait_for("reserve sheet", lambda: phone.eval(f"{by_text('dialog[open] button', 'Reserve')} !== undefined"), 10)
     phone.tap(by_text("dialog[open] button", "Reserve"))
     L.wait_for("sheet closed", lambda: phone.eval("document.querySelector('dialog[open]') === null"), 10)
+
+
+def idle_problem(cube) -> str | None:
+    """Why the Cube is not free for a test, or None. Free means asleep, or awake
+    with the launcher in front. A screensaver can hide a paused app, so dreaming
+    counts as busy, and so does any media session that is playing."""
+    state = cube.wakefulness()
+    sessions = cube.sh("dumpsys media_session")
+    if re.search(r"active=true[^\n]*\n(?:[^\n]*\n){0,6}?[^\n]*state=PlaybackState \{state=3", sessions):
+        return "a media session is playing"
+    if state == "Asleep":
+        return None
+    front = cube.resumed()
+    if state == "Awake" and front.startswith("com.amazon.tv.launcher/"):
+        return None
+    return f"{state}, front={front or 'none'}"
 
 
 def playing() -> bool:
@@ -180,10 +199,11 @@ def main() -> int:
     if not ready.get("is_analyzed") or prep.get("is_analyzed"):
         print("ABORT: --ready-song must be prepared and --prep-song not")
         return 2
+    os.environ["FIRESONG_CUBE_SERIAL"] = serial or ""
     cube = L.Cube(serial)
-    start_state, front = cube.wakefulness(), cube.resumed()
-    if front and not front.startswith("com.amazon.tv.launcher/"):
-        print(f"ABORT: TV busy ({front})")
+    start_state, busy = cube.wakefulness(), idle_problem(cube)
+    if busy:
+        print(f"ABORT: TV busy ({busy})")
         return 2
 
     tvctl = str(L.REPO / "tools/tvctl")

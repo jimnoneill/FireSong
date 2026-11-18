@@ -981,7 +981,7 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
         return;
     }
 
-    let json_str = match serde_json::to_string(&cmd_json) {
+    let mut json_str = match serde_json::to_string(&cmd_json) {
         Ok(json) => json,
         Err(error) => {
             if !discard_cancelled_job(initial_hash, file_hash) {
@@ -991,6 +991,7 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
         }
     };
     let mut retried = false;
+    let mut windowed: Option<timing_repair::WindowedRetry> = None;
 
     loop {
         let mut guard = lock_unpoisoned(&ANALYZER_SERVER);
@@ -1029,8 +1030,21 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
                     lock_unpoisoned(&STEMS_ONLY).remove(initial_hash);
                     lock_unpoisoned(&STEMS_ONLY).remove(file_hash);
                     *guard = None;
+                } else if let Some(retry) = windowed.as_ref() {
+                    timing_repair::windowed_done(file_hash, cache, retry);
+                    finalize_song(file_hash, cache);
+                } else if let Some(retry) = lyrics_from_lrclib
+                    .then(|| timing_repair::windowed_retry(file_hash, cache))
+                    .flatten()
+                {
+                    if let Some(language) = &retry.language {
+                        cmd_json["language"] = serde_json::json!(language);
+                    }
+                    json_str = cmd_json.to_string();
+                    windowed = Some(retry);
+                    continue;
                 } else {
-                    finalize_song(file_hash, cache, lyrics_from_lrclib);
+                    finalize_song(file_hash, cache);
                 }
                 return;
             }
@@ -1049,10 +1063,21 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
                     update_queue_status(file_hash, QueuedStatus::Analyzing(0));
                     continue;
                 }
+                if let Some(retry) = windowed.take() {
+                    timing_repair::windowed_failed(file_hash, cache, retry);
+                    finalize_song(file_hash, cache);
+                    return;
+                }
                 update_queue_status(file_hash, QueuedStatus::Failed("CUDA out of memory".into()));
                 return;
             }
             Ok(SongResult::Error(msg)) => {
+                if let Some(retry) = windowed.take() {
+                    warn!("[analyzer] {file_hash}: the windowed alignment failed: {msg}");
+                    timing_repair::windowed_failed(file_hash, cache, retry);
+                    finalize_song(file_hash, cache);
+                    return;
+                }
                 update_queue_status(file_hash, QueuedStatus::Failed(msg));
                 return;
             }
@@ -1071,6 +1096,11 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
                     update_queue_status(file_hash, QueuedStatus::Analyzing(0));
                     continue;
                 }
+                if let Some(retry) = windowed.take() {
+                    timing_repair::windowed_failed(file_hash, cache, retry);
+                    finalize_song(file_hash, cache);
+                    return;
+                }
                 update_queue_status(
                     file_hash,
                     QueuedStatus::Failed(format!("Server crashed: {e}")),
@@ -1081,12 +1111,11 @@ fn process_song(initial_hash: &str, cache: &CacheDir) {
     }
 }
 
-fn finalize_song(file_hash: &str, cache: &CacheDir, lyrics_from_lrclib: bool) {
+fn finalize_song(file_hash: &str, cache: &CacheDir) {
     if cache.transcript_exists(file_hash) {
         if let Err(err) = crate::playback::ensure_playable_source_video(file_hash) {
             warn!("[analyzer] Playable source-video conversion failed for {file_hash}: {err}");
         }
-        timing_repair::repair_after_analysis(file_hash, cache, lyrics_from_lrclib);
         let meta = read_transcript_meta(cache, file_hash);
         remove_from_queue(file_hash);
         update_song_analyzed(

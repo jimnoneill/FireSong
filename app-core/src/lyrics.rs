@@ -484,6 +484,24 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
     Ok(())
 }
 
+/// Lyrics with a time window per line, so alignment places each line's words
+/// inside its window.
+pub(crate) fn write_timed_lyrics_file(
+    cache: &CacheDir,
+    file_hash: &str,
+    lines: Vec<String>,
+    windows: Vec<LineWindow>,
+) -> std::io::Result<PathBuf> {
+    write_lyrics_json(
+        cache,
+        file_hash,
+        &LyricsFile {
+            lines,
+            windows: Some(windows),
+        },
+    )
+}
+
 pub(crate) fn write_lyrics_file(
     cache: &CacheDir,
     file_hash: &str,

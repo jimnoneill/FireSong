@@ -5,6 +5,8 @@ import json
 import math
 import re
 
+import numpy as np
+
 import cjk
 from audio import detect_vocal_region, silent_gaps
 from gpu import gpu_model
@@ -146,7 +148,7 @@ def align_lyrics(
         )
     else:
         segments = _map_words_to_lines(
-            align_result, clean_lines, line_spans, language, line_windows,
+            align_result, clean_lines, line_spans, language, line_windows, audio,
         )
 
     _trim_words_to_vocals(segments, audio)
@@ -234,6 +236,84 @@ def _chars_per_window_line(align_result: dict, counts: list[int]) -> list[list[d
         )
         lines.append(chars)
     return lines
+
+
+# Words closer than this on average were not found by the aligner, which then
+# stacks them at the start of the line's window.
+CRAMMED_SECONDS_PER_WORD = 0.12
+# Frames this loud (relative to the window's loudest) count as singing.
+SINGING_SHARE = 0.25
+SINGING_FRAME_SECONDS = 0.05
+
+
+def _crammed(words: list[dict]) -> bool:
+    if len(words) < 4:
+        return False
+    return words[-1]["start"] - words[0]["start"] < CRAMMED_SECONDS_PER_WORD * (len(words) - 1)
+
+
+def _singing_span(audio, start: float, end: float, sr: int = 16000) -> tuple[float, float]:
+    """First and last loud frame of the vocal stem inside ``[start, end)``; the
+    whole window when it holds no clear singing."""
+    frame = int(SINGING_FRAME_SECONDS * sr)
+    clip = audio[int(start * sr):int(end * sr)]
+    rms = [
+        float(np.sqrt(np.mean(clip[i:i + frame] ** 2)))
+        for i in range(0, len(clip) - frame + 1, frame)
+    ]
+    if not rms or max(rms) <= 0:
+        return start, end
+    loud = [i for i, value in enumerate(rms) if value >= max(rms) * SINGING_SHARE]
+    first = start + loud[0] * SINGING_FRAME_SECONDS
+    last = start + (loud[-1] + 1) * SINGING_FRAME_SECONDS
+    return (first, last) if last - first >= 0.5 else (start, end)
+
+
+def _spread_over_singing(words: list[dict], window: tuple[float, float], audio) -> None:
+    """Give a line whose alignment failed its words in order over the part of
+    its window where the vocal stem sings, each word's share by its length."""
+    begin, finish = _singing_span(audio, *window)
+    weights = [max(1, len(_normalize(w["word"]))) for w in words]
+    total = sum(weights)
+    cursor = begin
+    for word, weight in zip(words, weights):
+        length = (finish - begin) * weight / total
+        word["start"] = round(cursor, 3)
+        word["end"] = round(cursor + length, 3)
+        word["estimated"] = True
+        word.pop("score", None)
+        cursor += length
+
+
+def _letters(text: str) -> int:
+    return sum(1 for char in text if char.isalnum())
+
+
+def _words_per_window_line(align_result: dict, lines: list[str]) -> list[list[dict]]:
+    """Aligned words of each line when every line was its own alignment segment.
+
+    The aligner splits a segment into sentences, so one line can come back as
+    several output segments; pairing them with lines by position would shift
+    every later line onto the wrong words. Output segments are taken in order
+    until they cover the line's letters (punctuation and spacing aside). A
+    segment the aligner could not place still carries its text, with no words.
+    """
+    segments = align_result.get("segments", [])
+    lines_words: list[list[dict]] = []
+    next_segment = 0
+    for line in lines:
+        need = _letters(line)
+        got = 0
+        words: list[dict] = []
+        while next_segment < len(segments) and (got < need or need == 0):
+            segment = segments[next_segment]
+            next_segment += 1
+            words.extend(_collect_aligned({"segments": [segment]}))
+            got += _letters(segment.get("text", ""))
+            if need == 0:
+                break
+        lines_words.append(words)
+    return lines_words
 
 
 def _trim_words_to_vocals(segments: list[dict], audio) -> None:
@@ -639,6 +719,7 @@ def _map_words_to_lines(
     line_spans: list[list[tuple[int, int, str]]],
     language: str,
     line_windows: list[tuple[float, float]] | None = None,
+    audio=None,
 ) -> list[dict]:
     """Map aligned word timestamps back to original lyric lines.
 
@@ -657,16 +738,14 @@ def _map_words_to_lines(
     LOOKAHEAD = 6
     ai = 0
     window_words = (
-        [
-            _collect_aligned({"segments": [segment]})
-            for segment in align_result.get("segments", [])
-        ]
+        _words_per_window_line(align_result, clean_lines)
         if line_windows is not None
         else None
     )
     segments = []
     missed_lyric_words = 0
     interpolated_drops = 0
+    crammed_lines = 0
 
     for index, (line_text, spans) in enumerate(zip(clean_lines, line_spans)):
         candidates = (
@@ -718,6 +797,9 @@ def _map_words_to_lines(
             continue
         if cjk.is_supported_lang(language) or spans:
             cjk.attach_reading(valid_words, language, line=line_text, spans=spans)
+        if line_windows is not None and audio is not None and _crammed(valid_words):
+            _spread_over_singing(valid_words, line_windows[index], audio)
+            crammed_lines += 1
         if line_windows is not None:
             _hold_words_in_window(valid_words, line_windows[index][1])
 
@@ -745,7 +827,7 @@ def _map_words_to_lines(
     print(
         f"[nightingale:LOG] Lyrics alignment: {len(segments)} lines preserved, "
         f"{total_words} words ({interpolated_drops} interpolated from NaN, "
-        f"{missed_lyric_words} unmatched lyric words)",
+        f"{missed_lyric_words} unmatched lyric words, {crammed_lines} crammed lines re-spread)",
         flush=True,
     )
 

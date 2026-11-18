@@ -4,7 +4,9 @@
 //! from where they are sung, mostly after a break or towards the end (50 Cent,
 //! "21 Questions": the last lines 30 s early). After a full analysis whose
 //! lyrics came from LRCLIB, such a transcript is rebuilt from LRCLIB's
-//! line-synced lyrics of the same pick, when those pass sanity checks, and the
+//! line-synced lyrics of the same pick, when those pass sanity checks: the
+//! analysis runs again with each LRCLIB line as a window its words are aligned
+//! inside (falling back to evenly spread words if that pass fails), and the
 //! repair is recorded in the transcript as `timing_repair`.
 
 use serde_json::{Value, json};
@@ -14,7 +16,8 @@ use crate::cache::CacheDir;
 use crate::library_db;
 use crate::lrc::{self, ParsedLrc};
 use crate::lyrics::{
-    build_lrc_transcript, load_lyrics_file, lrclib_candidates, write_transcript_json,
+    LineWindow, build_lrc_transcript, load_lyrics_file, lrclib_candidates, write_timed_lyrics_file,
+    write_transcript_json,
 };
 
 /// A line shorter than this is squeezed.
@@ -71,26 +74,102 @@ impl Fault {
     }
 }
 
-/// Runs in `finalize_song`, before the song is marked analysed.
-/// `lyrics_from_lrclib` is true when this analysis fetched its lyrics from
-/// LRCLIB (not a realign, not lyrics the user edited).
-pub(super) fn repair_after_analysis(file_hash: &str, cache: &CacheDir, lyrics_from_lrclib: bool) {
-    if !lyrics_from_lrclib {
-        return;
+/// A drifted or squeezed alignment gets a second, windowed pass: each line of
+/// LRCLIB's line-synced lyrics becomes a window, and the aligner only places
+/// that line's words inside it, so lines start where they are sung and words
+/// keep the singer's pacing. `fallback`, the same lines with their words
+/// spread evenly, is used only when that pass fails.
+pub(super) struct WindowedRetry {
+    /// The first pass's language, so the second pass skips detecting it.
+    pub(super) language: Option<String>,
+    fault: Fault,
+    fallback: Value,
+}
+
+/// Runs when a full analysis whose lyrics came from LRCLIB (not a realign, not
+/// lyrics the user edited) has finished, before the song is marked analysed.
+/// When the alignment needs repair, writes LRCLIB's lines with their windows as
+/// the song's lyrics, removes the transcript and returns the retry; the caller
+/// runs the analysis again. `None` keeps the transcript as it is.
+pub(super) fn windowed_retry(file_hash: &str, cache: &CacheDir) -> Option<WindowedRetry> {
+    let (transcript, parsed, fault) = diagnose(file_hash, cache)?;
+    let fallback = rebuilt(&transcript, &parsed, fault);
+    let language = transcript
+        .get("language")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let retry = WindowedRetry {
+        language,
+        fault,
+        fallback,
+    };
+    let lines = parsed
+        .segments
+        .iter()
+        .map(|line| line.text.clone())
+        .collect();
+    let windows = parsed
+        .segments
+        .iter()
+        .map(|line| LineWindow {
+            start: line.start,
+            end: line.end,
+        })
+        .collect();
+    if let Err(error) = write_timed_lyrics_file(cache, file_hash, lines, windows) {
+        warn!("[analyzer] {file_hash}: could not write LRCLIB's line windows: {error}");
+        windowed_failed(file_hash, cache, retry);
+        return None;
     }
-    let Some(transcript) = std::fs::read_to_string(cache.transcript_path(file_hash))
+    let _ = std::fs::remove_file(cache.transcript_path(file_hash));
+    cache.delete_transcript_variants(file_hash);
+    info!(
+        "[analyzer] {file_hash}: {}; aligning again inside LRCLIB's {} line windows",
+        retry.fault.describe(),
+        parsed.segments.len()
+    );
+    Some(retry)
+}
+
+/// The windowed pass finished: records the repair in its transcript.
+pub(super) fn windowed_done(file_hash: &str, cache: &CacheDir, retry: &WindowedRetry) {
+    let Some(mut transcript) = read_transcript(cache, file_hash) else {
+        return;
+    };
+    transcript["timing_repair"] = repair_record("lrclib-windows", retry.fault);
+    match write_transcript_json(cache, file_hash, &transcript) {
+        Ok(()) => info!("[analyzer] {file_hash}: words aligned inside LRCLIB's line timing"),
+        Err(error) => warn!("[analyzer] {file_hash}: could not record the repair: {error}"),
+    }
+}
+
+/// The windowed pass failed: LRCLIB's line timing with evenly spread words.
+pub(super) fn windowed_failed(file_hash: &str, cache: &CacheDir, retry: WindowedRetry) {
+    cache.delete_transcript_variants(file_hash);
+    match write_transcript_json(cache, file_hash, &retry.fallback) {
+        Ok(()) => info!(
+            "[analyzer] {file_hash}: {}; using LRCLIB line timing with evenly spread words",
+            retry.fault.describe()
+        ),
+        Err(error) => {
+            warn!("[analyzer] {file_hash}: could not write the repaired transcript: {error}")
+        }
+    }
+}
+
+fn read_transcript(cache: &CacheDir, file_hash: &str) -> Option<Value> {
+    std::fs::read_to_string(cache.transcript_path(file_hash))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-    else {
-        return;
-    };
+}
+
+/// The transcript, LRCLIB's checked line timing for it and what is wrong with
+/// the alignment; `None` when nothing is wrong or nothing can be checked.
+fn diagnose(file_hash: &str, cache: &CacheDir) -> Option<(Value, ParsedLrc, Fault)> {
+    let transcript = read_transcript(cache, file_hash)?;
     let squeeze = squeezed(&transcript);
-    let Some(song) = library_db::load_song_by_hash(file_hash).ok().flatten() else {
-        return;
-    };
-    let Some(plain) = load_lyrics_file(file_hash).map(|lyrics| lyrics.lines) else {
-        return;
-    };
+    let song = library_db::load_song_by_hash(file_hash).ok().flatten()?;
+    let plain = load_lyrics_file(file_hash).map(|lyrics| lyrics.lines)?;
     let pick = lrclib_candidates(&song).into_iter().next();
     let Some(synced) = pick
         .filter(|pick| pick.lines == plain)
@@ -102,7 +181,7 @@ pub(super) fn repair_after_analysis(file_hash: &str, cache: &CacheDir, lyrics_fr
                 Fault::Squeezed(squeeze).describe()
             );
         }
-        return;
+        return None;
     };
     let parsed = match checked_lrc(&synced, plain.len(), song.duration_secs) {
         Ok(parsed) => parsed,
@@ -113,27 +192,13 @@ pub(super) fn repair_after_analysis(file_hash: &str, cache: &CacheDir, lyrics_fr
                     Fault::Squeezed(squeeze).describe()
                 );
             }
-            return;
+            return None;
         }
     };
-    let Some(fault) = squeeze
+    let fault = squeeze
         .map(Fault::Squeezed)
-        .or_else(|| drifted(&transcript, &parsed).map(Fault::Drifted))
-    else {
-        return;
-    };
-    let repaired = rebuilt(&transcript, &parsed, fault);
-    cache.delete_transcript_variants(file_hash);
-    match write_transcript_json(cache, file_hash, &repaired) {
-        Ok(()) => info!(
-            "[analyzer] {file_hash}: {}; using LRCLIB line timing ({} lines)",
-            fault.describe(),
-            parsed.segments.len()
-        ),
-        Err(error) => {
-            warn!("[analyzer] {file_hash}: could not write the repaired transcript: {error}")
-        }
-    }
+        .or_else(|| drifted(&transcript, &parsed).map(Fault::Drifted))?;
+    Some((transcript, parsed, fault))
 }
 
 /// `Some` when at least [`MIN_LINES`] lines and [`SQUEEZED_PERCENT`] of them
@@ -265,21 +330,26 @@ fn rebuilt(transcript: &Value, parsed: &ParsedLrc, fault: Fault) -> Value {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let mut value = build_lrc_transcript(parsed, text("language"), text("key"), 1.0, no_stems);
-    value["timing_repair"] = match fault {
+    value["timing_repair"] = repair_record("lrclib-lines", fault);
+    value
+}
+
+/// `timing_repair` in a transcript: how its timing was repaired and why.
+fn repair_record(method: &str, fault: Fault) -> Value {
+    match fault {
         Fault::Squeezed(Squeeze { squeezed, lines }) => json!({
-            "method": "lrclib-lines",
+            "method": method,
             "reason": "squeezed-alignment",
             "squeezed": squeezed,
             "lines": lines,
         }),
         Fault::Drifted(Drift { drifted, lines }) => json!({
-            "method": "lrclib-lines",
+            "method": method,
             "reason": "drifted-alignment",
             "drifted": drifted,
             "lines": lines,
         }),
-    };
-    value
+    }
 }
 
 #[cfg(test)]

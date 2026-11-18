@@ -48,7 +48,8 @@ below.
 - The phone pairing code for the self-hosted server no longer changes every time the server restarts.
 - Song analysis no longer stops at lyric alignment on Linux systems where new folders are group-writable by default.
 - Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.
-- Songs whose lyric lines drift seconds away from the singing now use LRCLIB's line timing too.
+- Songs whose lyric lines drift seconds away from the singing now use LRCLIB's line timing too, with each word still lit when it is sung: the words are aligned again inside each line's time instead of spread evenly over it.
+- Line-timed lyrics no longer lose most of their word timings when the aligner splits a line into sentences, and a line the aligner cannot place is spread over the part of its time where someone is singing.
 - Phone microphones no longer go quiet on the TV once a song starts: the noise gate no longer learns the song's loudness as if it were background noise.
 - A guest's song that is still getting ready after 3 minutes is dropped with a message to the singer instead of waiting forever, and wait estimates during a party no longer count songs that are only being prepared in the background.
 - When the TV leaves in the middle of a song (HOME, or switched off), phones and song prep no longer think the song is still playing.

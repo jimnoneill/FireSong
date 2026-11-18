@@ -1018,5 +1018,8 @@
   "firesong.fx.tambourine": "Tambourine",
   "firesong.fx.cheer": "Cheer",
   "firesong.fx.airHorn": "Air horn",
-  "firesong.fx.sent": "{{name}}: {{sound}}!"
+  "firesong.fx.sent": "{{name}}: {{sound}}!",
+  "app.errorBoundary.title": "Something went wrong",
+  "app.errorBoundary.restarting": "Starting again…",
+  "app.errorBoundary.reload": "Reload"
 }

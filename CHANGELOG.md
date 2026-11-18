@@ -52,6 +52,7 @@ below.
 - Line-timed lyrics no longer lose most of their word timings when the aligner splits a line into sentences, and a line the aligner cannot place is spread over the part of its time where someone is singing.
 - Phone microphones no longer go quiet on the TV once a song starts: the noise gate no longer learns the song's loudness as if it were background noise.
 - A guest's song that is still getting ready after 3 minutes is dropped with a message to the singer instead of waiting forever, and wait estimates during a party no longer count songs that are only being prepared in the background.
+- An unexpected error no longer leaves a blank screen: the TV starts again by itself within a few seconds and the party carries on, and other screens offer a reload.
 - When the TV leaves in the middle of a song (HOME, or switched off), phones and song prep no longer think the song is still playing.
 
 ## [1.4.1] - 2026-11-09

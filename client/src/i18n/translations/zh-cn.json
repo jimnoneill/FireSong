@@ -1018,5 +1018,8 @@
   "firesong.fx.tambourine": "铃鼓",
   "firesong.fx.cheer": "欢呼",
   "firesong.fx.airHorn": "气笛",
-  "firesong.fx.sent": "{{name}}：{{sound}}！"
+  "firesong.fx.sent": "{{name}}：{{sound}}！",
+  "app.errorBoundary.title": "出了点问题",
+  "app.errorBoundary.restarting": "正在重新启动…",
+  "app.errorBoundary.reload": "重新加载"
 }

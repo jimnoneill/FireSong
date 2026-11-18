@@ -22,6 +22,7 @@ import { TauriAppShell } from '@/shared/components/window/title-bar';
 import { useConfig } from '@/shared/config/use-config';
 import { REMOTE_LANGUAGE } from '@/shared/query-keys';
 
+import { AppErrorBoundary } from './app-error-boundary';
 import { NavInputProvider } from './providers/nav-input-context';
 import { ThemeProvider } from './providers/theme-context';
 
@@ -118,10 +119,12 @@ export const App = () => {
   useTranslation();
 
   return (
-    <NavInputProvider>
-      <QueryClientProvider client={queryClient}>
-        {isRemoteQueue() ? <RemoteShell /> : <ThemeWrapper />}
-      </QueryClientProvider>
-    </NavInputProvider>
+    <AppErrorBoundary>
+      <NavInputProvider>
+        <QueryClientProvider client={queryClient}>
+          {isRemoteQueue() ? <RemoteShell /> : <ThemeWrapper />}
+        </QueryClientProvider>
+      </NavInputProvider>
+    </AppErrorBoundary>
   );
 };

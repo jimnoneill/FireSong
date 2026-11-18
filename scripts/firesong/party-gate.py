@@ -228,8 +228,10 @@ def judge(rows: list[dict], prep_secs: float | None, prep_limit: float, run_end:
     lobby = [r for r in samples if not r.get("song")]
 
     def slot_values(group, key):
+        # Only phones that are connected: a phone that left keeps its slot for a
+        # while (silent, gate shut) so it can come back.
         return [s.get(key) for r in group for s in ((r.get("mics") or {}).get("slots") or [])
-                if isinstance(s.get(key), (int, float, bool))]
+                if s.get("peer") and isinstance(s.get(key), (int, float, bool))]
 
     out = [(r.get("voice") or {}).get("outputRms") or 0 for r in singing]
     check("voice heard while singing", out and statistics.median(out) > 0.001,

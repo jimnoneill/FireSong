@@ -18,11 +18,13 @@ of the lobby, and the TV page's memory does not keep growing.
 
     party-gate.py --ready-song <hash> --prep-song <hash> [--tone-gain 0.02]
 
-Needs the TV idle: asleep, or awake on the launcher, with nothing playing (a
-screensaver may hide a paused app, so it counts as busy); exit 2 otherwise. Song playback is
+Needs the TV idle: asleep, or awake on the launcher, with nothing playing or
+paused (a screensaver may hide a paused app, so it counts as busy); exit 2
+otherwise. A Cube that fell asleep keeps its last app on top; the run goes HOME
+after waking it. Song playback is
 turned almost silent for the run; the tone and voices come out of the TV
 quietly. Restores the Cube (URL, HOME, sleep) and the volume. Exit 0 = PASS,
-1 = FAIL, 2 = could not run.
+1 = FAIL, 2 = TV busy (nothing touched), 3 = could not get FireSong onto the TV.
 """
 from __future__ import annotations
 
@@ -89,20 +91,62 @@ def reserve(phone, title: str) -> None:
     L.wait_for("sheet closed", lambda: phone.eval("document.querySelector('dialog[open]') === null"), 10)
 
 
+class SetupError(Exception):
+    """The run could not get FireSong onto the TV; nothing about FireSong was tested."""
+
+
+def media_problem(cube) -> str | None:
+    """A media session that is playing or paused, which someone may come back to."""
+    sessions = cube.sh("dumpsys media_session")
+    found = re.search(r"active=true[^\n]*\n(?:[^\n]*\n){0,6}?[^\n]*state=PlaybackState \{state=([23])", sessions)
+    if found is None:
+        return None
+    return "a media session is playing" if found.group(1) == "3" else "a media session is paused"
+
+
 def idle_problem(cube) -> str | None:
     """Why the Cube is not free for a test, or None. Free means asleep, or awake
-    with the launcher in front. A screensaver can hide a paused app, so dreaming
-    counts as busy, and so does any media session that is playing."""
+    with the launcher in front, with no media session playing or paused. A
+    screensaver can hide a paused app, so dreaming counts as busy."""
     state = cube.wakefulness()
-    sessions = cube.sh("dumpsys media_session")
-    if re.search(r"active=true[^\n]*\n(?:[^\n]*\n){0,6}?[^\n]*state=PlaybackState \{state=3", sessions):
-        return "a media session is playing"
+    media = media_problem(cube)
+    if media:
+        return media
     if state == "Asleep":
         return None
     front = cube.resumed()
     if state == "Awake" and front.startswith("com.amazon.tv.launcher/"):
         return None
     return f"{state}, front={front or 'none'}"
+
+
+def open_firesong(cube, tvctl: str, lan_url: str, token_file: pathlib.Path):
+    """Wake the Cube, bring it to the launcher and open FireSong; the TV page's DevTools.
+
+    A Cube that fell asleep keeps the last app (often Plex) on top, so after waking
+    it goes HOME first, unless that app now has a media session playing or paused."""
+    cube.sh("input keyevent KEYCODE_WAKEUP")
+    time.sleep(3)
+    if not cube.resumed().startswith("com.amazon.tv.launcher/"):
+        media = media_problem(cube)
+        if media:
+            raise SetupError(f"after waking: {media}")
+        cube.sh("input keyevent KEYCODE_HOME")
+        time.sleep(4)
+    launch = subprocess.run(["bash", str(L.REPO / "scripts/firesong/cube.sh"), "launch", "--url", lan_url + "&fsdiag=1",
+                             "--host-token-file", str(token_file)], capture_output=True, text=True, timeout=60)
+    if launch.returncode != 0:
+        raise SetupError(f"launch failed: {(launch.stderr or launch.stdout).strip()[-300:]}")
+    time.sleep(15)
+    devtools = subprocess.run([tvctl, "devtools", str(L.TV_CDP)], capture_output=True, text=True, timeout=30)
+    if devtools.returncode != 0:
+        raise SetupError(f"no DevTools on the TV page: {devtools.stderr.strip()[-300:]}")
+    try:
+        tv = L.Cdp(L.TV_CDP)
+        L.wait_for("TV seat", lambda: tv.eval("!!(window.fireSongDiag && fireSongDiag.snapshot().connected)"), 40)
+    except Exception as error:
+        raise SetupError(f"TV page not reachable: {error}") from error
+    return tv
 
 
 def playing() -> bool:
@@ -212,17 +256,11 @@ def main() -> int:
     profile = tempfile.mkdtemp(prefix="fs-gate-phone-", dir=str(out))
     since = int(time.time() * 1000)
     prep_secs = None
+    setup_failed = False
     try:
         set_master(config, QUIET_MASTER, saved)
         L.cmd("clear_playback_queue")
-        cube.sh("input keyevent KEYCODE_WAKEUP")
-        time.sleep(3)
-        subprocess.run(["bash", str(L.REPO / "scripts/firesong/cube.sh"), "launch", "--url", lan_url + "&fsdiag=1",
-                        "--host-token-file", str(token_file)], capture_output=True, timeout=60)
-        time.sleep(15)
-        subprocess.run([tvctl, "devtools", str(L.TV_CDP)], capture_output=True, timeout=30)
-        tv = L.Cdp(L.TV_CDP)
-        L.wait_for("TV seat", lambda: tv.eval("!!(window.fireSongDiag && fireSongDiag.snapshot().connected)"), 40)
+        tv = open_firesong(cube, tvctl, lan_url, token_file)
 
         chrome = subprocess.Popen([L.CHROME, "--headless=new", f"--remote-debugging-port={PHONE_CDP}",
                                    f"--user-data-dir={profile}", "--use-fake-ui-for-media-stream",
@@ -276,6 +314,9 @@ def main() -> int:
         time.sleep(20)
         L.cmd("request_playback_command", {"command": "exit"})
         time.sleep(8)
+    except SetupError as error:
+        print(f"could not run: {error}", flush=True)
+        setup_failed = True
     except Exception as error:
         print(f"run error: {error}", flush=True)
         paused = None
@@ -308,6 +349,9 @@ def main() -> int:
                 time.sleep(6)
                 if cube.wakefulness() == "Asleep":
                     break
+    if setup_failed:
+        print("RESULT COULD NOT RUN (the Cube is restored)")
+        return 3
     time.sleep(6)  # the TV page's last flight batch
     checks = judge(records(since), prep_secs, args.prep_limit, run_end)
     checks["Back pauses"] = {"ok": paused is True}

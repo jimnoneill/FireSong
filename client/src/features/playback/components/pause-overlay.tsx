@@ -1,3 +1,4 @@
+import { fireSongLaunch } from '@/bridge/firesong-launch';
 import type { PlaybackCommand } from '@/bridge/playback-status';
 import { PlaybackActionButtons } from '@/features/playback/components/playback-action-buttons';
 import type { PlaybackAction } from '@/features/playback/lib/playback-actions';
@@ -17,20 +18,32 @@ type PauseOverlayProps = {
   onCommand: (command: PlaybackCommand) => void;
 };
 
+/** Sizes for a TV across the room; the desktop keeps the dialog defaults. */
+const TV = {
+  content: 'gap-[3vh] p-[4vh] data-[size=default]:max-w-[56vw] data-[size=default]:sm:max-w-[56vw]',
+  title: 'text-[4.5vh]',
+  description: 'text-[2.6vh]',
+  button: 'h-[8vh] px-[4vh] text-[3vh]',
+};
+
 export const PauseOverlay = ({ open, actions, onCommand }: PauseOverlayProps) => {
   const onContinue = () => onCommand('resume');
+  const tv = fireSongLaunch().tv;
 
   return (
     <>
       {open && <div className="fixed inset-0 z-40 bg-black/80" aria-hidden />}
       <AlertDialog open={open} onOpenChange={(value) => !value && onContinue()}>
         <AlertDialogContent
+          className={tv ? TV.content : undefined}
           style={{ animation: 'none' }}
           onEscapeKeyDown={(event) => event.preventDefault()}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>{t('playback.pauseOverlay.paused')}</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className={tv ? TV.title : undefined}>
+              {t('playback.pauseOverlay.paused')}
+            </AlertDialogTitle>
+            <AlertDialogDescription className={tv ? TV.description : undefined}>
               {t('playback.pauseOverlay.exitingNowWonAposTDescription')}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -41,6 +54,7 @@ export const PauseOverlay = ({ open, actions, onCommand }: PauseOverlayProps) =>
               open={open}
               onBack={onContinue}
               className="w-full justify-end"
+              buttonClassName={tv ? TV.button : undefined}
             />
           </AlertDialogFooter>
         </AlertDialogContent>

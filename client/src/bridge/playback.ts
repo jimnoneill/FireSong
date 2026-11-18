@@ -27,6 +27,11 @@ export type PlaybackAdapter = {
   toMediaUrl(absolutePath: string): string;
   /** Stem URLs for a song, already encoded for the active transport. */
   getAudioPaths(fileHash: string): Promise<AudioPaths>;
+  /**
+   * Stem URLs are same-origin and answer byte ranges, so media elements can
+   * stream them into Web Audio instead of the page decoding whole songs.
+   */
+  streams: boolean;
 };
 
 // ─── Tauri implementation ─────────────────────────────────────────────────
@@ -59,6 +64,7 @@ export const tauriPlaybackAdapter: PlaybackAdapter = {
   async init() {
     await ensureEndpoint();
   },
+  streams: false,
   toMediaUrl: tauriToMediaUrl,
   async getAudioPaths(fileHash) {
     await ensureEndpoint();
@@ -84,6 +90,7 @@ export const webPlaybackAdapter: PlaybackAdapter = {
   async init() {
     // Nothing to do; the server lives at the page origin.
   },
+  streams: true,
   toMediaUrl: webToMediaUrl,
   async getAudioPaths(fileHash) {
     // Resolve the server-side path so the URL encodes the active key/tempo

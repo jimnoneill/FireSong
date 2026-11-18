@@ -1,5 +1,6 @@
 /**
- * Owns the audio engine for the active song: wraps `useAudioPlayer`, the
+ * Owns the audio engine for the active song: wraps the transport's player
+ * (streamed stems on the web, decoded buffers on the desktop), the
  * stems-ready handshake, the user-facing `paused` flag, and the pause/continue/
  * exit handlers shared by overlays, hotkeys, and the result dialog.
  *
@@ -20,7 +21,7 @@ import {
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 
-import { ensureMp3Stems, onStemsReady } from '@/bridge/playback';
+import { ensureMp3Stems, onStemsReady, playbackAdapter } from '@/bridge/playback';
 import { isSessionPlayback } from '@/bridge/playback-session';
 import { closePlaybackWindow } from '@/bridge/window';
 import {
@@ -28,7 +29,11 @@ import {
   type TimeSubscriber,
   useAudioPlayer,
 } from '@/features/playback/hooks/use-audio-player';
+import { useStreamingAudioPlayer } from '@/features/playback/hooks/use-streaming-audio-player';
 import { t } from '@/i18n';
+
+/** Fixed for the page's lifetime: the transport never changes under a mounted player. */
+const usePlaybackAudio = playbackAdapter.streams ? useStreamingAudioPlayer : useAudioPlayer;
 
 export type PlaybackTransportState = {
   isReady: boolean;
@@ -121,7 +126,7 @@ export function PlaybackTransportProvider({
     };
   }, [fileHash, navigate]);
 
-  const audio = useAudioPlayer(
+  const audio = usePlaybackAudio(
     fileHash,
     { guide: initialGuideVolumeSnapshot, master: initialMasterVolumeSnapshot },
     stemsReady,

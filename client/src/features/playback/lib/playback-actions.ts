@@ -41,11 +41,12 @@ export const playbackActions = (status: PlaybackStatus): PlaybackAction[] => {
     ];
   }
 
+  // Continue comes first: it is where focus starts, so OK on a remote resumes.
   if (status.paused) {
     return [
-      { command: 'exit', labelKey: exitLabelKey(status), variant: 'destructive' },
-      ...nextAction(status, 'outline'),
       { command: 'resume', labelKey: 'common.actions.continue', variant: 'default' },
+      ...nextAction(status, 'outline'),
+      { command: 'exit', labelKey: exitLabelKey(status), variant: 'destructive' },
     ];
   }
 

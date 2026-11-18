@@ -49,6 +49,12 @@ impl CacheDir {
         self.path.join(format!("{hash}_vocals.mp3"))
     }
 
+    /// A rendered noraebang band track that can stand in for the instrumental
+    /// at the song's own key and tempo (FireSong `FIRESONG_BAND`).
+    pub fn band_instrumental_path(&self, hash: &str, band: &str) -> PathBuf {
+        self.path.join(format!("{hash}_band_{band}.mp3"))
+    }
+
     pub fn variant_instrumental_path(&self, hash: &str, key: &str, tempo: f64) -> PathBuf {
         self.path.join(format!(
             "{hash}_instrumental_{}_{}.mp3",

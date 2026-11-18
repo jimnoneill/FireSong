@@ -232,8 +232,10 @@ pub fn get_audio_paths(file_hash: &str) -> AudioPaths {
             let variant_vocals = cache.variant_vocals_path(file_hash, key, tempo);
             if is_base_original_selection(&song, key, tempo) {
                 if variant_instrumental.is_file() && variant_vocals.is_file() {
+                    let instrumental =
+                        band_instrumental(&cache, file_hash).unwrap_or(variant_instrumental);
                     return AudioPaths {
-                        instrumental: variant_instrumental.to_string_lossy().into_owned(),
+                        instrumental: instrumental.to_string_lossy().into_owned(),
                         vocals: Some(variant_vocals.to_string_lossy().into_owned()),
                     };
                 }
@@ -261,6 +263,20 @@ pub fn get_audio_paths(file_hash: &str) -> AudioPaths {
         instrumental: legacy_inst.to_string_lossy().into_owned(),
         vocals: Some(legacy_voc.to_string_lossy().into_owned()),
     }
+}
+
+/// FireSong's noraebang band trial: with `FIRESONG_BAND` set to `campy` or
+/// `blend`, a song that has that band track rendered plays it in place of its
+/// instrumental at its own key and tempo; other songs, and key or tempo
+/// changes, keep the instrumental.
+fn band_instrumental(cache: &CacheDir, file_hash: &str) -> Option<PathBuf> {
+    let band = std::env::var("FIRESONG_BAND").ok()?;
+    let band = band.trim();
+    if !matches!(band, "campy" | "blend") {
+        return None;
+    }
+    let path = cache.band_instrumental_path(file_hash, band);
+    path.is_file().then_some(path)
 }
 
 fn is_mp4_compatible_source(path: &Path) -> bool {

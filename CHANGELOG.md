@@ -20,6 +20,7 @@ below.
 - The microphone latency setting now goes up to 800 ms, enough for wireless and network microphones.
 - Guests' phones are now the whole karaoke remote in one page: browse the song book and reserve songs (even ones still getting ready, which are prepared on demand), sing duets, control your own song (pause, stop, key and tempo), set your echo and volume, tune your mic, follow the lyric line, play fun sounds and see tonight's best.
 - After each song the phone shows a shareable score card, and the night keeps a best-scores board.
+- A noraebang band trial for the self-hosted server: songs with a rendered General MIDI band track can play it instead of their instrumental.
 
 ### Improvements
 

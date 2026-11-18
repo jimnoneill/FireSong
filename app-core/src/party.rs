@@ -27,6 +27,9 @@ const ETA_STEP_SECS: u32 = 10;
 /// the analyzer before it counts as failed: a remote song's rekey can land
 /// between two reads.
 const MISSING_POLLS: u8 = 2;
+/// A guest's song still analysing this long after it started is given up and
+/// its singers are told; the analysis may still finish for the song book.
+const STUCK_ANALYSIS: Duration = Duration::from_secs(180);
 /// Items whose entry left the playback queue (the TV took it to play),
 /// remembered so a `stage` naming that entry still finds its reservation.
 const RECENT_ITEMS: usize = 8;
@@ -731,8 +734,8 @@ impl PartyBook {
                 Some(JobState::Failed) => true,
                 Some(JobState::Analyzing(_)) => {
                     prep.missing_polls = 0;
-                    prep.analyzing_since.get_or_insert(now);
-                    false
+                    let since = *prep.analyzing_since.get_or_insert(now);
+                    now.saturating_duration_since(since) >= STUCK_ANALYSIS
                 }
                 Some(JobState::Queued) => {
                     prep.missing_polls = 0;

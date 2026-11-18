@@ -50,11 +50,19 @@ pub struct AnalyzerView {
     pub waiting_gpu: bool,
 }
 
+/// During a party the worker takes only songs someone is waiting for, so the
+/// background songs it holds back are not part of the line.
 pub fn analyzer_view() -> AnalyzerView {
+    let party = super::party_gate::party_active();
     let state = lock_unpoisoned(&ANALYZER);
     AnalyzerView {
         active: state.active_hash.clone(),
-        waiting: state.queue.iter().cloned().collect(),
+        waiting: state
+            .queue
+            .iter()
+            .filter(|hash| !party || state.urgent.contains(*hash))
+            .cloned()
+            .collect(),
         waiting_gpu: WAITING.load(Ordering::SeqCst),
     }
 }

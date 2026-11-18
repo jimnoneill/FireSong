@@ -50,6 +50,7 @@ below.
 - Songs whose lyric alignment collapses now fall back to LRCLIB's line timing automatically.
 - Songs whose lyric lines drift seconds away from the singing now use LRCLIB's line timing too.
 - Phone microphones no longer go quiet on the TV once a song starts: the noise gate no longer learns the song's loudness as if it were background noise.
+- A guest's song that is still getting ready after 3 minutes is dropped with a message to the singer instead of waiting forever, and wait estimates during a party no longer count songs that are only being prepared in the background.
 - When the TV leaves in the middle of a song (HOME, or switched off), phones and song prep no longer think the song is still playing.
 
 ## [1.4.1] - 2026-11-09

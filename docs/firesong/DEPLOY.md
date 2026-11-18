@@ -33,6 +33,7 @@ Host-specific values (LAN addresses, the GPU UUID, the tailnet name, tokens) nev
 | `scripts/firesong/cube.sh` | Fire TV Cube helper over adb. |
 | `scripts/firesong/party-door.sh` | Opens the phone door's Funnel while FireSong is on the TV, and keeps the Cube's log meanwhile: `run`, `once`, `status`, `self-test`. |
 | `scripts/firesong/flight-report.py` | Prints a party's flight record (docs/firesong/FLIGHT.md). |
+| `scripts/firesong/party-gate.py` | Release gate on the real Cube: a short party with a fake phone, judged from its flight record (exit 0 = pass). Run before `build-release.sh --activate`, with the TV idle. |
 
 None of the scripts installs packages or enables a service. Only `party-door.sh` touches Tailscale, and only the phone door's own Funnel port.
 

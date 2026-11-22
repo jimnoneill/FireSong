@@ -34,6 +34,11 @@ pub const SLOT_COUNT: u8 = 4;
 /// `micId` and `resumeKey`.
 pub const RESERVATION_SECS: u32 = 600;
 
+/// While every slot is taken, a newcomer may take a dropped phone's slot only
+/// after it has been gone this long, so a locked screen or a browser restart
+/// does not cost a guest the mic and the songs they queued.
+pub const EVICT_AFTER_SECS: u32 = 120;
+
 /// The server sends a WebSocket ping this often on every `/rtc` socket.
 pub const PING_INTERVAL_SECS: u32 = 5;
 

@@ -135,7 +135,7 @@ pub fn configure(state: &AppState, config: Config) {
     state
         .firesong
         .hub
-        .configure(ice_servers, timings.reservation, store);
+        .configure(ice_servers, timings.reservation, timings.evict_after, store);
     state
         .firesong
         .hub

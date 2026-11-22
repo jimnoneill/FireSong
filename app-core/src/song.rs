@@ -483,6 +483,16 @@ pub(crate) fn try_read_transcript_meta(cache: &CacheDir, hash: &str) -> Option<T
 
 type MediaMetadata = (String, String, String, f64, Option<Vec<u8>>);
 
+/// The length of an audio file as its headers state it, like a local scan reads it.
+pub(crate) fn audio_duration_secs(path: &Path) -> Option<f64> {
+    let duration = lofty::read_from_path(path)
+        .ok()?
+        .properties()
+        .duration()
+        .as_secs_f64();
+    (duration > 0.0).then_some(duration)
+}
+
 fn read_metadata(path: &Path) -> Result<MediaMetadata, NightingaleError> {
     let tagged = lofty::read_from_path(path)
         .map_err(|e| NightingaleError::Other(format!("failed reading {}: {e}", path.display())))?;

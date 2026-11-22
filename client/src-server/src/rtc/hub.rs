@@ -133,6 +133,7 @@ pub(crate) struct Hub {
 pub(super) struct Inner {
     ice_servers: Vec<IceServer>,
     reservation: Duration,
+    evict_after: Duration,
     pub(super) tv: Option<Peer>,
     /// When the last TV socket closed, while no TV is connected.
     tv_left_at: Option<Instant>,
@@ -148,17 +149,24 @@ impl Default for Hub {
         Self::new(
             Vec::new(),
             Duration::from_secs(u64::from(app_core::remote_mic::RESERVATION_SECS)),
+            Duration::from_secs(u64::from(app_core::remote_mic::EVICT_AFTER_SECS)),
             MicStore::in_memory(),
         )
     }
 }
 
 impl Hub {
-    pub(crate) fn new(ice_servers: Vec<IceServer>, reservation: Duration, store: MicStore) -> Self {
+    pub(crate) fn new(
+        ice_servers: Vec<IceServer>,
+        reservation: Duration,
+        evict_after: Duration,
+        store: MicStore,
+    ) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 ice_servers,
                 reservation,
+                evict_after,
                 tv: None,
                 tv_left_at: None,
                 slots: Default::default(),
@@ -173,11 +181,13 @@ impl Hub {
         &self,
         ice_servers: Vec<IceServer>,
         reservation: Duration,
+        evict_after: Duration,
         store: MicStore,
     ) {
         let mut inner = self.lock();
         inner.ice_servers = ice_servers;
         inner.reservation = reservation;
+        inner.evict_after = evict_after;
         inner.store = store;
     }
 
@@ -397,7 +407,9 @@ impl Hub {
             return Ok(());
         }
 
-        let index = inner.pick_slot(wanted).ok_or(RtcErrorCode::SlotsFull)?;
+        let index = inner
+            .pick_slot(wanted, Instant::now())
+            .ok_or(RtcErrorCode::SlotsFull)?;
         let slot = slot_number(index);
         if let Some(evicted) = inner.slots[index].take() {
             if let Some(tv) = &inner.tv {
@@ -652,13 +664,17 @@ impl Inner {
     }
 
     /// PROTOCOL.md §6.1 step 2: the wanted slot if empty, the lowest empty
-    /// slot, the wanted slot if reserved, the reservation ending soonest.
-    fn pick_slot(&self, wanted: Option<u8>) -> Option<usize> {
+    /// slot, the wanted slot if reserved, the reservation ending soonest; a
+    /// reserved slot only once its phone has been gone `evict_after`.
+    fn pick_slot(&self, wanted: Option<u8>, now: Instant) -> Option<usize> {
         let wanted = wanted.and_then(slot_index);
         let empty = |index: &usize| self.slots[*index].is_none();
         let reserved_until =
             |index: usize| match self.slots[index].as_ref().map(|entry| &entry.link) {
-                Some(Link::Reserved { until }) => Some(*until),
+                Some(Link::Reserved { until }) => until
+                    .checked_sub(self.reservation)
+                    .is_none_or(|since| now.saturating_duration_since(since) >= self.evict_after)
+                    .then_some(*until),
                 _ => None,
             };
 

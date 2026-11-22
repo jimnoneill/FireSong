@@ -62,6 +62,8 @@ pub struct Timings {
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
     pub reservation: Duration,
+    /// How long a dropped phone's slot is safe from newcomers while every slot is taken.
+    pub evict_after: Duration,
     /// How often preparing party songs are checked (PHONE-V2.md: every 2 s).
     pub party_poll: Duration,
     /// How long the TV may take to finish a phone-started calibration.
@@ -75,8 +77,8 @@ pub struct Timings {
 impl Default for Timings {
     fn default() -> Self {
         use app_core::remote_mic::{
-            CALIBRATION_TIMEOUT_SECS, HELLO_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, PING_INTERVAL_SECS,
-            RESERVATION_SECS,
+            CALIBRATION_TIMEOUT_SECS, EVICT_AFTER_SECS, HELLO_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
+            PING_INTERVAL_SECS, RESERVATION_SECS,
         };
 
         Self {
@@ -84,6 +86,7 @@ impl Default for Timings {
             ping_interval: Duration::from_secs(u64::from(PING_INTERVAL_SECS)),
             idle_timeout: Duration::from_secs(u64::from(IDLE_TIMEOUT_SECS)),
             reservation: Duration::from_secs(u64::from(RESERVATION_SECS)),
+            evict_after: Duration::from_secs(u64::from(EVICT_AFTER_SECS)),
             party_poll: Duration::from_secs(2),
             calibration_timeout: Duration::from_secs(u64::from(CALIBRATION_TIMEOUT_SECS)),
             tv_gone_reset: Duration::from_secs(TV_GONE_RESET_SECS),

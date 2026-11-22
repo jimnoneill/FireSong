@@ -811,6 +811,7 @@ async fn reservations_expire_and_full_rooms_evict_the_oldest_reservation() {
 
     let mut timings = fast_timings();
     timings.reservation = Duration::from_secs(600);
+    timings.evict_after = Duration::ZERO;
     let server = start(timings).await;
     let mut tv = crate::tv(&server).await;
     let mut phones = Vec::new();

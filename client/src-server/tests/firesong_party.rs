@@ -222,6 +222,7 @@ fn timings() -> Timings {
         ping_interval: Duration::from_millis(50),
         idle_timeout: Duration::from_secs(10),
         reservation: Duration::from_secs(600),
+        evict_after: Duration::ZERO,
         party_poll: Duration::from_millis(100),
         calibration_timeout: Duration::from_secs(15),
         tv_gone_reset: Duration::from_millis(300),

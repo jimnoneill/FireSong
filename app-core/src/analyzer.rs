@@ -1317,6 +1317,11 @@ fn prepare_audio_for_analysis(
             let mut updated = song.clone();
             updated.file_hash = real_hash.clone();
             updated.path = new_source_path.clone();
+            // Media servers can report a wrong length (Plex has said 3 s for a
+            // 7 min song); the downloaded file is what plays, like a local file.
+            if let Some(duration) = crate::song::audio_duration_secs(&new_source_path) {
+                updated.duration_secs = duration;
+            }
 
             library_db::rekey_song(&song.file_hash, &real_hash, &updated).map_err(|e| {
                 NightingaleError::Other(format!("failed to rekey remote song: {e}"))

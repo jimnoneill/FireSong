@@ -290,8 +290,8 @@ An `empty` slot has no entry. `resumeKey` exists only in memory and is never per
 2. **Unknown `micId`.** Pick a slot, first match wins:
    1. the requested `slot`, if it is empty;
    2. the lowest empty slot;
-   3. the requested `slot`, if it is `reserved` by another `micId` (evict it);
-   4. the `reserved` slot whose reservation ends soonest (evict it);
+   3. the requested `slot`, if it is `reserved` by another `micId` whose phone has been gone at least `EVICT_AFTER_SECS` (120 s) (evict it);
+   4. among slots `reserved` that long, the one whose reservation ends soonest (evict it);
    5. otherwise `slots-full` (fatal).
 
    An eviction sends the TV `slot-lost {slot, oldMicId, evicted}`. The new entry gets a fresh `resumeKey` (32 lowercase hex characters from a CSPRNG), `muted: false`, and any latency persisted for this `micId`. The phone gets `assign {reclaimed: false}`.

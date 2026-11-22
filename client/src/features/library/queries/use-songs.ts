@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 
+import { fireSongLaunch } from '@/bridge/firesong-launch';
 import { getPreloadedSongsMeta, loadAnalysisQueue, loadSongs, loadSongsMeta } from '@/bridge/songs';
 import { useLibraryFilter } from '@/features/menu/hooks/use-library-filter';
 import { useSearch } from '@/features/menu/hooks/use-search';
@@ -11,7 +12,9 @@ import type { LoadSongsParams } from '@/types/LoadSongsParams';
 import type { SongsMeta } from '@/types/SongsMeta';
 
 const PAGE_SIZE = 25;
-const DEFAULT_REFETCH_INTERVAL = 2500;
+// The TV shows the party over the library; polling it there only loads the
+// server and the TV while guests sing.
+const DEFAULT_REFETCH_INTERVAL = fireSongLaunch().tv ? false : 2500;
 
 export const useSongsMeta = () => {
   const queryClient = useQueryClient();
@@ -91,7 +94,7 @@ export const useAnalysisQueue = () => {
   return useQuery({
     queryKey: ANALYSIS_QUEUE,
     queryFn: loadAnalysisQueue,
-    refetchInterval: 2500,
+    refetchInterval: DEFAULT_REFETCH_INTERVAL,
     onSuccess: (data: AnalysisQueue) => {
       const entries = Object.entries(data.entries)
         .toSorted(([a], [b]) => a.localeCompare(b))

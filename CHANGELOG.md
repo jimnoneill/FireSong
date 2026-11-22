@@ -41,6 +41,7 @@ below.
 
 ### Fixes
 
+- The party no longer freezes for seconds at a time: the TV stops polling library and storage statistics that sit hidden behind the party lobby (summing a large song cache could take the server many seconds), and slow library work on the self-hosted server can no longer hold up the TV and the phones.
 - Large media-server libraries with big playlists no longer freeze the app for minutes at the end of a library scan.
 - Songs from compilation albums show who sings them instead of "Various Artists".
 - A background clip that is slow to load now joins the song when it is ready instead of leaving the whole song on the stage backdrop.

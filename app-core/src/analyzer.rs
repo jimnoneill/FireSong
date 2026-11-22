@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -116,8 +116,22 @@ impl Drop for ServerProcess {
 static ANALYZER_SERVER: LazyLock<Mutex<Option<ServerProcess>>> = LazyLock::new(|| Mutex::new(None));
 static SERVER_INTERRUPT: LazyLock<Mutex<Option<TcpStream>>> = LazyLock::new(|| Mutex::new(None));
 
+/// A wait longer than this for the analyzer's state is logged with the caller.
+const SLOW_LOCK: Duration = Duration::from_millis(250);
+
+#[track_caller]
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    let asked = Instant::now();
+    let guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+    let waited = asked.elapsed();
+    if waited >= SLOW_LOCK {
+        tracing::warn!(
+            waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
+            at = %std::panic::Location::caller(),
+            "slow wait for the analyzer state"
+        );
+    }
+    guard
 }
 
 #[derive(Debug, Deserialize)]

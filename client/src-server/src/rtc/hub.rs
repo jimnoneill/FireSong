@@ -26,6 +26,8 @@ pub(super) const SLOTS: usize = SLOT_COUNT as usize;
 
 /// Close code for a normal close after `bye`.
 const CLOSE_NORMAL: u16 = 1000;
+/// Waiting longer than this for the hub is logged with the caller.
+pub(super) const SLOW_LOCK: Duration = Duration::from_millis(250);
 
 #[derive(Debug)]
 pub(crate) enum Outbound {
@@ -179,10 +181,22 @@ impl Hub {
         inner.store = store;
     }
 
+    #[track_caller]
     pub(super) fn lock(&self) -> MutexGuard<'_, Inner> {
+        let asked = Instant::now();
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let waited = asked.elapsed();
         inner.expire(Instant::now());
         inner.flush_offers();
+        let total = asked.elapsed();
+        if total >= SLOW_LOCK {
+            tracing::warn!(
+                waited_ms = super::millis(waited),
+                expire_ms = super::millis(total.saturating_sub(waited)),
+                at = %std::panic::Location::caller(),
+                "slow rtc hub lock"
+            );
+        }
         inner
     }
 

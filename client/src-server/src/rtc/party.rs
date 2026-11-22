@@ -160,6 +160,27 @@ fn ack(phone: &Peer, req_id: Option<u32>, result: Result<Option<String>, PartyEr
     });
 }
 
+/// Logs party work on the hub that ran longer than the hub's slow-lock limit.
+fn slow(what: &str, frame: &str, started: Instant) {
+    let took = started.elapsed();
+    if took >= super::hub::SLOW_LOCK {
+        tracing::warn!(ms = super::millis(took), frame, "slow {what}");
+    }
+}
+
+fn party_frame_name(frame: &MicPartyToServer) -> &'static str {
+    match frame {
+        MicPartyToServer::Reserve { .. } => "reserve",
+        MicPartyToServer::Edit { .. } => "edit",
+        MicPartyToServer::Cancel { .. } => "cancel",
+        MicPartyToServer::Control { .. } => "control",
+        MicPartyToServer::ShiftCurrent { .. } => "shift-current",
+        MicPartyToServer::Calibrate { .. } => "calibrate",
+        MicPartyToServer::Fx { .. } => "fx",
+        MicPartyToServer::Mix { .. } => "mix",
+    }
+}
+
 fn req_id(frame: &MicPartyToServer) -> Option<u32> {
     match frame {
         MicPartyToServer::Reserve { req_id, .. }
@@ -181,6 +202,8 @@ impl Hub {
     }
 
     pub(super) fn mic_party(&self, conn: ConnId, frame: MicPartyToServer) {
+        let started = Instant::now();
+        let what = party_frame_name(&frame);
         let mut inner = self.lock();
         let Some(index) = inner.index_of_conn(conn) else {
             return;
@@ -188,6 +211,8 @@ impl Hub {
         let now = Instant::now();
         inner.on_mic_party(index, frame, now);
         inner.flush_party(now);
+        drop(inner);
+        slow("phone party frame", what, started);
     }
 
     pub(super) fn tv_party(
@@ -195,6 +220,7 @@ impl Hub {
         conn: ConnId,
         frame: TvPartyToServer,
     ) -> Result<(), RtcErrorCode> {
+        let started = Instant::now();
         let mut inner = self.lock();
         if inner.tv.as_ref().is_none_or(|tv| tv.conn() != conn) {
             // A replaced TV socket is closing; its late frames go nowhere.
@@ -202,16 +228,21 @@ impl Hub {
         }
         let result = inner.on_tv_party(frame);
         inner.flush_party(Instant::now());
+        drop(inner);
+        slow("TV party frame", "", started);
         result
     }
 
     /// Timers and coalesced sends; the party task calls it every 100 ms.
     pub(crate) fn party_tick(&self) {
+        let started = Instant::now();
         let mut inner = self.lock();
         let now = Instant::now();
         inner.expire_calibration(now);
         inner.flush_mixes();
         inner.flush_party(now);
+        drop(inner);
+        slow("party tick", "", started);
     }
 
     /// The playback queue changed (host, TV or party).
@@ -231,8 +262,10 @@ impl Hub {
         let Some(book) = book else {
             return;
         };
+        let started = Instant::now();
         let poll = book
             .with(|book, library, analysis| book.poll(library, analysis, protect, Instant::now()));
+        slow("preparation poll", "", started);
         if !poll.changed {
             return;
         }

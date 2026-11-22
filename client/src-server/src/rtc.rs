@@ -114,6 +114,10 @@ pub(crate) async fn mic_upgrade(
     accept(state, &headers, upgrade, Role::Mic)
 }
 
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 fn accept(state: AppState, headers: &HeaderMap, upgrade: WebSocketUpgrade, role: Role) -> Response {
     if !state.firesong.origin_allowed(headers) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();

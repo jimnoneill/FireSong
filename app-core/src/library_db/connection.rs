@@ -4,8 +4,10 @@
 //! [`super::init_library`] and re-pointable by [`super::reconnect_library_at_root`].
 //! Every operation goes through [`with_conn`] so the mutex scope stays tight.
 
+use std::panic::Location;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
@@ -16,6 +18,10 @@ use super::migrations::{configure, run_migrations};
 use super::sql_functions::{normalize_search, search_normalize_utils};
 
 static LIBRARY_DB: OnceLock<Mutex<SqliteConnection>> = OnceLock::new();
+
+/// A library call that takes longer is logged with its caller, so a stall can
+/// be traced to the query or the wait behind it.
+const SLOW_ACCESS: Duration = Duration::from_millis(250);
 
 pub(super) fn is_initialised() -> bool {
     LIBRARY_DB.get().is_some()
@@ -80,17 +86,37 @@ pub(super) fn open_connection(path: &Path) -> Result<SqliteConnection, Nightinga
     Ok(conn)
 }
 
+#[track_caller]
 pub(crate) fn with_conn<T>(
     f: impl FnOnce(&mut SqliteConnection) -> Result<T, NightingaleError>,
 ) -> Result<T, NightingaleError> {
+    let caller = Location::caller();
+    let asked = Instant::now();
     let mut guard = LIBRARY_DB
         .get()
         .ok_or_else(|| NightingaleError::from("init_library not called"))?
         .lock()
         .map_err(|_| NightingaleError::from("library db connection lock poisoned"))?;
-    f(&mut guard)
+    let waited = asked.elapsed();
+    let result = f(&mut guard);
+    drop(guard);
+    let total = asked.elapsed();
+    if total >= SLOW_ACCESS {
+        tracing::warn!(
+            waited_ms = millis(waited),
+            held_ms = millis(total.saturating_sub(waited)),
+            at = %caller,
+            "slow library database access"
+        );
+    }
+    result
 }
 
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[track_caller]
 pub(crate) fn with_conn_mut<T>(
     f: impl FnOnce(&mut SqliteConnection) -> Result<T, NightingaleError>,
 ) -> Result<T, NightingaleError> {

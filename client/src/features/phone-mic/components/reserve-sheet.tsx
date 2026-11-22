@@ -11,10 +11,15 @@ import type { PartyState, ShiftValues } from '@/features/phone-mic/lib/party-sta
 import {
   isPending,
   isReady,
+  myItems,
   partnerChoices,
   reservationLimits,
 } from '@/features/phone-mic/lib/party-view';
-import type { BookSong, MicSlot } from '@/features/remote-mic/protocol';
+import {
+  MAX_RESERVATIONS_PER_SLOT,
+  type BookSong,
+  type MicSlot,
+} from '@/features/remote-mic/protocol';
 import { t } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
 
@@ -33,11 +38,15 @@ type ReserveFormProps = Omit<ReserveSheetProps, 'song' | 'joined' | 'onJoinFirst
   song: BookSong;
 };
 
-const limitText = (party: PartyState, slot: MicSlot | null, ready: boolean): string | null => {
+const limitText = (party: PartyState, slot: MicSlot | null, song: BookSong): string | null => {
+  if (myItems(party.snapshot, slot).some((item) => item.fileHash === song.fileHash)) {
+    return t('phoneMic.failure.duplicate');
+  }
   const limits = reservationLimits(party.snapshot, slot);
   if (!limits.canReserve) {
-    return t('phoneMic.reserve.limitReservations');
+    return t('phoneMic.reserve.limitReservations', { max: MAX_RESERVATIONS_PER_SLOT });
   }
+  const ready = isReady(song.prep);
   return ready || limits.canPrepare ? null : t('phoneMic.reserve.limitPreparing');
 };
 
@@ -51,7 +60,7 @@ function ReserveForm({ song, app, party, slot, offline, onClose }: ReserveFormPr
   const [singNext, setSingNext] = useState(false);
   const [partners, setPartners] = useState<readonly MicSlot[]>([]);
   const ready = isReady(song.prep);
-  const limit = limitText(party, slot, ready);
+  const limit = limitText(party, slot, song);
   const canSingNext = reservationLimits(party.snapshot, slot).canSingNext;
 
   return (

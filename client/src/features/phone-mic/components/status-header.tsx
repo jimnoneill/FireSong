@@ -12,6 +12,14 @@ type StatusHeaderProps = {
   name: string;
 };
 
+// A phone waiting for a free mic is not reconnecting: it is in line.
+const statusLine = (mic: PhoneMicSnapshot): string => {
+  if (mic.unreachable) {
+    return t('phoneMic.reach.short');
+  }
+  return mic.problem === 'slots-full' ? t('phoneMic.link.waitingSlot') : linkMessage(mic.link);
+};
+
 /** Who this phone is and whether the TV hears it, on every tab. */
 export function StatusHeader({ mic, slot, name }: StatusHeaderProps) {
   const color = slot === null ? null : slotColor(slot);
@@ -36,7 +44,7 @@ export function StatusHeader({ mic, slot, name }: StatusHeaderProps) {
               mic.unreachable ? 'text-destructive' : 'text-muted-foreground',
             )}
           >
-            {mic.unreachable ? t('phoneMic.reach.short') : linkMessage(mic.link)}
+            {statusLine(mic)}
           </p>
         </div>
       </div>

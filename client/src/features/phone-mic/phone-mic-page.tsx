@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 
 import { PartyMessages } from '@/features/phone-mic/components/party-messages';
 import { PartyTab } from '@/features/phone-mic/components/party-tab';
@@ -10,7 +10,9 @@ import { StatusHeader } from '@/features/phone-mic/components/status-header';
 import { TabBar } from '@/features/phone-mic/components/tab-bar';
 import { panelId, tabId, type PhoneTab } from '@/features/phone-mic/components/tabs';
 import { useStore } from '@/features/phone-mic/hooks/use-store';
+import { useTurnTab } from '@/features/phone-mic/hooks/use-turn-tab';
 import type { PhoneMicApp } from '@/features/phone-mic/lib/app';
+import type { PhoneMicSnapshot } from '@/features/phone-mic/lib/session';
 import { useTranslation } from '@/i18n';
 
 const JOINED_TABS: readonly PhoneTab[] = ['sing', 'songs', 'queue', 'party'];
@@ -39,6 +41,10 @@ function TabPanel({ tab, current, children }: TabPanelProps) {
   );
 }
 
+/** A phone waiting for a free mic has no slot yet: no queue, sounds or reservations. */
+const hasSlot = (mic: PhoneMicSnapshot): boolean =>
+  mic.stage === 'joined' && mic.problem !== 'slots-full';
+
 /** Queue and Party need a slot; before joining only Sing (the join card) and Songs show. */
 const visibleTab = (chosen: PhoneTab, joined: boolean): PhoneTab =>
   (joined ? JOINED_TABS : GUEST_TABS).includes(chosen) ? chosen : 'sing';
@@ -51,16 +57,18 @@ export function PhoneMicPage({ app }: { app: PhoneMicApp }) {
   useTranslation();
   const mic = useStore(app.session);
   const party = useStore(app.party);
-  const [chosen, setChosen] = useState<PhoneTab>('sing');
-  const joined = mic.stage === 'joined';
-  const current = visibleTab(chosen, joined);
+  const joined = hasSlot(mic);
   const slot = mic.slot ?? app.session.requestedSlot;
+  const [chosen, setChosen] = useTurnTab(party, slot, joined, app.vibrate);
+  const current = visibleTab(chosen, joined);
   const offline = !joined || mic.link === 'offline';
   const shared = { app, party, slot, offline };
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
-      {joined ? <StatusHeader mic={mic} slot={slot} name={app.session.singerName} /> : null}
+      {mic.stage === 'joined' ? (
+        <StatusHeader mic={mic} slot={slot} name={app.session.singerName} />
+      ) : null}
       <TabPanel tab="sing" current={current}>
         <SingTab {...shared} mic={mic} />
       </TabPanel>

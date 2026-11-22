@@ -12,14 +12,17 @@ import {
 /**
  * The TV's long-lived voice context. It owns every phone voice from join to
  * leave, so pauses and song changes never rebuild audio graphs or stop
- * tracks. Slots feed `bus` (dry and echo) and `reverbSend`; everything leaves
- * through the bus compressor and the master limiter, `output`.
+ * tracks. Slots feed `bus` (dry and echo) and `reverbSend`; voices leave
+ * through the bus compressor and the voice limiter, `output`. Voices and the
+ * song meet in `speakers`, a last limiter, so together they never clip.
  */
 export type VoiceEngine = {
   readonly context: AudioContext;
   readonly bus: GainNode;
   readonly reverbSend: GainNode;
   readonly output: DynamicsCompressorNode;
+  /** Where the song's stems connect: the mix limiter in front of the speakers. */
+  readonly speakers: DynamicsCompressorNode;
   /** Resolves once the chunker and gate worklets are loaded. */
   readonly ready: Promise<void>;
   resume(): Promise<void>;
@@ -32,6 +35,9 @@ export type VoiceEngine = {
 const REVERB_DECAY = 6.9;
 const LIMITER_ATTACK_SEC = 0.001;
 const LIMITER_RELEASE_SEC = 0.1;
+/** The whole mix only, just under full scale: it acts on peaks, not on the song's level. */
+const MIX_LIMITER_THRESHOLD_DB = -1;
+const MIX_LIMITER_RELEASE_SEC = 0.25;
 const GESTURES = ['pointerdown', 'keydown'] as const;
 const METER_FFT_SIZE = 2048;
 
@@ -71,10 +77,15 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
   limiter.knee.value = 0;
   limiter.attack.value = LIMITER_ATTACK_SEC;
   limiter.release.value = LIMITER_RELEASE_SEC;
+  const speakers = compressor(context, MIX_LIMITER_THRESHOLD_DB, LIMITER_RATIO);
+  speakers.knee.value = 0;
+  speakers.attack.value = LIMITER_ATTACK_SEC;
+  speakers.release.value = MIX_LIMITER_RELEASE_SEC;
+  speakers.connect(context.destination);
 
   bus.connect(busCompressor);
   reverbSend.connect(reverb).connect(busCompressor);
-  busCompressor.connect(limiter).connect(context.destination);
+  busCompressor.connect(limiter).connect(speakers);
   const meter = context.createAnalyser();
   meter.fftSize = METER_FFT_SIZE;
   limiter.connect(meter);
@@ -87,6 +98,7 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
     bus,
     reverbSend,
     output: limiter,
+    speakers,
     ready,
     resume: () => context.resume(),
     outputLatencyMs: () => (context.baseLatency + context.outputLatency) * 1000,

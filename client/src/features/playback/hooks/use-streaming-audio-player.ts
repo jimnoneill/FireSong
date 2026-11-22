@@ -46,10 +46,11 @@ const mediaElement = (url: string): HTMLAudioElement => {
 };
 
 const connectStems = (paths: AudioPaths, volumes: InitialVolumes): Stems => {
-  const { context } = getVoiceEngine();
+  const engine = getVoiceEngine();
+  const { context } = engine;
   const master = context.createGain();
   master.gain.value = unit(volumes.master);
-  master.connect(context.destination);
+  master.connect(engine.speakers);
   const guide = context.createGain();
   guide.gain.value = unit(volumes.guide);
   guide.connect(master);

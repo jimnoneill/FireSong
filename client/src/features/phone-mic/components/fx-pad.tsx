@@ -55,8 +55,12 @@ export function FxPad({ party, disabled, onPlay }: FxPadProps) {
         <h2 id="phone-fx-title" className="text-lg font-semibold">
           {t('phoneMic.fx.heading')}
         </h2>
-        <span data-testid="fx-tokens" data-tokens={tokens} className="flex gap-1.5">
-          <span className="sr-only">{t('phoneMic.fx.left', { count: formatNumber(tokens) })}</span>
+        <span
+          data-testid="fx-tokens"
+          data-tokens={tokens}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground"
+        >
+          <span>{t('phoneMic.fx.left', { count: formatNumber(tokens) })}</span>
           {Array.from({ length: FX_BURST }, (_, index) => (
             <span
               key={`token-${String(index)}`}

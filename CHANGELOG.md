@@ -36,11 +36,16 @@ below.
 - While a song plays, the TV shows a hint for the remote in place of keyboard shortcuts and analysis notes.
 - Party QR codes work whenever FireSong is on the TV: the self-hosted server opens the guests' door by itself, and closes it again 20 minutes after you leave the app.
 - While FireSong is on the TV, the self-hosted server puts guests first: it only prepares songs someone is waiting to sing, pauses background preparation and library rescans until 20 minutes after the party, and keeps the TV responsive when the machine is busy.
+- When your song comes up, your phone opens the Sing tab (and buzzes on phones that can), so you don't miss it while browsing.
+- A phone waiting for a free mic says so instead of "Reconnecting…", and the song sheet tells you up front when a song is already in your queue or your queue is full (with how many songs you may queue). Fun sounds show how many are left.
 - The self-hosted server keeps a record of each party night (dropped connections, slowdowns, song load times and microphone levels), so problems can be traced afterwards.
 - The self-hosted server keeps library passwords and tokens to itself instead of sending them to the browser, and can require a separate host key for the TV screen.
 
 ### Fixes
 
+- A guest whose phone locks or whose browser restarts keeps their mic and their queued songs for two minutes, even when every mic is taken; before, someone waiting could take the seat at once and the songs were gone.
+- Songs prepared from a media server get the real length of their audio: some showed as a few seconds long, which also kept synced lyrics from being found for them.
+- The TV no longer clips when the song, the singers and the fun sounds peak together.
 - The party no longer freezes for seconds at a time: the TV stops polling library and storage statistics that sit hidden behind the party lobby (summing a large song cache could take the server many seconds), and slow library work on the self-hosted server can no longer hold up the TV and the phones.
 - Large media-server libraries with big playlists no longer freeze the app for minutes at the end of a library scan.
 - Songs from compilation albums show who sings them instead of "Various Artists".

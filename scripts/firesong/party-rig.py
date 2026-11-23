@@ -86,7 +86,9 @@ UAS = {
                "Chrome/141.0.0.0 Mobile Safari/537.36",
 }
 GAINS = {"tone": 0.05, "quiet": 0.0015, "loud": 0.9, "off": 0.0}
-HEARD_DB = 15.0
+# A voice "stands out" this far above the music at its pitch; four harmonic voices through the
+# TV's voice compressor sit 10-15 dB above a loud song.
+HEARD_DB = 10.0
 
 TAP_JS = r"""
 (() => {

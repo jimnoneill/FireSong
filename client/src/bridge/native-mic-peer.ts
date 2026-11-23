@@ -7,13 +7,14 @@ import {
   type MicSlot,
 } from '@/features/remote-mic/protocol';
 
-import type { AppMessage, NativeMicLinkPort } from './native-mic-protocol';
+import type { AppMessage, NativeMicLinkPort, PageMessage } from './native-mic-protocol';
 import type { PeerEvents, PeerInit, PeerPort } from './remote-mic-peer';
 
 const ANSWER_TIMEOUT_MS = 6000;
 const PEER_ID_MAX = 2 ** 31 - 1;
 
 /** The app closes the whole door on a field outside these limits, so nothing outside them is sent. */
+const FRAME_MAX_BYTES = 65_536;
 const SDP_MAX_CHARS = 32_768;
 const SDP_PREFIX = 'v=0';
 const ICE_SERVERS_MAX = 8;
@@ -25,6 +26,7 @@ const CANDIDATE_MAX_CHARS = 1024;
 const MLINE_INDEX_MAX = 65_535;
 
 type PeerMessage = Extract<AppMessage, { peer: number }>;
+type OfferMessage = Extract<PageMessage, { t: 'offer' }>;
 
 /** One offer waiting for its `answer` or `peer-error`. */
 type Pending = {
@@ -67,11 +69,27 @@ const nativeIceServers = (servers: readonly IceServer[]): IceServer[] =>
     )
     .slice(0, ICE_SERVERS_MAX);
 
-const isNativeSdp = (sdp: string): boolean =>
-  sdp.length <= SDP_MAX_CHARS && sdp.startsWith(SDP_PREFIX);
+const encoder = new TextEncoder();
 
-const isNativeCandidate = ({ candidate, sdpMLineIndex }: IceCandidate): boolean =>
+/** JSON escaping can grow a valid SDP past the door's frame limit, so the frame itself is measured. */
+const isNativeOffer = (offer: OfferMessage): boolean =>
+  isValidMicId(offer.micId) &&
+  offer.sdp.length <= SDP_MAX_CHARS &&
+  offer.sdp.startsWith(SDP_PREFIX) &&
+  encoder.encode(JSON.stringify(offer)).byteLength <= FRAME_MAX_BYTES;
+
+const withinCandidate = (value: string | null | undefined): boolean =>
+  value === null || value === undefined || value.length <= CANDIDATE_MAX_CHARS;
+
+const isNativeCandidate = ({
+  candidate,
+  sdpMid,
+  sdpMLineIndex,
+  usernameFragment,
+}: IceCandidate): boolean =>
   candidate.length <= CANDIDATE_MAX_CHARS &&
+  withinCandidate(sdpMid) &&
+  withinCandidate(usernameFragment) &&
   (sdpMLineIndex === null ||
     sdpMLineIndex === undefined ||
     (Number.isInteger(sdpMLineIndex) && sdpMLineIndex >= 0 && sdpMLineIndex <= MLINE_INDEX_MAX));
@@ -86,8 +104,8 @@ const meanTargetMs = (stats: Extract<AppMessage, { t: 'peer-stats' }>): number |
  * The TV end of one phone's connection when the app's voice engine receives
  * it: offers, candidates and closes become mics-protocol messages for one
  * page-chosen peer id. A peer whose answer fails or times out closes that id
- * and asks the phone for a restart; the restart offer then opens a fresh
- * connection in the app under a new id.
+ * and, unless a restart cannot help, asks the phone for a restart; the next
+ * offer then opens a fresh connection in the app under a new id.
  */
 export class NativeMicPeer implements PeerPort {
   readonly micId: string;
@@ -115,17 +133,14 @@ export class NativeMicPeer implements PeerPort {
     );
   }
 
+  /** A newer offer from the phone ends the waiting one quietly: its answer would be stale. */
   acceptOffer(sdp: string): Promise<void> {
     if (this.state === 'closed') {
       return Promise.resolve();
     }
-    if (!isValidMicId(this.micId) || !isNativeSdp(sdp)) {
-      return Promise.reject(new Error('native mic offer outside the voice door limits'));
-    }
     this.settle();
-    this.seq += 1;
-    const seq = this.seq;
-    const sent = this.link.send({
+    const seq = this.seq + 1;
+    const offer: OfferMessage = {
       t: 'offer',
       peer: this.peer,
       seq,
@@ -133,15 +148,19 @@ export class NativeMicPeer implements PeerPort {
       micId: this.micId,
       sdp,
       iceServers: this.iceServers,
-    });
-    if (!sent) {
-      return Promise.reject(new Error('native mic link closed'));
+    };
+    if (!isNativeOffer(offer)) {
+      return Promise.reject(new Error('native mic offer outside the voice door limits'));
     }
+    if (!this.link.send(offer)) {
+      return Promise.reject(new Error('native mic link refused the offer'));
+    }
+    this.seq = seq;
     this.state = 'live';
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending?.seq === seq) {
-          this.fail(new Error('native mic answer timed out'));
+          this.fail(new Error('native mic answer timed out'), true);
         }
       }, ANSWER_TIMEOUT_MS);
       this.pending = { seq, resolve, reject, timer };
@@ -188,7 +207,11 @@ export class NativeMicPeer implements PeerPort {
     }
   }
 
-  /** `superseded`: a newer offer for this peer is being answered, so this one ends quietly. */
+  /**
+   * `superseded`: a newer offer for this peer is being answered, so this one
+   * ends quietly. `sdp` on a connection's first offer: the app refused the
+   * phone's offer itself, and the restart offer would be refused the same way.
+   */
   private onPeerError(error: Extract<AppMessage, { t: 'peer-error' }>): void {
     if (error.seq !== this.pending?.seq) {
       return;
@@ -197,7 +220,8 @@ export class NativeMicPeer implements PeerPort {
       this.settle();
       return;
     }
-    this.fail(new Error(`native mic peer ${error.code}: ${error.detail}`));
+    const restart = error.code !== 'sdp' || error.seq > 1;
+    this.fail(new Error(`native mic peer ${error.code}: ${error.detail}`), restart);
   }
 
   private onStats(stats: Extract<AppMessage, { t: 'peer-stats' }>): void {
@@ -214,15 +238,26 @@ export class NativeMicPeer implements PeerPort {
     this.counters = counters;
   }
 
-  /** Closes the app's connection for this id and asks the phone for a restart offer. */
-  private fail(error: Error): void {
+  /**
+   * Closes the app's connection for this id, so the next offer opens a fresh
+   * one, and asks the phone for that offer when `restart`. A link that takes
+   * no `close` is closed or stalled and could not carry a restart either, so
+   * the waiting offer then ends quietly.
+   */
+  private fail(error: Error, restart: boolean): void {
     const pending = this.take();
-    this.link.send({ t: 'close', peer: this.peer });
+    const closed = this.link.send({ t: 'close', peer: this.peer });
     this.peer = nextPeerId();
     this.seq = 0;
     this.state = 'idle';
     this.counters = null;
-    this.events.onRestartNeeded();
+    if (!closed) {
+      pending?.resolve();
+      return;
+    }
+    if (restart) {
+      this.events.onRestartNeeded();
+    }
     pending?.reject(error);
   }
 

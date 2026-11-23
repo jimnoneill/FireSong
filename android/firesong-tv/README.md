@@ -222,7 +222,7 @@ The code is the reference: `DoorMessages.kt`, `DoorCodec.kt` and `client/src/bri
 7. With phones (the rig's are enough), check:
    - the engine log's `first push: 48000 Hz, 1 ch`;
    - the first answer to each phone carries `a=candidate` lines. The app sends its candidates only in the answer, and a phone whose host candidates are `.local` names can connect only through them.
-8. Soak and compare with the rig: `scripts/firesong/cube-load-test.py --voice native --phones 4 --seconds 240 --song <hash>`, then `--ab --song <hash>` for web against native on the same song. Every check must pass, among them no underruns after the first 2 s, no xruns, the app process alive at the end, and an empty crash log (`logcat -b crash`). During one more run, unplug HDMI and power the TV off and on: the `FireSongVoice` log shows `stream lost` and a new `open`, and the voices come back without the page falling back to web.
+8. Soak and compare with the rig: `scripts/firesong/cube-load-test.py --voice native --phones 4 --seconds 240 --song <hash>`, then `--ab --song <hash>` for web against native on the same song (a song of at least 4:45: the native phase ends with a 30 s stall control). Every check must pass, among them no silence after the first 2 s, no resyncs after 10 s, at most 3 concealments per slot per minute, no xruns, the app process alive at the end, and an empty crash log (`logcat -b crash`). During one more run, unplug HDMI and power the TV off and on: the `FireSongVoice` log shows `stream lost` and a new `open`, and the voices come back without the page falling back to web.
 
 ## Logs and debugging
 

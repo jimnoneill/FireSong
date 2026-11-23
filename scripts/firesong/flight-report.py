@@ -164,8 +164,14 @@ def native_summary(samples, rows):
         print(f"xruns +{rise(st.get('xruns') for st in stats)}, output restarts +{rise(st.get('restarts') for st in stats)}, "
               f"open attempts {stats[-1].get('openAttempts')}, sink errors +{rise(st.get('sinkErrors') for st in stats)}, "
               f"ignored +{rise(st.get('ignored') for st in stats)}, tap blocks dropped +{rise(st.get('tapDropped') for st in stats)}")
-        print(f"splices: trims +{rise(st.get('trims') for st in stats)}, jumps +{rise(st.get('jumps') for st in stats)},"
-              f" inserts +{rise(st.get('inserts') for st in stats)}; voice frames clamped +{rise(st.get('clampHits') for st in stats)}")
+        if any("conceals" in st for st in stats):
+            print(f"ring: conceals +{rise(st.get('conceals') for st in stats)} ({round(rise(st.get('concealedFrames') for st in stats) / 48)} ms),"
+                  f" silence +{round(rise(st.get('silentFrames') for st in stats) / 48)} ms, resyncs +{rise(st.get('resyncs') for st in stats)},"
+                  f" output stalls +{rise(st.get('outputStalls') for st in stats)}, push gaps over 20 ms"
+                  f" +{rise(st.get('pushGaps20') for st in stats)}; voice frames clamped +{rise(st.get('clampHits') for st in stats)}")
+        else:
+            print(f"splices: trims +{rise(st.get('trims') for st in stats)}, jumps +{rise(st.get('jumps') for st in stats)},"
+                  f" inserts +{rise(st.get('inserts') for st in stats)}; voice frames clamped +{rise(st.get('clampHits') for st in stats)}")
 
         def us(key, pick=median):
             """A microsecond statistic over the samples that have it, in ms."""
@@ -182,8 +188,12 @@ def native_summary(samples, rows):
             for s in st.get("slots") or []:
                 per_slot.setdefault(s.get("slot"), []).append(s)
         for slot, xs in sorted(per_slot.items(), key=lambda kv: str(kv[0])):
-            print(f"slot {slot}: underruns +{rise(x.get('underruns') for x in xs)}, trimmed "
-                  f"+{round(rise(x.get('trimmedFrames') for x in xs) / 48)} ms, margin median {median(x.get('marginMs') for x in xs)} ms")
+            if any("droppedFrames" in x for x in xs):
+                print(f"slot {slot}: underruns +{rise(x.get('underruns') for x in xs)}, dropped "
+                      f"+{round(rise(x.get('droppedFrames') for x in xs) / 48)} ms, low water median {median(x.get('lowWaterMs') for x in xs)} ms")
+            else:
+                print(f"slot {slot}: underruns +{rise(x.get('underruns') for x in xs)}, trimmed "
+                      f"+{round(rise(x.get('trimmedFrames') for x in xs) / 48)} ms, margin median {median(x.get('marginMs') for x in xs)} ms")
 
     song = top(v for r in samples for v in find(r, "songPeak"))
     voice = top(st.get("peak") for st in stats)

@@ -24,7 +24,7 @@
 #   reverse PORT / unreverse PORT     adb reverse tcp:PORT tcp:PORT (Cube localhost -> host)
 #   devtools [LOCALPORT] / undevtools [LOCALPORT]
 #                          forward LOCALPORT (9222) to FireSong's WebView DevTools socket
-#   info                   dumpsys webviewupdate, meminfo org.firesong.tv, audio flinger summary
+#   info                   dumpsys webviewupdate, meminfo --local org.firesong.tv, audio flinger summary
 #
 # Safety rules (owner's): never touches the adb key (and refuses to run adb
 # without it, which would create a new unapproved key), never uninstalls or
@@ -219,7 +219,7 @@ case "$cmd" in
     ;;
   info)
     adbs shell dumpsys webviewupdate | head -6
-    adbs shell dumpsys meminfo "$PKG" | grep -E 'TOTAL|Native Heap|Dalvik Heap|Graphics' | head -6 || true
+    adbs shell dumpsys meminfo --local "$PKG" | grep -E 'TOTAL|Native Heap|Dalvik Heap|Graphics' | head -6 || true
     adbs shell dumpsys media.audio_flinger | grep -E 'Output thread|Sample rate|HAL frame count|Normal frame count|Latency|underruns' | head -24 || true
     ;;
   *)

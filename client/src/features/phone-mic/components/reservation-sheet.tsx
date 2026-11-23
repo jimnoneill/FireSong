@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
 
+import { ConfirmDialog } from '@/features/phone-mic/components/confirm-dialog';
 import { slotName } from '@/features/phone-mic/components/format';
 import { KeyTempoSteppers } from '@/features/phone-mic/components/key-tempo-steppers';
 import { PrepBadge } from '@/features/phone-mic/components/prep-badge';
@@ -47,6 +48,7 @@ function OwnerForm({ item, app, party, slot, offline, onClose }: OwnerFormProps)
     tempo: item.tempo,
   });
   const [singNext, setSingNext] = useState(item.singNext);
+  const [confirming, setConfirming] = useState(false);
   const change = changeOf(item, settings, singNext);
   const changed = Object.keys(change).length > 0;
   const canSingNext = item.singNext || reservationLimits(party.snapshot, slot).canSingNext;
@@ -76,13 +78,23 @@ function OwnerForm({ item, app, party, slot, offline, onClose }: OwnerFormProps)
         size="lg"
         className="h-12 text-base"
         disabled={busy}
-        onClick={() => {
-          app.party.cancel(item.reservationId);
-          onClose();
-        }}
+        onClick={() => setConfirming(true)}
       >
         {t('phoneMic.reservation.cancel')}
       </Button>
+      <ConfirmDialog
+        open={confirming}
+        title={t('phoneMic.reservation.removeTitle', { title: item.title })}
+        body={t('phoneMic.reservation.removeBody')}
+        confirmLabel={t('phoneMic.reservation.removeConfirm')}
+        destructive
+        onConfirm={() => {
+          setConfirming(false);
+          app.party.cancel(item.reservationId);
+          onClose();
+        }}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }

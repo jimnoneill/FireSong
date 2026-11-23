@@ -10,10 +10,10 @@ import { TuneMic } from '@/features/phone-mic/components/tune-mic';
 import { VoiceGuidance } from '@/features/phone-mic/components/voice-guidance';
 import type { PhoneMicApp } from '@/features/phone-mic/lib/app';
 import type { PartyState } from '@/features/phone-mic/lib/party-state';
-import { singsCurrent } from '@/features/phone-mic/lib/party-view';
+import { myItems, singsCurrent } from '@/features/phone-mic/lib/party-view';
 import type { PhoneMicSnapshot } from '@/features/phone-mic/lib/session';
 import type { MicSlot } from '@/features/remote-mic/protocol';
-import { t } from '@/i18n';
+import { formatNumber, t } from '@/i18n';
 import { Alert, AlertDescription } from '@/shared/components/ui/alert';
 import { Button } from '@/shared/components/ui/button';
 
@@ -26,11 +26,41 @@ type SingTabProps = {
   offline: boolean;
 };
 
+/** Guests wait for a mic and this phone has no song coming: offer to hand the mic on. */
+function PassMicCard({ app, party, slot }: Pick<SingTabProps, 'app' | 'party' | 'slot'>) {
+  const waiting = party.snapshot?.waiting ?? 0;
+  if (
+    waiting === 0 ||
+    singsCurrent(party.snapshot, slot) ||
+    myItems(party.snapshot, slot).length > 0
+  ) {
+    return null;
+  }
+  return (
+    <section className="flex flex-col gap-3 rounded-2xl border bg-card p-4">
+      <p className="text-base font-semibold">
+        {t('phoneMic.pass.waiting', { count: formatNumber(waiting) })}
+      </p>
+      <p className="text-sm text-muted-foreground">{t('phoneMic.pass.hint')}</p>
+      <Button
+        type="button"
+        variant="outline"
+        size="lg"
+        className="h-12 text-base"
+        onClick={() => app.session.leave()}
+      >
+        {t('phoneMic.pass.action')}
+      </Button>
+    </section>
+  );
+}
+
 function JoinedSing({ app, mic, party, slot, offline }: SingTabProps) {
   const singing = singsCurrent(party.snapshot, slot);
 
   return (
     <div className="flex flex-col gap-5">
+      <PassMicCard app={app} party={party} slot={slot} />
       <VoiceGuidance mic={mic} onRetry={() => app.session.retryVoice()} />
       {singing && party.lyric !== null ? <LyricCard lyric={party.lyric} /> : null}
       {singing ? <SongRemote party={party} controller={app.party} disabled={offline} /> : null}
@@ -58,11 +88,19 @@ function JoinedSing({ app, mic, party, slot, offline }: SingTabProps) {
 }
 
 /** All mics are taken: the phone keeps asking for one; no mic controls until it has one. */
-function WaitingForMic({ app }: { app: PhoneMicApp }) {
+function WaitingForMic({ app, mic }: { app: PhoneMicApp; mic: PhoneMicSnapshot }) {
   return (
     <div className="flex flex-col gap-5">
       <Alert>
-        <AlertDescription className="text-base">{problemMessage('slots-full')}</AlertDescription>
+        <AlertDescription className="flex flex-col gap-2 text-base">
+          <span>{problemMessage('slots-full')}</span>
+          {mic.linePosition === null ? null : (
+            <span className="font-semibold">
+              {t('phoneMic.wait.position', { position: formatNumber(mic.linePosition) })}
+            </span>
+          )}
+          <span className="text-sm text-muted-foreground">{t('phoneMic.wait.how')}</span>
+        </AlertDescription>
       </Alert>
       <Button
         type="button"
@@ -81,7 +119,7 @@ function WaitingForMic({ app }: { app: PhoneMicApp }) {
 export function SingTab(props: SingTabProps) {
   const { app, mic } = props;
   if (mic.stage === 'joined' && mic.problem === 'slots-full') {
-    return <WaitingForMic app={app} />;
+    return <WaitingForMic app={app} mic={mic} />;
   }
   if (mic.stage === 'joined') {
     return <JoinedSing {...props} />;

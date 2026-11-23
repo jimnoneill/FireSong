@@ -4,6 +4,11 @@ import type { SongSort } from "./SongSort";
 
 export type LoadSongsParams = {
   search: string | null;
+  /**
+   * Match the search words in the title and artist only, as the guests'
+   * song books do; otherwise also the album and the file path.
+   */
+  title_artist_only?: boolean;
   filters: LibraryMenuFilters;
   sort: SongSort[] | null;
   skip: number;

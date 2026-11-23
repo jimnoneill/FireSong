@@ -822,7 +822,7 @@ async fn reservations_expire_and_full_rooms_evict_the_oldest_reservation() {
     send(&mut extra, mic_hello(MIC_E, None)).await;
     assert_eq!(
         recv(&mut extra).await,
-        json!({"type": "error", "code": "slots-full"})
+        json!({"type": "error", "code": "slots-full", "position": 1})
     );
     expect_close(&mut extra, 4503).await;
 

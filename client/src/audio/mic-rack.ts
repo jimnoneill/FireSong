@@ -282,10 +282,12 @@ class SlotStrip {
     this.applyEcho();
   }
 
-  /** One feedback-guard step: notch and duck a confirmed howl. */
+  /** One feedback-guard step: notch and duck a confirmed howl, and release both once it is gone. */
   guard(nowMs: number): void {
     if (this.duckedUntil !== 0 && nowMs >= this.duckedUntil) {
       this.duckedUntil = 0;
+      this.feedbackHz = null;
+      ramp(this.nodes.notch.gain, 0, this.engine.context);
       this.applyFader();
     }
     if (!this.monitored || this.source === null) {

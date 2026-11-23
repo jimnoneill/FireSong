@@ -114,17 +114,28 @@ macro_rules! any_analysis_exists {
     };
 }
 
-fn apply_search(mut query: SongQuery, words: &[String]) -> SongQuery {
+/// Which text search words must appear in.
+#[derive(Clone, Copy)]
+enum SearchIn {
+    /// Title, artist, album and path.
+    Everything,
+    TitleArtist,
+}
+
+fn apply_search(mut query: SongQuery, words: &[String], within: SearchIn) -> SongQuery {
     for word in words {
         let pattern = format!("%{word}%");
-        query = query.filter(songs::search_text.like(pattern).escape('\\'));
+        query = match within {
+            SearchIn::Everything => query.filter(songs::search_text.like(pattern).escape('\\')),
+            SearchIn::TitleArtist => query.filter(songs::search_people.like(pattern).escape('\\')),
+        };
     }
     query
 }
 
 fn filtered_songs(
     filters: &LibraryMenuFilters,
-    search_words: Option<&[String]>,
+    search_words: Option<(&[String], SearchIn)>,
     extra: ExtraFilter,
 ) -> SongQuery {
     let mut query = songs::table.into_boxed::<Sqlite>();
@@ -188,10 +199,10 @@ fn filtered_songs(
         query = query.filter(songs::transcript_source.eq(source.to_string()));
     }
     if let Some(words) = filters.search.as_deref().and_then(search_words_from_query) {
-        query = apply_search(query, &words);
+        query = apply_search(query, &words, SearchIn::Everything);
     }
-    if let Some(words) = search_words {
-        query = apply_search(query, words);
+    if let Some((words, within)) = search_words {
+        query = apply_search(query, words, within);
     }
 
     match extra {
@@ -373,10 +384,16 @@ pub(crate) fn load_songs_page(params: &LoadSongsParams) -> Result<SongsStore, Ni
             .select((library_meta::folder, library_meta::scan_count))
             .first::<(String, i64)>(conn)?)
     })?;
-    let search_words = params.search.as_deref().and_then(search_words_from_query);
+    let words = params.search.as_deref().and_then(search_words_from_query);
+    let within = if params.title_artist_only == Some(true) {
+        SearchIn::TitleArtist
+    } else {
+        SearchIn::Everything
+    };
+    let search = words.as_deref().map(|words| (words, within));
 
     let processed = with_conn(|conn| {
-        let query = filtered_songs(&params.filters, search_words.as_deref(), ExtraFilter::None);
+        let query = filtered_songs(&params.filters, search, ExtraFilter::None);
         let query = if let Some(sorts) = params.sort.as_deref().filter(|sorts| !sorts.is_empty()) {
             order_by_sort(query, sorts)
         } else {
@@ -391,18 +408,17 @@ pub(crate) fn load_songs_page(params: &LoadSongsParams) -> Result<SongsStore, Ni
     })?;
 
     let (processed_count, analyzed_count, analysis_busy_count) = with_conn(|conn| {
-        let processed = filtered_songs(&params.filters, search_words.as_deref(), ExtraFilter::None)
+        let processed = filtered_songs(&params.filters, search, ExtraFilter::None)
             .count()
             .get_result::<i64>(conn)?;
-        let analyzed = filtered_songs(&params.filters, search_words.as_deref(), ExtraFilter::None)
+        let analyzed = filtered_songs(&params.filters, search, ExtraFilter::None)
             .filter(songs::is_analyzed.eq(true))
             .count()
             .get_result::<i64>(conn)?;
-        let analysis_busy =
-            filtered_songs(&params.filters, search_words.as_deref(), ExtraFilter::None)
-                .filter(analysis_exists!(["queued", "analyzing"]))
-                .count()
-                .get_result::<i64>(conn)?;
+        let analysis_busy = filtered_songs(&params.filters, search, ExtraFilter::None)
+            .filter(analysis_exists!(["queued", "analyzing"]))
+            .count()
+            .get_result::<i64>(conn)?;
         Ok((
             processed as usize,
             analyzed as usize,

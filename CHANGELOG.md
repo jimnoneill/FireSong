@@ -36,6 +36,11 @@ below.
 - While a song plays, the TV shows a hint for the remote in place of keyboard shortcuts and analysis notes.
 - Party QR codes work whenever FireSong is on the TV: the self-hosted server opens the guests' door by itself, and closes it again 20 minutes after you leave the app.
 - While FireSong is on the TV, the self-hosted server puts guests first: it only prepares songs someone is waiting to sing, pauses background preparation and library rescans until 20 minutes after the party, and keeps the TV responsive when the machine is busy.
+- Sing along: tap "Sing along" on someone else's song in the queue to sing it with them, up to four singers, and the TV shows who is singing in their colours. The song's owner hears when someone joins or leaves.
+- When every mic is taken, guests wait in a fair line and see their place in it; the TV and the mic holders see how many are waiting, and a guest with no song coming can pass their mic on.
+- The queue takes turns: each guest's first song comes before anyone's second, and "Sing next" goes first within a turn.
+- The guests' song books search titles and artists only and say how many songs match; the song sheet says "Reserve for 3 singers" and confirms where your song landed, removing a song asks first, and songs getting ready show minutes instead of a percentage.
+- Two guests with the same name get a number on the TV, the Skip button and song title stay readable over bright video, and a duet's score card says which place you took among its singers.
 - When your song comes up, your phone opens the Sing tab (and buzzes on phones that can), so you don't miss it while browsing.
 - A phone waiting for a free mic says so instead of "Reconnecting…", and the song sheet tells you up front when a song is already in your queue or your queue is full (with how many songs you may queue). Fun sounds show how many are left.
 - The self-hosted server keeps a record of each party night (dropped connections, slowdowns, song load times and microphone levels), so problems can be traced afterwards.
@@ -45,6 +50,9 @@ below.
 
 - A guest whose phone locks or whose browser restarts keeps their mic and their queued songs for two minutes, even when every mic is taken; before, someone waiting could take the seat at once and the songs were gone.
 - Songs prepared from a media server get the real length of their audio: some showed as a few seconds long, which also kept synced lyrics from being found for them.
+- A 100 now takes real singing: a steady hum used to score a perfect 100 on some songs.
+- A feedback guard notch no longer stays on a singer's mic for the rest of the night after the howl is gone.
+- The mascot's "80" sign only shows for scores in the 80s.
 - The TV no longer clips when the song, the singers and the fun sounds peak together.
 - The party no longer freezes for seconds at a time: the TV stops polling library and storage statistics that sit hidden behind the party lobby (summing a large song cache could take the server many seconds), and slow library work on the self-hosted server can no longer hold up the TV and the phones.
 - Large media-server libraries with big playlists no longer freeze the app for minutes at the end of a library scan.

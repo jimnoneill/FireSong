@@ -242,6 +242,8 @@ struct Session {
     greeted: bool,
     closing: bool,
     bucket: Bucket,
+    /// The phone's id from its `hello`.
+    mic_id: Option<String>,
 }
 
 impl Session {
@@ -253,10 +255,17 @@ impl Session {
                 code,
                 message: None,
             }),
-            Role::Mic => self.peer.send(&ServerToMic::Error {
-                code,
-                message: None,
-            }),
+            Role::Mic => {
+                let position = match (code, self.mic_id.as_deref()) {
+                    (RtcErrorCode::SlotsFull, Some(mic_id)) => self.hub.line_position(mic_id),
+                    _ => None,
+                };
+                self.peer.send(&ServerToMic::Error {
+                    code,
+                    message: None,
+                    position,
+                });
+            }
         }
         if code.is_fatal() {
             self.closing = true;
@@ -324,6 +333,7 @@ impl Session {
                     return Err(RtcErrorCode::BadHello);
                 }
                 self.greeted = true;
+                self.mic_id = Some(mic_id.clone());
                 self.hub.mic_hello(
                     self.peer.clone(),
                     MicHello {
@@ -385,6 +395,7 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
         peer,
         conn,
         greeted: false,
+        mic_id: None,
         closing: false,
         bucket: Bucket::for_socket(role),
     };

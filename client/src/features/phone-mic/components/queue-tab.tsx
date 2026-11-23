@@ -10,10 +10,16 @@ import type { PartyState } from '@/features/phone-mic/lib/party-state';
 import {
   countdownEndsAt,
   countdownLeft,
+  isPending,
   isReady,
   singsIn,
 } from '@/features/phone-mic/lib/party-view';
-import type { MicSlot, PartyItem, PartySnapshot } from '@/features/remote-mic/protocol';
+import {
+  SLOT_COUNT,
+  type MicSlot,
+  type PartyItem,
+  type PartySnapshot,
+} from '@/features/remote-mic/protocol';
 import { formatNumber, t } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
 import { cn } from '@/shared/utils/cn';
@@ -76,9 +82,15 @@ type QueueRowProps = {
   snapshot: PartySnapshot;
   mine: boolean;
   onEdit: () => void;
+  /** Set when this phone may sign up to sing this song. */
+  onSingAlong: (() => void) | null;
 };
 
-function QueueRow({ item, position, snapshot, mine, onEdit }: QueueRowProps) {
+/** Another guest's song with room for one more singer (one per mic). */
+const canSingAlong = (item: PartyItem, mine: boolean): boolean =>
+  !mine && item.singers.length > 0 && item.singers.length < SLOT_COUNT;
+
+function QueueRow({ item, position, snapshot, mine, onEdit, onSingAlong }: QueueRowProps) {
   return (
     <li
       className={cn(
@@ -114,6 +126,17 @@ function QueueRow({ item, position, snapshot, mine, onEdit }: QueueRowProps) {
           {t('common.actions.edit')}
         </Button>
       ) : null}
+      {onSingAlong === null ? null : (
+        <Button
+          type="button"
+          variant="outline"
+          size="lg"
+          className="h-11 shrink-0 px-4 text-sm"
+          onClick={onSingAlong}
+        >
+          {t('phoneMic.queue.singAlong')}
+        </Button>
+      )}
     </li>
   );
 }
@@ -152,16 +175,22 @@ export function QueueTab({ app, party, slot, offline, onBrowse }: QueueTabProps)
         </div>
       ) : (
         <ol className="flex flex-col gap-1">
-          {snapshot.queue.map((each, index) => (
-            <QueueRow
-              key={each.reservationId}
-              item={each}
-              position={index + 1}
-              snapshot={snapshot}
-              mine={singsIn(each, slot)}
-              onEdit={() => setEditing(each.reservationId)}
-            />
-          ))}
+          {snapshot.queue.map((each, index) => {
+            const mine = singsIn(each, slot);
+            const joinable =
+              canSingAlong(each, mine) && !offline && !isPending(party, 'sing-along');
+            return (
+              <QueueRow
+                key={each.reservationId}
+                item={each}
+                position={index + 1}
+                snapshot={snapshot}
+                mine={mine}
+                onEdit={() => setEditing(each.reservationId)}
+                onSingAlong={joinable ? () => app.party.singAlong(each.reservationId) : null}
+              />
+            );
+          })}
         </ol>
       )}
       {more > 0 ? (

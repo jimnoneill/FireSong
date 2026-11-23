@@ -53,7 +53,7 @@ const SkipButton = forwardRef<HTMLButtonElement, { label: string; onClick: () =>
       ref={ref}
       type="button"
       onClick={onClick}
-      className="pointer-events-auto flex gap-1 rounded-sm border-2 border-white/70 bg-black/10 px-2.5 py-1 text-sm text-white/90 transition-colors hover:bg-black/20"
+      className="pointer-events-auto flex gap-1 rounded-sm border-2 border-white/70 bg-black/60 px-2.5 py-1 text-sm text-white transition-colors hover:bg-black/75"
       style={{ display: 'none' }}
     >
       <span>{label}</span> <span>⏎</span>
@@ -479,7 +479,7 @@ function PlaybackHudImpl({
       <div
         className={`pointer-events-auto absolute inset-x-0 z-20 flex justify-between gap-3 px-3 md:px-4 ${hudPosition}`}
       >
-        <div className="flex w-[70vw] min-w-0 max-w-80 flex-col sm:max-w-[48%] lg:max-w-96">
+        <div className="flex w-[70vw] min-w-0 max-w-80 flex-col [text-shadow:0_1px_3px_rgb(0_0_0/0.85)] sm:max-w-[48%] lg:max-w-96">
           <h1 className="line-clamp-2 [overflow-wrap:anywhere] text-base leading-tight text-white md:text-[1.375rem]">
             {title}
           </h1>

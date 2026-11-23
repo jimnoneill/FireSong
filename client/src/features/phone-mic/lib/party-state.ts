@@ -17,6 +17,7 @@ import { fullBucket, takeToken, type BucketRule, type TokenBucket } from './budg
 export type PartyRequestKind =
   | 'reserve'
   | 'edit'
+  | 'sing-along'
   | 'cancel'
   | 'control'
   | 'shift-current'
@@ -38,7 +39,9 @@ export type PendingRequest = {
 
 export type PartyMessage =
   | { id: number; kind: 'notice'; code: NoticeCode; title?: string; bySlot?: MicSlot }
-  | { id: number; kind: 'failure'; request: PartyRequestKind; code: RequestFailureCode };
+  | { id: number; kind: 'failure'; request: PartyRequestKind; code: RequestFailureCode }
+  /** A reservation went through; the message says where it landed. */
+  | { id: number; kind: 'reserved'; reservationId: string };
 
 export type LyricView = {
   line: string;
@@ -118,7 +121,8 @@ export const initialPartyState = (now: number): PartyState => ({
 
 type MessageBody =
   | { kind: 'notice'; code: NoticeCode; title?: string; bySlot?: MicSlot }
-  | { kind: 'failure'; request: PartyRequestKind; code: RequestFailureCode };
+  | { kind: 'failure'; request: PartyRequestKind; code: RequestFailureCode }
+  | { kind: 'reserved'; reservationId: string };
 
 const withMessage = (state: PartyState, body: MessageBody): PartyState => ({
   ...state,
@@ -187,6 +191,9 @@ const applyAck = (
   const settled = { ...state, pending: state.pending.filter((each) => each !== request) };
   if (!frame.ok) {
     return withFailure(settled, request.kind, frame.code ?? 'invalid');
+  }
+  if (request.kind === 'reserve' && frame.reservationId !== undefined) {
+    return withMessage(settled, { kind: 'reserved', reservationId: frame.reservationId });
   }
   return request.kind === 'shift-current' ? applyShift(settled, request, at) : settled;
 };

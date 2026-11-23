@@ -28,5 +28,6 @@ export const snapshot = (patch: Partial<PartySnapshot> = {}): PartySnapshot => (
     { slot: 2, color: 'fuchsia', name: 'Jim', state: 'connected', volumePct: 80, echoPct: 120 },
   ],
   scores: [],
+  waiting: 0,
   ...patch,
 });

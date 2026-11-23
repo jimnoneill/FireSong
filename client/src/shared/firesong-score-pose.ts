@@ -22,7 +22,8 @@ export function scorePoseFor(displayScore: number): ScorePose {
   if (displayScore >= 90) {
     return { url: grinningUrl, alt: 'firesong.scorePose.grinning' };
   }
-  if (displayScore >= 70) {
+  // The winking pose holds an "80" sign, so it only fits the 80s.
+  if (displayScore >= 80) {
     return { url: winkingUrl, alt: 'firesong.scorePose.winking' };
   }
   if (displayScore >= 50) {

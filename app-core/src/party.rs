@@ -16,7 +16,7 @@ use crate::remote_mic::{
     DEFAULT_PREP_SECS, MAX_NIGHT_SCORES, MAX_PARTY_QUEUE_ITEMS, MAX_PREPARING_PER_SLOT,
     MAX_PREPARING_TOTAL, MAX_RESERVATIONS_PER_SLOT, MAX_SING_NEXT_PER_SLOT,
     NIGHT_SCORE_MAX_AGE_SECS, NightScore, PartyAction, PartyErrorCode, PartyItem, PrepStage,
-    PrepState, StageKind,
+    PrepState, SLOT_COUNT, StageKind,
 };
 
 /// Analysis times kept for the estimate ("tonight's last 5").
@@ -197,10 +197,6 @@ impl Item {
         }
     }
 
-    fn key(&self) -> (u8, u64) {
-        order_key(self.sing_next, self.seq)
-    }
-
     fn sings(&self, mic_id: &str) -> bool {
         self.owner.as_deref() == Some(mic_id) || self.partners.iter().any(|mic| mic == mic_id)
     }
@@ -216,6 +212,14 @@ struct Played {
     stage: StageItem,
 }
 
+/// A partner joined or left a reservation: whom to tell, about which song.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartnerChange {
+    /// The reservation's owner.
+    pub owner: String,
+    pub title: String,
+}
+
 /// Reservations and host-queued songs, in memory. One per server.
 #[derive(Debug, Default)]
 pub struct PartyBook {
@@ -228,14 +232,20 @@ pub struct PartyBook {
 }
 
 /// Play-order key: "sing next" items first, then reservation order.
-fn order_key(sing_next: bool, seq: u64) -> (u8, u64) {
-    (u8::from(!sing_next), seq)
+/// Queue order: a guest's first waiting song is in round 0, their second in
+/// round 1 and so on, so guests take turns. A guest's "Sing next" song is their
+/// first; within a round "Sing next" goes first, then reservation order. Host
+/// songs are in round 0.
+type OrderKey = (u64, u8, u64);
+
+fn order_key(round: u64, sing_next: bool, seq: u64) -> OrderKey {
+    (round, u8::from(!sing_next), seq)
 }
 
 /// Where a new, edited or newly ready item goes: before the first entry whose
 /// key is greater. While the TV counts down to the head entry or starts it,
 /// index 0 is off limits.
-fn placement(keys: &[(u8, u64)], key: (u8, u64), protect_head: bool) -> usize {
+fn placement(keys: &[OrderKey], key: OrderKey, protect_head: bool) -> usize {
     let index = keys
         .iter()
         .position(|other| *other > key)
@@ -395,7 +405,32 @@ impl PartyBook {
         }
     }
 
-    fn entry_keys(&self, entries: &[QueuedSong], except: Option<&str>) -> Vec<(u8, u64)> {
+    /// How many of the owner's waiting songs come before this one in the
+    /// owner's own order: "Sing next" first, then reservation order.
+    fn round(&self, owner: Option<&str>, sing_next: bool, seq: u64) -> u64 {
+        let Some(owner) = owner else {
+            return 0;
+        };
+        let mine = (!sing_next, seq);
+        let ahead = self
+            .items
+            .iter()
+            .filter(|other| {
+                other.owner.as_deref() == Some(owner) && (!other.sing_next, other.seq) < mine
+            })
+            .count();
+        u64::try_from(ahead).unwrap_or(u64::MAX)
+    }
+
+    fn key_of(&self, item: &Item) -> OrderKey {
+        order_key(
+            self.round(item.owner.as_deref(), item.sing_next, item.seq),
+            item.sing_next,
+            item.seq,
+        )
+    }
+
+    fn entry_keys(&self, entries: &[QueuedSong], except: Option<&str>) -> Vec<OrderKey> {
         entries
             .iter()
             .filter(|entry| Some(entry.entry_id.as_str()) != except)
@@ -403,7 +438,7 @@ impl PartyBook {
                 self.items
                     .iter()
                     .find(|item| item.entry_id() == Some(entry.entry_id.as_str()))
-                    .map(Item::key)
+                    .map(|item| self.key_of(item))
             })
             .collect()
     }
@@ -471,7 +506,12 @@ impl PartyBook {
         let seq = self.next_seq + 1;
         let state = if song.analyzed {
             let keys = self.entry_keys(&entries, None);
-            let index = placement(&keys, order_key(request.sing_next, seq), protect_head);
+            let round = self.round(Some(owner.as_str()), request.sing_next, seq);
+            let index = placement(
+                &keys,
+                order_key(round, request.sing_next, seq),
+                protect_head,
+            );
             let entry_id = library
                 .insert(&file_hash, request.key_offset, request.tempo, index)
                 .map_err(|_| PartyErrorCode::Unavailable)?;
@@ -577,7 +617,7 @@ impl PartyBook {
         item.key_offset = key_offset;
         item.tempo = tempo;
         item.sing_next = sing_next;
-        let key = item.key();
+        let key = self.key_of(&self.items[index]);
         if sing_next_changes && let Some(entry_id) = &entry_id {
             let keys = self.entry_keys(&entries, Some(entry_id));
             let target = placement(&keys, key, protect_head);
@@ -588,14 +628,51 @@ impl PartyBook {
         Ok(())
     }
 
-    /// The owner removes a reservation; a partner leaves it.
+    /// Signs a phone up to sing another phone's reservation with it, up to
+    /// one singer per mic. The owner is to be told.
+    pub fn sing_along(
+        &mut self,
+        library: &dyn LibraryPort,
+        mic_id: &str,
+        reservation_id: &str,
+    ) -> Result<PartnerChange, PartyErrorCode> {
+        self.sync(&library.entries());
+        let index = self
+            .items
+            .iter()
+            .position(|item| item.id == reservation_id)
+            .ok_or(PartyErrorCode::NotFound)?;
+        let file_hash = self.items[index].file_hash.clone();
+        if self
+            .items
+            .iter()
+            .any(|item| item.file_hash == file_hash && item.sings(mic_id))
+        {
+            return Err(PartyErrorCode::Duplicate);
+        }
+        let item = &mut self.items[index];
+        let Some(owner) = item.owner.clone() else {
+            return Err(PartyErrorCode::NotAllowed);
+        };
+        if item.singers().len() >= usize::from(SLOT_COUNT) {
+            return Err(PartyErrorCode::SongFull);
+        }
+        item.partners.push(mic_id.to_string());
+        Ok(PartnerChange {
+            owner,
+            title: item.title.clone(),
+        })
+    }
+
+    /// The owner removes a reservation; a partner leaves it, and the owner is
+    /// to be told.
     pub fn cancel(
         &mut self,
         library: &dyn LibraryPort,
         analysis: &dyn AnalysisPort,
         mic_id: &str,
         reservation_id: &str,
-    ) -> Result<(), PartyErrorCode> {
+    ) -> Result<Option<PartnerChange>, PartyErrorCode> {
         self.sync(&library.entries());
         let index = self
             .items
@@ -605,24 +682,29 @@ impl PartyBook {
         let item = &mut self.items[index];
         if item.owner.as_deref() == Some(mic_id) {
             self.remove_item(library, analysis, index);
-            Ok(())
+            Ok(None)
         } else if item.partners.iter().any(|mic| mic == mic_id) {
             item.partners.retain(|mic| mic != mic_id);
-            Ok(())
+            Ok(item.owner.clone().map(|owner| PartnerChange {
+                owner,
+                title: item.title.clone(),
+            }))
         } else {
             Err(PartyErrorCode::NotAllowed)
         }
     }
 
     /// A phone's slot was freed: the first partner takes over what it owned,
-    /// songs without partners are dropped, and it leaves every duet.
+    /// songs without partners are dropped, and it leaves every duet. Returns
+    /// the duets it left, whose owners are to be told.
     pub fn release(
         &mut self,
         library: &dyn LibraryPort,
         analysis: &dyn AnalysisPort,
         mic_id: &str,
-    ) {
+    ) -> Vec<PartnerChange> {
         self.sync(&library.entries());
+        let mut left = Vec::new();
         for index in (0..self.items.len()).rev() {
             let item = &mut self.items[index];
             if item.owner.as_deref() == Some(mic_id) {
@@ -631,10 +713,17 @@ impl PartyBook {
                 } else {
                     item.owner = Some(item.partners.remove(0));
                 }
-            } else {
+            } else if item.partners.iter().any(|mic| mic == mic_id) {
                 item.partners.retain(|mic| mic != mic_id);
+                if let Some(owner) = item.owner.clone() {
+                    left.push(PartnerChange {
+                        owner,
+                        title: item.title.clone(),
+                    });
+                }
             }
         }
+        left
     }
 
     /// Drops an item with its queue entry. A preparation is cancelled only
@@ -778,7 +867,7 @@ impl PartyBook {
         };
         let keys = self.entry_keys(&entries, None);
         let item = &self.items[index];
-        let target = placement(&keys, item.key(), protect_head);
+        let target = placement(&keys, self.key_of(item), protect_head);
         let entry_id = match library.insert(&song.file_hash, item.key_offset, item.tempo, target) {
             Ok(entry_id) => entry_id,
             Err(error) => {
@@ -824,10 +913,10 @@ impl PartyBook {
             .iter()
             .filter(|item| item.prep().is_some())
             .collect();
-        preparing.sort_by_key(|item| item.key());
+        preparing.sort_by_key(|item| self.key_of(item));
         let mut slots: Vec<Vec<&Item>> = vec![Vec::new(); entries.len() + 1];
         for item in preparing {
-            slots[placement(&keys, item.key(), protect_head)].push(item);
+            slots[placement(&keys, self.key_of(item), protect_head)].push(item);
         }
 
         let singers = |item: &Item| -> Vec<u8> {
@@ -1291,14 +1380,14 @@ mod tests {
 
     #[test]
     fn placement_follows_the_order_key_and_protects_the_head() {
-        let keys = [(1, 1), (1, 3), (1, 5)];
-        assert_eq!(placement(&keys, (1, 4), false), 2);
-        assert_eq!(placement(&keys, (1, 9), false), 3);
-        assert_eq!(placement(&keys, (0, 9), false), 0);
-        assert_eq!(placement(&keys, (0, 9), true), 1);
-        assert_eq!(placement(&[], (0, 9), true), 0);
+        let keys = [(0, 1, 1), (0, 1, 3), (0, 1, 5)];
+        assert_eq!(placement(&keys, (0, 1, 4), false), 2);
+        assert_eq!(placement(&keys, (0, 1, 9), false), 3);
+        assert_eq!(placement(&keys, (0, 0, 9), false), 0);
+        assert_eq!(placement(&keys, (0, 0, 9), true), 1);
+        assert_eq!(placement(&[], (0, 0, 9), true), 0);
         // The host reordered: the first greater key wins, nothing is re-sorted.
-        assert_eq!(placement(&[(1, 5), (1, 1)], (1, 3), false), 0);
+        assert_eq!(placement(&[(0, 1, 5), (0, 1, 1)], (0, 1, 3), false), 0);
 
         assert!(protects_head(StageKind::Starting, None));
         assert!(protects_head(StageKind::Lobby, Some(12)));

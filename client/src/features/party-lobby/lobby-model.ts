@@ -51,6 +51,8 @@ export type LobbyModel = {
   more: number;
   best: NightScore[];
   queued: number;
+  /** Phones in line for a free mic. */
+  waiting: number;
 };
 
 export type LobbyModelInput = {
@@ -120,5 +122,6 @@ export const lobbyModel = ({ snapshot, entries, links, devices }: LobbyModelInpu
     more: Math.max(0, queued - upNext.length),
     best: (snapshot?.scores ?? []).slice(0, BEST_COUNT),
     queued,
+    waiting: snapshot?.waiting ?? 0,
   };
 };

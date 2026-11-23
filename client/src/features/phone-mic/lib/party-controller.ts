@@ -108,6 +108,11 @@ export class PartyController implements PartyListener {
     this.request('edit', (reqId) => ({ type: 'edit', reqId, reservationId, ...change }));
   }
 
+  /** Sign up to sing another guest's reserved song with them. */
+  singAlong(reservationId: string): void {
+    this.request('sing-along', (reqId) => ({ type: 'sing-along', reqId, reservationId }));
+  }
+
   cancel(reservationId: string): void {
     this.request('cancel', (reqId) => ({ type: 'cancel', reqId, reservationId }));
   }

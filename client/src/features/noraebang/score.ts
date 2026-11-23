@@ -11,7 +11,9 @@
  *   v < VOICED_MIN: shown = raw / 10                  (nobody sang: honest)
  *   otherwise:      F = 40 + 20 * min(1, v / 0.6)     (participation floor)
  *                   shown = F + (100 - F) * (1 - (1 - p)^2) + jitter
- *   shown >= 98 snaps to 100.
+ *   shown >= 98 snaps to 100, but only once p = 1 (raw >= RAW_FULL): a
+ *   steady hum scored 100 on the 2026-11-22 party test; without the pitch
+ *   for it, the top shown is 97.
  */
 
 import {
@@ -31,7 +33,7 @@ export const FLOOR_MIN = 40;
 export const FLOOR_SPAN = 20;
 /** Voiced ratio that earns the whole floor. */
 export const VOICED_FULL = 0.6;
-/** Display scores at or above this become 100. */
+/** Display scores at or above this become 100 when the raw score earned the full curve. */
 export const PERFECT_SNAP = 98;
 /** Jitter range, in display points either way. */
 export const JITTER_MAX = 2;
@@ -71,7 +73,10 @@ export function noraebangDisplayScore({
     0,
     MAX_DISPLAY_SCORE,
   );
-  return shown >= PERFECT_SNAP ? MAX_DISPLAY_SCORE : shown;
+  if (shown < PERFECT_SNAP) {
+    return shown;
+  }
+  return progress >= 1 ? MAX_DISPLAY_SCORE : PERFECT_SNAP - 1;
 }
 
 /**

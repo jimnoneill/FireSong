@@ -142,7 +142,17 @@ pub(super) struct Inner {
     offer_budget: [Bucket; SLOTS],
     store: MicStore,
     pub(super) room: Room,
+    /// Phones told `slots-full`, in the order they first asked (PROTOCOL.md §6.1).
+    pub(super) waiting: Vec<Waiter>,
 }
+
+pub(super) struct Waiter {
+    mic_id: String,
+    seen: Instant,
+}
+
+/// A phone in line asks again every few seconds; one that stops is out of line.
+const WAITER_FORGET: Duration = Duration::from_secs(20);
 
 impl Default for Hub {
     fn default() -> Self {
@@ -173,6 +183,7 @@ impl Hub {
                 offer_budget: std::array::from_fn(|_| Bucket::new(OFFER_BURST, OFFER_PER_SEC)),
                 store,
                 room: Room::default(),
+                waiting: Vec::new(),
             }),
         }
     }
@@ -365,7 +376,7 @@ impl Hub {
             slot: wanted,
             name,
         } = hello;
-        let name = name.map(|name| name.trim().to_string());
+        let name = name.map(|name| inner.unique_name(name.trim(), &mic_id));
 
         if let Some(index) = inner.index_of_mic(&mic_id) {
             let slot = slot_number(index);
@@ -407,9 +418,31 @@ impl Hub {
             return Ok(());
         }
 
-        let index = inner
-            .pick_slot(wanted, Instant::now())
-            .ok_or(RtcErrorCode::SlotsFull)?;
+        // First come, first served: while phones wait in line, a free slot
+        // goes to the first of them.
+        let now = Instant::now();
+        let waiting = inner.waiting.len();
+        inner.forget_waiters(now);
+        let ahead = inner
+            .waiting
+            .first()
+            .is_some_and(|first| first.mic_id != mic_id);
+        let picked = if ahead {
+            None
+        } else {
+            inner.pick_slot(wanted, now)
+        };
+        let Some(index) = picked else {
+            inner.wait_in_line(&mic_id, now);
+            if inner.waiting.len() != waiting {
+                inner.mark_party_dirty();
+            }
+            return Err(RtcErrorCode::SlotsFull);
+        };
+        inner.waiting.retain(|waiter| waiter.mic_id != mic_id);
+        if inner.waiting.len() != waiting {
+            inner.mark_party_dirty();
+        }
         let slot = slot_number(index);
         if let Some(evicted) = inner.slots[index].take() {
             if let Some(tv) = &inner.tv {
@@ -515,6 +548,16 @@ impl Hub {
                 Ok(())
             }
         }
+    }
+
+    /// This phone's place in the line for a free slot (1 = next).
+    pub(crate) fn line_position(&self, mic_id: &str) -> Option<u32> {
+        let inner = self.lock();
+        let index = inner
+            .waiting
+            .iter()
+            .position(|waiter| waiter.mic_id == mic_id)?;
+        u32::try_from(index + 1).ok()
     }
 
     /// The phone socket closed without `bye`: keep its slot for a reconnect.
@@ -661,6 +704,53 @@ impl Inner {
             .as_ref()
             .and_then(Entry::phone)
             .cloned()
+    }
+
+    /// Drops phones that stopped asking for a slot; whether the line changed.
+    pub(super) fn forget_waiters(&mut self, now: Instant) -> bool {
+        let before = self.waiting.len();
+        self.waiting
+            .retain(|waiter| now.saturating_duration_since(waiter.seen) < WAITER_FORGET);
+        self.waiting.len() != before
+    }
+
+    fn wait_in_line(&mut self, mic_id: &str, now: Instant) {
+        match self
+            .waiting
+            .iter_mut()
+            .find(|waiter| waiter.mic_id == mic_id)
+        {
+            Some(waiter) => waiter.seen = now,
+            None => self.waiting.push(Waiter {
+                mic_id: mic_id.to_string(),
+                seen: now,
+            }),
+        }
+    }
+
+    /// The name as given, or with a number when another phone already uses it
+    /// (case aside), so the TV and the board can tell two guests apart.
+    fn unique_name(&self, name: &str, mic_id: &str) -> String {
+        let taken = |candidate: &str| {
+            self.slots.iter().flatten().any(|entry| {
+                entry.mic_id != mic_id
+                    && entry
+                        .name
+                        .as_deref()
+                        .is_some_and(|other| other.to_lowercase() == candidate.to_lowercase())
+            })
+        };
+        if name.is_empty() || !taken(name) {
+            return name.to_string();
+        }
+        let base: String = name
+            .chars()
+            .take(app_core::remote_mic::MAX_NAME_CHARS - 2)
+            .collect();
+        (2..=SLOTS + 1)
+            .map(|number| format!("{} {number}", base.trim_end()))
+            .find(|candidate| !taken(candidate))
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// PROTOCOL.md §6.1 step 2: the wanted slot if empty, the lowest empty

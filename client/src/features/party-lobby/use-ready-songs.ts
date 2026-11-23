@@ -12,6 +12,7 @@ export function useReadySongs(search: string) {
     queryFn: ({ pageParam = 0 }: { pageParam?: number }) =>
       loadSongs({
         search: search === '' ? null : search,
+        title_artist_only: true,
         filters: {
           artist: null,
           album: null,

@@ -46,6 +46,8 @@ export type PhoneMicSnapshot = {
   /** Recovery needs a user gesture ("Tap to rejoin"). */
   needsTap: boolean;
   problem: PhoneMicProblem | null;
+  /** With `slots-full`: the place in the line for a free mic (1 = next), when the server says. */
+  linePosition: number | null;
   wakeLock: WakeLockState;
   result: SongResultView | null;
   /** The voice cannot reach the TV: two connection attempts in a row ended without `connected`. */
@@ -94,6 +96,7 @@ const INITIAL_SNAPSHOT: PhoneMicSnapshot = {
   mutedBy: null,
   needsTap: false,
   problem: null,
+  linePosition: null,
   wakeLock: 'idle',
   result: null,
   unreachable: false,
@@ -325,7 +328,7 @@ export class PhoneMicSession {
         this.ports.peer.close();
         return;
       case 'error':
-        this.handleError(frame.code);
+        this.handleError(frame.code, frame.position ?? null);
         return;
     }
   }
@@ -340,7 +343,7 @@ export class PhoneMicSession {
       slot: frame.slot,
     });
     this.iceServers = frame.iceServers;
-    this.update({ slot: frame.slot, problem: null });
+    this.update({ slot: frame.slot, problem: null, linePosition: null });
 
     if (this.muteDirty || (!frame.reclaimed && this.snapshot.muted)) {
       this.muteDirty = !this.signaling.send({ type: 'mute', muted: this.snapshot.muted });
@@ -361,10 +364,10 @@ export class PhoneMicSession {
     this.update({ link: 'waiting-tv', unreachable: false });
   }
 
-  private handleError(code: RtcErrorCode): void {
+  private handleError(code: RtcErrorCode, position: number | null): void {
     this.lastError = code;
     if (code === 'slots-full') {
-      this.update({ problem: 'slots-full' });
+      this.update({ problem: 'slots-full', linePosition: position });
     } else if (code === 'no-tv') {
       this.handleTvState(false);
     }

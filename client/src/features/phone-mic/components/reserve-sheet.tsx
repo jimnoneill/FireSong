@@ -20,7 +20,7 @@ import {
   type BookSong,
   type MicSlot,
 } from '@/features/remote-mic/protocol';
-import { t } from '@/i18n';
+import { formatNumber, t } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
 
 type ReserveSheetProps = {
@@ -90,7 +90,9 @@ function ReserveForm({ song, app, party, slot, offline, onClose }: ReserveFormPr
         className="h-14 text-lg"
         disabled={offline || limit !== null || isPending(party, 'reserve')}
       >
-        {t('phoneMic.reserve.action')}
+        {partners.length === 0
+          ? t('phoneMic.reserve.action')
+          : t('phoneMic.reserve.actionFor', { count: formatNumber(partners.length + 1) })}
       </Button>
       {offline ? (
         <p className="text-center text-sm text-muted-foreground">{t('phoneMic.link.offline')}</p>

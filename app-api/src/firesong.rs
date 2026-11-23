@@ -84,6 +84,7 @@ impl Party {
         let load = |filters: LibraryMenuFilters, skip: usize, take: usize| {
             SongsStore::load(&LoadSongsParams {
                 search: search.clone(),
+                title_artist_only: Some(true),
                 filters,
                 sort: Some(vec![SongSort {
                     column: SongSortColumn::Title,

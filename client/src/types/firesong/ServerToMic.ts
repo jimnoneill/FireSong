@@ -14,4 +14,8 @@ export type ServerToMic = { "type": "assign", v: number, slot: number, color: Pl
 /**
  * The phone got back the slot it held before (reconnect).
  */
-reclaimed: boolean, tvConnected: boolean, iceServers: Array<IceServer>, } | { "type": "answer", sdp: string, } | { "type": "ice", candidate: IceCandidate | null, } | { "type": "restart" } | { "type": "mute", muted: boolean, by: MuteSource, } | { "type": "tv-state", connected: boolean, } | { "type": "song-result", displayScore: number, rawScore: number, tier: ScoreTier, rank?: number, singers?: number, title?: string, } | { "type": "slot-lost", reason: SlotLostReason, } | { "type": "error", code: RtcErrorCode, message?: string, } | { "type": "pong", t: number, };
+reclaimed: boolean, tvConnected: boolean, iceServers: Array<IceServer>, } | { "type": "answer", sdp: string, } | { "type": "ice", candidate: IceCandidate | null, } | { "type": "restart" } | { "type": "mute", muted: boolean, by: MuteSource, } | { "type": "tv-state", connected: boolean, } | { "type": "song-result", displayScore: number, rawScore: number, tier: ScoreTier, rank?: number, singers?: number, title?: string, } | { "type": "slot-lost", reason: SlotLostReason, } | { "type": "error", code: RtcErrorCode, message?: string, 
+/**
+ * With `slots-full`: this phone's place in the line for a free mic (1 = next).
+ */
+position?: number, } | { "type": "pong", t: number, };

@@ -291,6 +291,11 @@ const errorFrameSchema = z.object({
   message: z.string().optional(),
 });
 
+/** A phone's error; with `slots-full`, its place in the line for a free mic. */
+const micErrorFrameSchema = errorFrameSchema.extend({
+  position: z.number().int().min(1).optional(),
+});
+
 const pongFrameSchema = z.object({ type: z.literal('pong'), t: z.number() });
 
 const serverToMicSchema = z.discriminatedUnion('type', [
@@ -320,7 +325,7 @@ const serverToMicSchema = z.discriminatedUnion('type', [
     title: z.string().optional(),
   }),
   z.object({ type: z.literal('slot-lost'), reason: slotLostReasonSchema }),
-  errorFrameSchema,
+  micErrorFrameSchema,
   pongFrameSchema,
 ]);
 
@@ -392,6 +397,7 @@ const partyErrorCodeSchema = z.enum([
   'prep-full',
   'limit-sing-next',
   'duplicate',
+  'song-full',
   'busy',
   'no-tv',
   'unavailable',
@@ -399,6 +405,8 @@ const partyErrorCodeSchema = z.enum([
 ]);
 const noticeCodeSchema = z.enum([
   'duet-added',
+  'partner-joined',
+  'partner-left',
   'prep-failed',
   'passed-over',
   'shift-failed',
@@ -463,6 +471,7 @@ const partySnapshotSchema = z.object({
   queueTotal: z.number().int().min(0),
   singers: z.array(partySingerSchema).max(SLOT_COUNT),
   scores: z.array(nightScoreSchema).max(MAX_NIGHT_SCORES),
+  waiting: z.number().int().min(0).default(0),
 });
 
 const partyFrameSchema = z.object({ type: z.literal('party'), party: partySnapshotSchema });

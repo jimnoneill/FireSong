@@ -8,6 +8,7 @@ import {
   type FxSound,
   type MicSlot,
   type PartySinger,
+  type PartyStage,
 } from '@/features/remote-mic/protocol';
 import { t, useTranslation, type TranslationKey } from '@/i18n';
 import { playerColorOption } from '@/shared/player-colors';
@@ -66,8 +67,37 @@ function Flash({ flash, names, still }: { flash: FxFlash; names: Names; still: b
   );
 }
 
+const ON_STAGE: ReadonlySet<string> = new Set(['starting', 'singing', 'paused']);
+
+/** The phone singers of the song on stage; none in the lobby or the reveal. */
+const onStage = (stage: PartyStage | undefined): MicSlot[] =>
+  stage !== undefined && ON_STAGE.has(stage.state) ? stage.singers.filter(isMicSlot) : [];
+
+/** Who is singing the song on stage, each in their colour. */
+function StageSingers({ slots, names }: { slots: readonly MicSlot[]; names: Names }) {
+  return (
+    <ul
+      aria-label={t('firesong.party.onStage')}
+      className="pointer-events-none fixed top-[9vh] right-[3vw] z-40 flex max-w-[45vw] flex-wrap justify-end gap-[1vh]"
+    >
+      {slots.map((slot) => (
+        <li
+          key={slot}
+          className={cn(
+            'rounded-full border-[0.3vh] bg-slate-950/70 px-[1.8vh] py-[0.5vh] text-[2.6vh] font-bold',
+            SLOT_STYLES[slotColor(slot)].border,
+            SLOT_STYLES[slotColor(slot)].text,
+          )}
+        >
+          {nameFor(names, slot)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /**
- * Party notices over the lobby and the song: who just played a fun sound (in
+ * Party notices over the lobby and the song: who is singing, who just played a fun sound (in
  * their colour, without motion when reduced motion is asked for), a phone
  * mic being tuned, and a key change rendering.
  */
@@ -77,9 +107,11 @@ export function PartyOverlays() {
   const still = useReducedMotion();
   const names = useMemo(() => namesOf(snapshot?.singers ?? []), [snapshot]);
   const last = flashes.at(-1);
+  const singing = onStage(snapshot?.stage);
 
   return (
     <>
+      {singing.length > 0 && <StageSingers slots={singing} names={names} />}
       {last !== undefined && (
         <div
           aria-hidden="true"
@@ -93,7 +125,10 @@ export function PartyOverlays() {
       {flashes.length > 0 && (
         <ul
           aria-live="polite"
-          className="pointer-events-none fixed top-[4vh] right-[3vw] z-50 flex flex-col items-end gap-[1vh]"
+          className={cn(
+            'pointer-events-none fixed right-[3vw] z-50 flex flex-col items-end gap-[1vh]',
+            singing.length > 0 ? 'top-[16vh]' : 'top-[4vh]',
+          )}
         >
           {flashes.map((flash) => (
             <Flash key={flash.id} flash={flash} names={names} still={still} />

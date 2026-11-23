@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use app_api::Party;
 use app_core::party::{
     check_control, check_singer, protects_head, AnalysisPort, Edit, LibraryPort, NightBoard,
-    PartyBook, Reserve,
+    PartnerChange, PartyBook, Reserve,
 };
 use app_core::remote_mic::{
     slot_color, CalibrationFailure, CalibrationState, MicPartyToServer, NightScore, NoticeCode,
@@ -172,6 +172,7 @@ fn party_frame_name(frame: &MicPartyToServer) -> &'static str {
     match frame {
         MicPartyToServer::Reserve { .. } => "reserve",
         MicPartyToServer::Edit { .. } => "edit",
+        MicPartyToServer::SingAlong { .. } => "sing-along",
         MicPartyToServer::Cancel { .. } => "cancel",
         MicPartyToServer::Control { .. } => "control",
         MicPartyToServer::ShiftCurrent { .. } => "shift-current",
@@ -185,6 +186,7 @@ fn req_id(frame: &MicPartyToServer) -> Option<u32> {
     match frame {
         MicPartyToServer::Reserve { req_id, .. }
         | MicPartyToServer::Edit { req_id, .. }
+        | MicPartyToServer::SingAlong { req_id, .. }
         | MicPartyToServer::Cancel { req_id, .. }
         | MicPartyToServer::Control { req_id, .. }
         | MicPartyToServer::ShiftCurrent { req_id, .. }
@@ -238,6 +240,9 @@ impl Hub {
         let started = Instant::now();
         let mut inner = self.lock();
         let now = Instant::now();
+        if inner.forget_waiters(now) {
+            inner.mark_party_dirty();
+        }
         inner.expire_calibration(now);
         inner.flush_mixes();
         inner.flush_party(now);
@@ -345,6 +350,7 @@ impl Inner {
             queue_total,
             singers,
             scores: self.room.board.scores(unix_secs()),
+            waiting: u32::try_from(self.waiting.len()).unwrap_or(u32::MAX),
         }
     }
 
@@ -442,7 +448,11 @@ impl Inner {
     /// its mixer settings go back to the defaults.
     pub(super) fn party_slot_freed(&mut self, slot: u8, entry: &Entry) {
         if let Some(book) = self.room.book.clone() {
-            book.with(|book, library, analysis| book.release(library, analysis, &entry.mic_id));
+            let left =
+                book.with(|book, library, analysis| book.release(library, analysis, &entry.mic_id));
+            for change in &left {
+                self.tell_owner(change, NoticeCode::PartnerLeft, slot);
+            }
         }
         let mixed = (entry.party.volume_pct, entry.party.echo_pct)
             != (DEFAULT_VOLUME_PCT, DEFAULT_ECHO_PCT);
@@ -660,6 +670,18 @@ impl Inner {
                 });
                 self.answer(phone, req_id, result);
             }
+            MicPartyToServer::SingAlong {
+                req_id,
+                reservation_id,
+            } => {
+                let result = self.with_book(|book, library, _| {
+                    book.sing_along(library, mic_id, &reservation_id)
+                });
+                if let Ok(change) = &result {
+                    self.tell_owner(change, NoticeCode::PartnerJoined, slot);
+                }
+                self.answer(phone, req_id, result.map(|_| ()));
+            }
             MicPartyToServer::Cancel {
                 req_id,
                 reservation_id,
@@ -667,7 +689,10 @@ impl Inner {
                 let result = self.with_book(|book, library, analysis| {
                     book.cancel(library, analysis, mic_id, &reservation_id)
                 });
-                self.answer(phone, req_id, result);
+                if let Ok(Some(change)) = &result {
+                    self.tell_owner(change, NoticeCode::PartnerLeft, slot);
+                }
+                self.answer(phone, req_id, result.map(|_| ()));
             }
             MicPartyToServer::Control { req_id, action } => {
                 let result = self.control(slot, mic_id, action);
@@ -709,6 +734,17 @@ impl Inner {
         match &self.room.book {
             Some(book) => book.with(work),
             None => Err(PartyErrorCode::Unavailable),
+        }
+    }
+
+    /// Tells a song's owner that a partner joined or left it.
+    fn tell_owner(&self, change: &PartnerChange, code: NoticeCode, by_slot: u8) {
+        if let Some(owner) = self.phone_of_mic(&change.owner) {
+            owner.send(&ServerToMicParty::Notice {
+                code,
+                title: Some(change.title.clone()),
+                by_slot: Some(by_slot),
+            });
         }
     }
 

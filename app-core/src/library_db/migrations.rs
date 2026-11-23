@@ -21,7 +21,7 @@ use super::schema::songs;
 use super::songs::{append_songs, search_text_of, update_library_meta};
 use super::sql_functions::json_extract_text;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 static MIGRATING: AtomicBool = AtomicBool::new(false);
 static MIGRATION_TOTAL: AtomicUsize = AtomicUsize::new(0);
@@ -141,6 +141,17 @@ pub(super) fn run_migrations(conn: &mut SqliteConnection) -> Result<(), Nighting
             UPDATE songs SET search_text =
                 search_normalize(title) || char(10) || search_normalize(artist) || char(10)
                 || search_normalize(album) || char(10) || search_normalize(path);
+        ",
+        )?;
+    }
+    if version < 4 {
+        // The guests' song books match title and artist only (album and file
+        // path matches looked like wrong results).
+        conn.batch_execute(
+            "
+            ALTER TABLE songs ADD COLUMN search_people TEXT NOT NULL DEFAULT '';
+            UPDATE songs SET search_people =
+                search_normalize(title) || char(10) || search_normalize(artist);
         ",
         )?;
     }

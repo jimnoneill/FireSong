@@ -475,6 +475,10 @@ pub enum ServerToMic {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         message: Option<String>,
+        /// With `slots-full`: this phone's place in the line for a free mic (1 = next).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        position: Option<u32>,
     },
     Pong {
         t: f64,
@@ -926,6 +930,8 @@ pub enum PartyErrorCode {
     LimitSingNext,
     /// The same song is already waiting for this phone.
     Duplicate,
+    /// The song already has as many singers as there are mics.
+    SongFull,
     /// The TV is busy with something that blocks this request.
     Busy,
     NoTv,
@@ -942,6 +948,10 @@ pub enum PartyErrorCode {
 pub enum NoticeCode {
     /// Another phone named this phone as a partner.
     DuetAdded,
+    /// Another phone signed up to sing this phone's song (`bySlot`).
+    PartnerJoined,
+    /// A partner left this phone's song or the party (`bySlot`).
+    PartnerLeft,
     /// A song preparing for this phone failed and was dropped.
     PrepFailed,
     /// This phone's song came up while it was away and moved back one place.
@@ -1075,6 +1085,9 @@ pub struct PartySnapshot {
     pub singers: Vec<PartySinger>,
     /// Tonight's best, best first.
     pub scores: Vec<NightScore>,
+    /// Phones in line for a free mic.
+    #[serde(default)]
+    pub waiting: u32,
 }
 
 /// Payload of [`SONG_BOOK_COMMAND`].
@@ -1178,6 +1191,13 @@ pub enum MicPartyToServer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         sing_next: Option<bool>,
+    },
+    /// Sign this phone up to sing another phone's reserved song with it.
+    SingAlong {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        req_id: Option<u32>,
+        reservation_id: String,
     },
     /// The owner removes the reservation; a partner leaves it.
     Cancel {
@@ -1544,7 +1564,9 @@ impl MicPartyToServer {
                 check(key_offset.is_some() || tempo.is_some() || sing_next.is_some())?;
                 check_shift(*key_offset, *tempo)
             }
-            Self::Cancel { reservation_id, .. } => check(is_valid_party_id(reservation_id)),
+            Self::SingAlong { reservation_id, .. } | Self::Cancel { reservation_id, .. } => {
+                check(is_valid_party_id(reservation_id))
+            }
             Self::ShiftCurrent {
                 key_offset, tempo, ..
             } => check_shift(Some(*key_offset), Some(*tempo)),
@@ -1886,7 +1908,8 @@ mod tests {
         assert_eq!(
             to_json(&ServerToMic::Error {
                 code: RtcErrorCode::SlotsFull,
-                message: None
+                message: None,
+                position: None
             }),
             json!({"type": "error", "code": "slots-full"})
         );
@@ -2325,6 +2348,7 @@ mod tests {
                 tier: ScoreTier::Perfect,
                 at_secs: 1_763_100_000,
             }],
+            waiting: 2,
         };
         let frame = ServerToMicParty::Party {
             party: snapshot.clone(),
@@ -2349,7 +2373,8 @@ mod tests {
                              "volumePct": 100, "echoPct": 100}],
                 "scores": [{"slot": 1, "color": "rose", "name": "Jim", "title": "The Final Countdown",
                             "displayScore": 100, "rawScore": 995, "tier": "perfect",
-                            "atSecs": 1_763_100_000_u32}]
+                            "atSecs": 1_763_100_000_u32}],
+                "waiting": 2
             }})
         );
 

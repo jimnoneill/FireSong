@@ -27,4 +27,8 @@ singers: Array<PartySinger>,
 /**
  * Tonight's best, best first.
  */
-scores: Array<NightScore>, };
+scores: Array<NightScore>, 
+/**
+ * Phones in line for a free mic.
+ */
+waiting: number, };

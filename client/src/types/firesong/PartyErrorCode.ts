@@ -3,4 +3,4 @@
 /**
  * Why a party request was refused (`ack {ok: false}`).
  */
-export type PartyErrorCode = "not-allowed" | "not-found" | "invalid" | "limit-reservations" | "limit-preparing" | "prep-full" | "limit-sing-next" | "duplicate" | "busy" | "no-tv" | "unavailable" | "rate-limited";
+export type PartyErrorCode = "not-allowed" | "not-found" | "invalid" | "limit-reservations" | "limit-preparing" | "prep-full" | "limit-sing-next" | "duplicate" | "song-full" | "busy" | "no-tv" | "unavailable" | "rate-limited";

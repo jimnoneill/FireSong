@@ -6,6 +6,7 @@
  * itself here as the sink; until it does, publishing is a no-op.
  */
 
+import { flight } from '@/bridge/flight';
 import {
   isMicSlot,
   MAX_TITLE_CHARS,
@@ -96,6 +97,15 @@ export function publishSongResult(title: string, entries: readonly SongResultEnt
   const frame = buildSongResultFrame(title, entries, current.slotForMicrophone);
   if (frame === null) {
     return false;
+  }
+  if (frame.type === 'song-result') {
+    flight('song-result', {
+      results: frame.results.map(({ slot, rawScore, displayScore }) => ({
+        slot,
+        rawScore,
+        displayScore,
+      })),
+    });
   }
   current.send(frame);
   return true;

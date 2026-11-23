@@ -12,7 +12,7 @@ use crate::song::{Song, TranscriptSource};
 use super::connection::{with_conn, with_conn_mut};
 use super::scan_generation_is_current;
 use super::schema::{analysis_queue, library_meta, songs};
-use super::sql_functions::{NoCase, song_search_text};
+use super::sql_functions::{NoCase, song_people_text, song_search_text};
 
 #[derive(Insertable)]
 #[diesel(table_name = songs)]
@@ -30,6 +30,7 @@ struct NewSongRow {
     is_video: bool,
     payload: String,
     search_text: String,
+    search_people: String,
 }
 
 impl NewSongRow {
@@ -51,6 +52,7 @@ impl NewSongRow {
             is_video: song.is_video,
             payload: song_to_payload(song)?,
             search_text: search_text_of(song),
+            search_people: song_people_text(&song.title, &song.artist),
         })
     }
 }
@@ -265,6 +267,8 @@ pub(crate) fn rekey_song(
                     songs::transcript_source.eq(&row.transcript_source),
                     songs::is_video.eq(row.is_video),
                     songs::search_text.eq(&row.search_text),
+                    songs::search_people.eq(&row.search_people),
+                    songs::search_people.eq(&row.search_people),
                 ))
                 .execute(conn)?;
             diesel::delete(analysis_queue::table.filter(analysis_queue::file_hash.eq(new_hash)))

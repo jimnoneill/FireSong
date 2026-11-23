@@ -59,7 +59,8 @@ export const prepLabel = (prep: PrepState): string => {
     case 'not-ready':
       return waitingLabel(prep, 'phoneMic.prep.notReadyEta', 'phoneMic.prep.notReady');
     case 'analyzing':
-      return prep.pct === undefined
+      // Guests plan around minutes, not percentages.
+      return prep.pct === undefined || prep.etaSecs !== undefined
         ? waitingLabel(prep, 'phoneMic.prep.gettingReadyEta', 'phoneMic.prep.gettingReady')
         : t('phoneMic.prep.percent', { pct: formatPercent(prep.pct) });
     case 'queued':
@@ -92,6 +93,7 @@ const FAILURE_KEYS = {
   'prep-full': 'phoneMic.failure.prepFull',
   'limit-sing-next': 'phoneMic.reserve.limitSingNext',
   duplicate: 'phoneMic.failure.duplicate',
+  'song-full': 'phoneMic.failure.songFull',
   busy: 'phoneMic.failure.busy',
   'no-tv': 'phoneMic.failure.noTv',
   unavailable: 'phoneMic.failure.unavailable',
@@ -126,15 +128,35 @@ export const calibrationFailureText = (
 
 const NOTICE_KEYS = {
   'duet-added': 'phoneMic.notice.duetAdded',
+  'partner-joined': 'phoneMic.notice.partnerJoined',
+  'partner-left': 'phoneMic.notice.partnerLeft',
   'prep-failed': 'phoneMic.notice.prepFailed',
   'passed-over': 'phoneMic.notice.passedOver',
   'shift-failed': 'phoneMic.notice.shiftFailed',
   'start-failed': 'phoneMic.notice.startFailed',
 } satisfies Record<NoticeCode, TranslationKey>;
 
+/** Where a new reservation landed: its place in line, or that it plays once ready. */
+const reservedText = (reservationId: string, snapshot: PartySnapshot | null): string => {
+  const queue = snapshot?.queue ?? [];
+  const index = queue.findIndex((item) => item.reservationId === reservationId);
+  if (index < 0) {
+    return t('phoneMic.reserve.queued');
+  }
+  return queue[index].prep.state === 'ready'
+    ? t('phoneMic.reserve.queuedAt', {
+        title: queue[index].title,
+        position: formatNumber(index + 1),
+      })
+    : t('phoneMic.reserve.queuedPreparing', { title: queue[index].title });
+};
+
 export const messageText = (message: PartyMessage, snapshot: PartySnapshot | null): string => {
   if (message.kind === 'failure') {
     return failureText(message.code);
+  }
+  if (message.kind === 'reserved') {
+    return reservedText(message.reservationId, snapshot);
   }
   const by = message.bySlot;
   const singer =

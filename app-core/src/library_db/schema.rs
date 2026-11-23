@@ -22,6 +22,7 @@ diesel::table! {
         is_video -> Bool,
         payload -> Text,
         search_text -> Text,
+        search_people -> Text,
     }
 }
 

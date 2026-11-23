@@ -2,7 +2,7 @@ import { linkMessage } from '@/features/phone-mic/components/problem-message';
 import { SlotDisc } from '@/features/phone-mic/components/slot-disc';
 import type { PhoneMicSnapshot } from '@/features/phone-mic/lib/session';
 import { slotColor, type MicSlot } from '@/features/remote-mic/protocol';
-import { t } from '@/i18n';
+import { formatNumber, t } from '@/i18n';
 import { playerColorOption } from '@/shared/player-colors';
 import { cn } from '@/shared/utils/cn';
 
@@ -17,7 +17,12 @@ const statusLine = (mic: PhoneMicSnapshot): string => {
   if (mic.unreachable) {
     return t('phoneMic.reach.short');
   }
-  return mic.problem === 'slots-full' ? t('phoneMic.link.waitingSlot') : linkMessage(mic.link);
+  if (mic.problem !== 'slots-full') {
+    return linkMessage(mic.link);
+  }
+  return mic.linePosition === null
+    ? t('phoneMic.link.waitingSlot')
+    : t('phoneMic.link.waitingSlotAt', { position: formatNumber(mic.linePosition) });
 };
 
 /** Who this phone is and whether the TV hears it, on every tab. */

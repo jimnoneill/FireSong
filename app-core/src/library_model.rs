@@ -59,6 +59,11 @@ pub enum SongTarget {
 #[ts(export)]
 pub struct LoadSongsParams {
     pub search: Option<String>,
+    /// Match the search words in the title and artist only, as the guests'
+    /// song books do; otherwise also the album and the file path.
+    #[serde(default)]
+    #[ts(optional)]
+    pub title_artist_only: Option<bool>,
     pub filters: LibraryMenuFilters,
     #[serde(default)]
     pub sort: Option<Vec<SongSort>>,

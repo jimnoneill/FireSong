@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from
 
 import { TIER_CAPTIONS } from '@/features/noraebang/captions';
 import type { NightScore, PrepState } from '@/features/remote-mic/protocol';
-import { t, tp, useTranslation } from '@/i18n';
+import { formatNumber, t, tp, useTranslation } from '@/i18n';
 import { BRAND_MARK_URL } from '@/shared/firesong-brand';
 import { playerColorOption, type PlayerColor } from '@/shared/player-colors';
 import { cn } from '@/shared/utils/cn';
@@ -379,6 +379,11 @@ export function PartyLobby({
             <SlotCard key={slot.slot} slot={slot} />
           ))}
         </ul>
+        {model.waiting > 0 && (
+          <p className="text-[2.4vh] font-bold text-amber-300">
+            {t('firesong.party.waitingMics', { count: formatNumber(model.waiting) })}
+          </p>
+        )}
         {linksError && (
           <p className="text-[2vh] text-amber-300">{t('firesong.party.linksError')}</p>
         )}

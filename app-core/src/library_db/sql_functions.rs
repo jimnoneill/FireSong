@@ -28,6 +28,12 @@ pub(super) fn song_search_text(title: &str, artist: &str, album: &str, path: &st
         .join("\n")
 }
 
+/// What the guests' song books match: title and artist, as in `search_text`.
+/// Stored in `songs.search_people`.
+pub(super) fn song_people_text(title: &str, artist: &str) -> String {
+    [title, artist].map(normalize_search).join("\n")
+}
+
 diesel::define_sql_function! {
     fn instr(haystack: Text, needle: Text) -> BigInt;
 }

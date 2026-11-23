@@ -22,7 +22,7 @@ export function PartnerPicker({ choices, snapshot, selected, onChange }: Partner
         return (
           <label
             key={slot}
-            className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-1"
+            className="flex min-h-12 cursor-pointer items-center gap-3 rounded-md px-1"
           >
             <input
               type="checkbox"
@@ -35,7 +35,7 @@ export function PartnerPicker({ choices, snapshot, selected, onChange }: Partner
                     : selected.filter((each) => each !== slot),
                 )
               }
-              className="size-6 shrink-0 accent-primary"
+              className="size-8 shrink-0 accent-primary"
             />
             <SingerChip slot={slot} snapshot={snapshot} className="text-base" />
           </label>

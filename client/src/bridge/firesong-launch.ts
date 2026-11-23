@@ -8,10 +8,12 @@ export type FireSongLaunch = {
   tv: boolean;
   /** Noraebang mode (`?mode=noraebang`). */
   noraebang: boolean;
+  /** Voices through the TV app's own output (`?voice=native`), while that path is on trial. */
+  nativeVoice: boolean;
 };
 
 const STORAGE_KEY = 'firesong.launch';
-const NONE: FireSongLaunch = { tv: false, noraebang: false };
+const NONE: FireSongLaunch = { tv: false, noraebang: false, nativeVoice: false };
 
 const fromStorage = (storage: Storage | null): FireSongLaunch | null => {
   const raw = storage?.getItem(STORAGE_KEY) ?? null;
@@ -19,11 +21,21 @@ const fromStorage = (storage: Storage | null): FireSongLaunch | null => {
     return null;
   }
   const flags = new Set(raw.split(','));
-  return { tv: flags.has('tv'), noraebang: flags.has('noraebang') };
+  return {
+    tv: flags.has('tv'),
+    noraebang: flags.has('noraebang'),
+    nativeVoice: flags.has('native-voice'),
+  };
 };
 
 const toStorage = (launch: FireSongLaunch): string =>
-  [launch.tv ? 'tv' : '', launch.noraebang ? 'noraebang' : ''].filter(Boolean).join(',');
+  [
+    launch.tv ? 'tv' : '',
+    launch.noraebang ? 'noraebang' : '',
+    launch.nativeVoice ? 'native-voice' : '',
+  ]
+    .filter(Boolean)
+    .join(',');
 
 const sessionStore = (): Storage | null => {
   try {
@@ -39,7 +51,11 @@ export const parseFireSongLaunch = (search: string, storage: Storage | null): Fi
   if (!params.has('tv') && !params.has('mode')) {
     return fromStorage(storage) ?? NONE;
   }
-  const launch = { tv: params.get('tv') === '1', noraebang: params.get('mode') === 'noraebang' };
+  const launch = {
+    tv: params.get('tv') === '1',
+    noraebang: params.get('mode') === 'noraebang',
+    nativeVoice: params.get('voice') === 'native',
+  };
   try {
     storage?.setItem(STORAGE_KEY, toStorage(launch));
   } catch {

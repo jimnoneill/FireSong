@@ -1,3 +1,4 @@
+import { fireSongLaunch } from '@/bridge/firesong-launch';
 import { addFlightSampler, flight } from '@/bridge/flight';
 import {
   nativeVoiceEndpoint,
@@ -60,13 +61,23 @@ const statsSummary = (stats: NativeVoiceStats | null) =>
         outputLatencyMs: stats.outputLatencyMs === null ? null : round1(stats.outputLatencyMs),
         underruns: stats.underruns,
         trimmedFrames: stats.trimmedFrames,
+        jumps: stats.jumps,
         overflowFrames: stats.overflowFrames,
         xruns: stats.xruns,
         peak: Math.round(stats.peak * 1000) / 1000,
       };
 
-/** Starts the native voice output when the page runs in the TV app, for the engine's lifetime. */
+/**
+ * Starts the native voice output for the engine's lifetime when the page runs
+ * in the TV app and was opened with `?voice=native`. Off by default: on the
+ * Cube the page hands its audio over in bursts up to about 250 ms apart (the
+ * WebView's own output pulls in large chunks), so the app's buffer swings and
+ * runs dry (2026-11-22, 21:29 run).
+ */
 export function startNativeVoice(engine: VoiceEngine): void {
+  if (!fireSongLaunch().nativeVoice) {
+    return;
+  }
   const endpoint = nativeVoiceEndpoint();
   if (endpoint === null) {
     return;

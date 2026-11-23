@@ -63,7 +63,7 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
     }
 
     fun stats(): String {
-        val v = LongArray(14)
+        val v = LongArray(15)
         NativeVoice.stats(v)
         val framesPerMs = NativeVoice.RATE / 1000.0
         return JSONObject().apply {
@@ -82,6 +82,7 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
             put("bufferFrames", v[10])
             put("xruns", v[11])
             put("peak", v[13] / 32768.0)
+            put("jumps", v[14])
         }.toString()
     }
 

@@ -21,6 +21,6 @@ object NativeVoice {
     /** Interleaved s16le frames from a direct buffer; returns the frames taken. */
     @JvmStatic external fun write(buffer: ByteBuffer, bytes: Int): Int
 
-    /** See `Java_org_firesong_tv_NativeVoice_stats` for the 14 values. */
+    /** See `Java_org_firesong_tv_NativeVoice_stats` for the 15 values. */
     @JvmStatic external fun stats(out: LongArray)
 }

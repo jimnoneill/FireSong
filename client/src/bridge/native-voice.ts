@@ -32,6 +32,7 @@ const statsSchema = z.object({
   bufferFrames: z.number(),
   xruns: z.number(),
   peak: z.number(),
+  jumps: z.number(),
 });
 
 export type NativeVoiceStats = z.infer<typeof statsSchema>;

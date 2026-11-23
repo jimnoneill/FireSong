@@ -34,12 +34,15 @@
 #define MARGIN_MAX FRAMES_MS(80)
 #define MARGIN_STEP FRAMES_MS(6)
 #define MARGIN_DECAY FRAMES_MS(1)
-#define CLEAN_WINDOWS_FOR_DECAY 5
 // After an underrun, wait for margin + this much before playing again.
 #define PRIME_EXTRA FRAMES_MS(24)
-// The fill is judged over 1 s windows; slack over 4 ms is trimmed.
-#define WINDOW_FRAMES RATE
+// The fill is judged over 250 ms windows; slack over 4 ms is trimmed.
+#define WINDOW_FRAMES FRAMES_MS(250)
 #define TRIM_MIN FRAMES_MS(4)
+#define CLEAN_WINDOWS_FOR_DECAY 20
+// Hard ceiling: more than this over the margin is skipped at once, quiet or not.
+#define CEILING FRAMES_MS(40)
+#define AFTER_JUMP FRAMES_MS(10)
 // About -40 dBFS: skipping audio this quiet is inaudible.
 #define QUIET 328
 
@@ -61,7 +64,7 @@ static int64_t pending_trim;
 static int window_underruns;
 
 // Counters for stats().
-static _Atomic int64_t played, underruns, trimmed, overflows, received;
+static _Atomic int64_t played, underruns, trimmed, overflows, received, jumps;
 static _Atomic int64_t stat_fill, stat_margin;
 static _Atomic int peak; // largest |sample| played since the last stats()
 
@@ -124,7 +127,14 @@ static aaudio_data_callback_result_t on_audio(AAudioStream *s, void *user, void 
     window_frames = 0;
   }
 
-  if (pending_trim > 0 && fill - pending_trim >= frames) {
+  if (fill > margin + CEILING) {
+    int64_t skip = fill - (margin + AFTER_JUMP);
+    r += skip;
+    fill -= skip;
+    pending_trim = 0;
+    atomic_fetch_add_explicit(&trimmed, skip, memory_order_relaxed);
+    atomic_fetch_add_explicit(&jumps, 1, memory_order_relaxed);
+  } else if (pending_trim > 0 && fill - pending_trim >= frames) {
     if (quiet_span(r, pending_trim)) {
       r += pending_trim;
       fill -= pending_trim;
@@ -294,12 +304,13 @@ JNIEXPORT jint JNICALL Java_org_firesong_tv_NativeVoice_write(JNIEnv *env, jclas
   return (jint)frames;
 }
 
-// out[0..13]: open, played, underruns, trimmed, overflows, received (frames),
+// out[0..14]: open, played, underruns, trimmed, overflows, received (frames),
 // fill, margin (frames), output latency (us, -1 unknown), burst, buffer size,
-// xruns, sample rate, peak |sample| played since the previous call.
+// xruns, sample rate, peak |sample| played since the previous call, ceiling
+// jumps.
 JNIEXPORT void JNICALL Java_org_firesong_tv_NativeVoice_stats(JNIEnv *env, jclass cls, jlongArray out) {
   (void)cls;
-  jlong values[14] = {0};
+  jlong values[15] = {0};
   values[1] = atomic_load(&played);
   values[2] = atomic_load(&underruns);
   values[3] = atomic_load(&trimmed);
@@ -309,6 +320,7 @@ JNIEXPORT void JNICALL Java_org_firesong_tv_NativeVoice_stats(JNIEnv *env, jclas
   values[7] = atomic_load(&stat_margin);
   values[8] = -1;
   values[13] = atomic_exchange(&peak, 0);
+  values[14] = atomic_load(&jumps);
   pthread_mutex_lock(&stream_lock);
   if (stream != NULL) {
     values[0] = 1;
@@ -325,5 +337,5 @@ JNIEXPORT void JNICALL Java_org_firesong_tv_NativeVoice_stats(JNIEnv *env, jclas
   }
   pthread_mutex_unlock(&stream_lock);
   jsize length = (*env)->GetArrayLength(env, out);
-  (*env)->SetLongArrayRegion(env, out, 0, length < 14 ? length : 14, values);
+  (*env)->SetLongArrayRegion(env, out, 0, length < 15 ? length : 15, values);
 }

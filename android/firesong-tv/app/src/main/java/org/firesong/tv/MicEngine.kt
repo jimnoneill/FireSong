@@ -306,7 +306,7 @@ object MicEngine {
                 is PageMessage.Ice -> {
                     val peer = peers[message.peer] ?: return ignore()
                     val candidate = message.candidate ?: return
-                    if (SdpFilter.candidateAllowed(candidate.candidate)) peer.addIce(candidate) else ignore()
+                    if (!SdpFilter.candidateAllowed(candidate.candidate) || !peer.addIce(candidate)) ignore()
                 }
                 is PageMessage.Close -> peers.remove(message.peer)?.close() ?: ignore()
                 is PageMessage.Detach -> slots[message.slot]?.gen?.takeIf { it != 0 }?.let { gen ->

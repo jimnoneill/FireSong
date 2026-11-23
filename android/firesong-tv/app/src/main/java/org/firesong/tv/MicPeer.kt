@@ -176,6 +176,7 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
     private var link = PeerConnectionState.NEW
     private var remoteReady = false
     private val pendingIce = ArrayList<IceCandidate>()
+    private var trickled = 0
     private var track: AudioTrack? = null
     private var sink: SlotSink? = null
     private var gatherSeq = 0
@@ -210,17 +211,28 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
     }
 
     /** An offer that passed [SdpFilter]; answered or refused through the negotiation queue. */
-    fun offer(seq: Int, sdp: String) = guard { queue.offer(seq, sdp) }
+    fun offer(seq: Int, sdp: String) = guard {
+        trickled = 0
+        queue.offer(seq, sdp)
+    }
 
-    /** A candidate that passed [SdpFilter.candidateAllowed]. */
-    fun addIce(spec: IceCandidateSpec) = guard {
-        val connection = pc ?: return@guard
-        val candidate = IceCandidate(spec.sdpMid ?: "", spec.sdpMLineIndex ?: 0, spec.candidate)
-        if (remoteReady) {
-            connection.addIceCandidate(candidate)
-        } else if (pendingIce.size < MAX_PENDING_ICE) {
-            pendingIce.add(candidate)
+    /**
+     * A candidate that passed [SdpFilter.candidateAllowed]; false, and dropped, when [MAX_TRICKLED_ICE] already
+     * came since the phone's last offer.
+     */
+    fun addIce(spec: IceCandidateSpec): Boolean {
+        if (trickled >= MAX_TRICKLED_ICE) return false
+        trickled++
+        guard {
+            val connection = pc ?: return@guard
+            val candidate = IceCandidate(spec.sdpMid ?: "", spec.sdpMLineIndex ?: 0, spec.candidate)
+            if (remoteReady) {
+                connection.addIceCandidate(candidate)
+            } else if (pendingIce.size < MAX_PENDING_ICE) {
+                pendingIce.add(candidate)
+            }
         }
+        return true
     }
 
     fun requestStats() = guard {
@@ -492,6 +504,7 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
         const val ANSWER_TIMEOUT_MS = 5000L
         const val GATHER_TIMEOUT_MS = 2000L
         private const val MAX_PENDING_ICE = 64
+        private const val MAX_TRICKLED_ICE = 32
         private const val CANDIDATE_ATTRIBUTE = "a=candidate:"
         private const val TAG = "FireSong"
     }

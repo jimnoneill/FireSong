@@ -78,23 +78,46 @@ class SdpFilterTest {
         rejected(CHROME_OFFER + (prefix + "x".repeat(SdpFilter.MAX_LINE_CHARS + 1 - prefix.length)))
     }
 
+    @Test fun aFirefoxOfferPassesWithOnlyOpusAndNoLocalNames() {
+        val lines = accepted(FIREFOX_OFFER.crlf()).removeSuffix("\r\n").split("\r\n")
+        assertEquals("m=audio 9 UDP/TLS/RTP/SAVPF 109", lines.single { it.startsWith("m=") })
+        assertEquals(listOf("a=rtpmap:109 opus/48000/2"), lines.filter { it.startsWith("a=rtpmap:") })
+        assertEquals(listOf("a=fmtp:109 maxplaybackrate=48000;stereo=1;useinbandfec=1"), lines.filter { it.startsWith("a=fmtp:") })
+        assertEquals(listOf("a=rtcp-fb:109 transport-cc"), lines.filter { it.startsWith("a=rtcp-fb:") })
+        assertEquals(emptyList<String>(), lines.filter { it.startsWith("a=candidate:") })
+        assertTrue(lines.contains("a=end-of-candidates"))
+    }
+
     @Test fun hostnameCandidatesAreDroppedAndTheOfferKept() {
-        val mdns = "a=candidate:1510613869 1 udp 2113937151 0f8c1a2e-5b7d-4c3a-9e21-6d4f0a8b3c55.local 35840 typ host generation 0"
         val offer = CHROME_OFFER + listOf(
             "a=candidate:1 1 udp 2113937151 phone.example 35841 typ host generation 0",
             "a=candidate:2 1 udp 2113937151 192.0.2.256 35842 typ host generation 0",
-            mdns,
+            "a=candidate:3 1 udp 2113937151 0f8c1a2e-5b7d-4c3a-9e21-6d4f0a8b3c55.local 35840 typ host generation 0",
+            "a=candidate:4 1 udp 2113937151 127.0.0.1 35843 typ host generation 0",
         )
         val lines = accepted(offer.crlf()).removeSuffix("\r\n").split("\r\n")
-        assertEquals(CHROME_OFFER.filter { it.startsWith("a=candidate:") } + mdns, lines.filter { it.startsWith("a=candidate:") })
+        assertEquals(CHROME_OFFER.filter { it.startsWith("a=candidate:") }, lines.filter { it.startsWith("a=candidate:") })
     }
 
-    @Test fun onlyIpLiteralsAndLocalNamesAreAllowedCandidates() {
-        listOf("192.0.2.10", "2001:db8::10", "2001:db8:0:0:0:0:0:1", "::", "::ffff:192.0.2.1", "0f8c1a2e-5b7d-4c3a-9e21-6d4f0a8b3c55.local")
-            .forEach { assertTrue(it, SdpFilter.candidateAllowed(candidate(it))) }
+    @Test fun onlyTheFirstSixteenAllowedCandidatesAreKept() {
+        val extra = (0 until 20).map { "a=candidate:$it 1 udp 2113937151 192.0.2.${it + 100} ${40000 + it} typ host generation 0" }
+        val offer = CHROME_OFFER + "a=candidate:99 1 udp 2113937151 phone.example 35841 typ host generation 0" + extra
+        val lines = accepted(offer.crlf()).removeSuffix("\r\n").split("\r\n")
+        val expected = (CHROME_OFFER.filter { it.startsWith("a=candidate:") } + extra).take(SdpFilter.MAX_CANDIDATES)
+        assertEquals(expected, lines.filter { it.startsWith("a=candidate:") })
+    }
+
+    @Test fun onlyUnicastIpLiteralsAreAllowedCandidates() {
         listOf(
-            "phone.example", "a.b.local", "local", "192.0.2.256", "192.0.2", "192.0.02.1", "2001:db8::1::2",
-            "1:2:3:4:5:6:7:8:9", "1:2:3:4::5:6:7:8", "2001:db8:::1", "fe80::1%wlan0", "192.0.2.1::", "",
+            "192.0.2.10", "10.0.0.5", "100.64.1.2", "223.255.255.254", "2001:db8::10", "2001:db8:0:0:0:0:0:1",
+            "fd00::1", "::ffff:192.0.2.1", "::192.0.2.1", "2001:db8::192.0.2.1",
+        ).forEach { assertTrue(it, SdpFilter.candidateAllowed(candidate(it))) }
+        listOf(
+            "phone.example", "a.b.local", "local", "0f8c1a2e-5b7d-4c3a-9e21-6d4f0a8b3c55.local", "192.0.2.256", "192.0.2",
+            "192.0.02.1", "2001:db8::1::2", "1:2:3:4:5:6:7:8:9", "1:2:3:4::5:6:7:8", "2001:db8:::1", "fe80::1%wlan0",
+            "192.0.2.1::", "", "0.0.0.0", "0.1.2.3", "127.0.0.1", "127.1.2.3", "169.254.1.1", "224.0.0.251",
+            "239.255.255.250", "240.0.0.1", "255.255.255.255", "::", "::1", "ff02::fb", "FF05::1:3", "fe80::1", "febf::1",
+            "::ffff:127.0.0.1", "::ffff:169.254.1.1", "::ffff:224.0.0.251", "::127.0.0.1", "0:0:0:0:0:ffff:7f00:1",
         ).forEach { assertFalse(it, SdpFilter.candidateAllowed(candidate(it))) }
         assertFalse(SdpFilter.candidateAllowed("candidate:1 1 udp 2113937151"))
         assertFalse(SdpFilter.candidateAllowed("a=" + candidate("192.0.2.10")))
@@ -175,6 +198,55 @@ class SdpFilterTest {
             "a=rtpmap:13 CN/8000",
             "a=rtpmap:110 telephone-event/48000",
             "a=rtpmap:126 telephone-event/8000",
+        )
+
+        /** A headless Firefox 159 send-only offer with the mic captured: every host candidate is a `.local` name. */
+        val FIREFOX_OFFER = listOf(
+            "v=0",
+            "o=mozilla...THIS_IS_SDPARTA-99.0 2575419069122366187 0 IN IP4 0.0.0.0",
+            "s=-",
+            "t=0 0",
+            "a=sendrecv",
+            "a=fingerprint:sha-256 2A:86:9D:34:FF:07:11:33:98:1C:1A:68:2D:3A:A1:C4:1F:90:CD:D9:B4:D7:B7:E4:67:C3:02:05:BD:78:23:7E",
+            "a=group:BUNDLE 0",
+            "a=ice-options:trickle",
+            "a=msid-semantic:WMS *",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 109 9 0 8 101",
+            "c=IN IP4 0.0.0.0",
+            "a=candidate:0 1 UDP 2122187007 00f287af-0925-44ea-af72-0f96ce3aedce.local 40006 typ host",
+            "a=candidate:1 1 UDP 2122252543 c73b6b08-ed59-4ce3-bae0-a7de98ff8f32.local 54425 typ host",
+            "a=candidate:2 1 TCP 2105458943 00f287af-0925-44ea-af72-0f96ce3aedce.local 9 typ host tcptype active",
+            "a=candidate:3 1 TCP 2105524479 c73b6b08-ed59-4ce3-bae0-a7de98ff8f32.local 9 typ host tcptype active",
+            "a=candidate:0 2 UDP 2122187006 00f287af-0925-44ea-af72-0f96ce3aedce.local 41870 typ host",
+            "a=candidate:1 2 UDP 2122252542 c73b6b08-ed59-4ce3-bae0-a7de98ff8f32.local 59305 typ host",
+            "a=candidate:2 2 TCP 2105458942 00f287af-0925-44ea-af72-0f96ce3aedce.local 9 typ host tcptype active",
+            "a=candidate:3 2 TCP 2105524478 c73b6b08-ed59-4ce3-bae0-a7de98ff8f32.local 9 typ host tcptype active",
+            "a=sendonly",
+            "a=end-of-candidates",
+            "a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level",
+            "a=extmap:2/recvonly urn:ietf:params:rtp-hdrext:csrc-audio-level",
+            "a=extmap:3 urn:ietf:params:rtp-hdrext:sdes:mid",
+            "a=extmap:7 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+            "a=extmap-allow-mixed",
+            "a=fmtp:109 maxplaybackrate=48000;stereo=1;useinbandfec=1",
+            "a=fmtp:101 0-15",
+            "a=ice-pwd:16db6cd4ec68efddfc23456f98270e35",
+            "a=ice-ufrag:6d6f90a9",
+            "a=mid:0",
+            "a=msid:{cc5428b6-95ef-46f8-8b72-183b6cfab3ec} {630f8ac8-a753-47a0-9da9-25aae581c31a}",
+            "a=rtcp:9 IN IP4 0.0.0.0",
+            "a=rtcp-fb:109 transport-cc",
+            "a=rtcp-fb:9 transport-cc",
+            "a=rtcp-fb:0 transport-cc",
+            "a=rtcp-fb:8 transport-cc",
+            "a=rtcp-mux",
+            "a=rtpmap:109 opus/48000/2",
+            "a=rtpmap:9 G722/8000/1",
+            "a=rtpmap:0 PCMU/8000",
+            "a=rtpmap:8 PCMA/8000",
+            "a=rtpmap:101 telephone-event/8000",
+            "a=setup:actpass",
+            "a=ssrc:496726074 cname:{2c778274-e101-473c-986b-0f16ee309d39}",
         )
 
         /** The shape of an iOS Safari send-only offer (WebKit's libwebrtc codec list); addresses replaced. */

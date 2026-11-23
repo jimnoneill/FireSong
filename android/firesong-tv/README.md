@@ -216,7 +216,7 @@ The code is the reference: `DoorMessages.kt`, `DoorCodec.kt` and `client/src/bri
 4. Run the same four tasks with an empty scratch `GRADLE_USER_HOME`, so every artifact is downloaded and verified again.
 5. Build both APKs and check what changed outside the code: `aapt2 dump permissions` still lists only the three permissions above (a new AAR can add some), and the release APK still holds only `lib/armeabi-v7a/`.
 6. On the Cube, while it is idle, install the release APK and configure the https TV URL with `voice=native` (the release route: it also checks that the page may open `ws://127.0.0.1`). With no phones, check:
-   - the flight record: `mics.backend.kind = native`, `ready.ok` with `ready.audio = open`, `engine-stats.open`, `burstFrames` 384, `outputLatencyMs` 25-40, and `engine-stats.apm` present. `mic-backend web, why: unreachable` means the page could not open the door: stop there;
+   - the flight record: `mic-backend` with `kind: native, why: ready`, and in the TV samples `mics.backend` with `kind` `native`, `open` true, `burstFrames` 384, `outputLatencyMs` 25-40 and `apm` present. `mic-backend` with `kind: web` and a `why` starting `native mic link` (`error`, `closed <code>`, `timeout`, `cannot open (…)`) means the page could not use the door: stop there;
    - `dumpsys media.audio_flinger`: besides the WebView's own player, the app's only output is the AAudio stream; there is no AudioTrack opened by WebRTC's Java audio device module, and no AudioRecord.
 7. With phones (the rig's are enough), check:
    - the engine log's `first push: 48000 Hz, 1 ch`;

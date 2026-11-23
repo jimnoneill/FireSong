@@ -1,5 +1,6 @@
 import { addFlightSampler, flight } from '@/bridge/flight';
 
+import { startNativeVoice } from './native-voice-out';
 import { rackWorkletUrl } from './rack-worklets';
 import {
   BUS_COMPRESSOR_RATIO,
@@ -14,8 +15,12 @@ import {
  * leave, so pauses and song changes never rebuild audio graphs or stop
  * tracks. Slots feed `bus` (dry and echo) and `reverbSend`; voices leave
  * through the bus compressor and the voice limiter, `output`. Voices and the
- * song meet in `speakers`, a last limiter, so together they never clip.
+ * song meet in `speakers`, a last limiter, so together they never clip. In the
+ * FireSong TV app the voices can leave through the app's own low-latency
+ * output instead (`native-voice-out.ts`); the speakers then carry only the song.
  */
+export type VoiceRoute = 'speakers' | 'native';
+
 export type VoiceEngine = {
   readonly context: AudioContext;
   readonly bus: GainNode;
@@ -30,6 +35,8 @@ export type VoiceEngine = {
   outputLatencyMs(): number;
   /** RMS of the last output block, the voices as they leave for the speakers. */
   outputRms(): number;
+  /** Sends the voices to the speakers mix, or takes them out of it for the native output. */
+  setVoiceRoute(route: VoiceRoute): void;
 };
 
 const REVERB_DECAY = 6.9;
@@ -38,6 +45,7 @@ const LIMITER_RELEASE_SEC = 0.1;
 /** The whole mix only, just under full scale: it acts on peaks, not on the song's level. */
 const MIX_LIMITER_THRESHOLD_DB = -1;
 const MIX_LIMITER_RELEASE_SEC = 0.25;
+const ROUTE_SWITCH_SEC = 0.01;
 const GESTURES = ['pointerdown', 'keydown'] as const;
 const METER_FFT_SIZE = 2048;
 
@@ -85,7 +93,8 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
 
   bus.connect(busCompressor);
   reverbSend.connect(reverb).connect(busCompressor);
-  busCompressor.connect(limiter).connect(speakers);
+  const voiceToSpeakers = context.createGain();
+  busCompressor.connect(limiter).connect(voiceToSpeakers).connect(speakers);
   const meter = context.createAnalyser();
   meter.fftSize = METER_FFT_SIZE;
   limiter.connect(meter);
@@ -105,6 +114,13 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
     outputRms: () => {
       meter.getFloatTimeDomainData(block);
       return Math.sqrt(block.reduce((sum, sample) => sum + sample * sample, 0) / block.length);
+    },
+    setVoiceRoute: (route) => {
+      voiceToSpeakers.gain.setTargetAtTime(
+        route === 'native' ? 0 : 1,
+        context.currentTime,
+        ROUTE_SWITCH_SEC,
+      );
     },
   };
 };
@@ -150,8 +166,14 @@ const LOWEST_LATENCY = 0;
 /** The page's single voice engine, created on first use and never closed. */
 export const getVoiceEngine = (): VoiceEngine => {
   if (shared === null) {
-    shared = createVoiceEngine(new AudioContext({ latencyHint: LOWEST_LATENCY }));
-    keepRunning(shared);
+    const engine = createVoiceEngine(new AudioContext({ latencyHint: LOWEST_LATENCY }));
+    shared = engine;
+    keepRunning(engine);
+    engine.ready
+      .then(() => startNativeVoice(engine))
+      .catch((error: unknown) => {
+        flight('native-voice', { route: 'speakers', why: 'error', error: String(error) });
+      });
   }
   return shared;
 };

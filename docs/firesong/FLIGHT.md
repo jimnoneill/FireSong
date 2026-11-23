@@ -29,8 +29,9 @@ lyrics or audio. Song identity is the file hash.
 | `tv` | `slot-joined`, `slot-left` | a phone joined or left a slot |
 | `tv` | `song-load`, `song-fetched`, `song-ready`, `song-error`, `song-play`, `song-pause`, `song-resume`, `song-unload` | the song player, with timings |
 | `tv` | `voice-context`, `song-context` | an audio context changed state |
+| `tv` | `native-voice` | in the TV app, the voices moved between the app's low-latency output (`route: native`) and the page's own (`speakers`), with `why` (`open`, `closed`, `stopped`, `stalled`, `unreachable`, `rate`, `error`) |
 | `tv` | `party-start`, `party-start-failed`, `party-notice` | the lobby conductor |
-| `tv` | `sample` | every 10 s: heap, voice context state and output level, the song player, and each slot's level, gate, monitor and mute |
+| `tv` | `sample` | every 10 s: heap, voice context state and output level, the song player, each slot's level, gate, monitor, mute and automatic boost, and in the TV app `nativeVoice` (route, ring fill and margin, output latency, underruns, played peak over the last second) |
 
 The TV page posts its events to `POST /api/firesong/flight` on the TV door (host token) every
 5 s; the server adds `t` (arrival) and `src`. TV events also carry `wall`, the TV's own clock when

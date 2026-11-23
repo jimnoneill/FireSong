@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Release trust (design §4): system CAs plus the FireSong LAN CA (the root of
-    the Caddy `tls internal` PKI that serves the TV origin). No cleartext.
+    the Caddy `tls internal` PKI that serves the TV origin). No cleartext,
+    except the app's own voice door on 127.0.0.1 (VoiceDoor.kt), which never
+    leaves the device.
     Replace res/raw/firesong_lan_ca.pem, or build with -Pfiresong.lanCa=<root.crt>;
     see android/firesong-tv/certs/README.md.
 -->
@@ -12,4 +14,7 @@
             <certificates src="@raw/firesong_lan_ca" />
         </trust-anchors>
     </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
 </network-security-config>

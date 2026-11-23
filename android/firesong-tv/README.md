@@ -1,8 +1,9 @@
 # firesong-tv (FireSong for the Fire TV Cube)
 
-A thin Kotlin WebView host, package `org.firesong.tv`, app name **FireSong** (WP6 in the design). It shows the FireSong server's TV page fullscreen and adds only what a web page cannot do on a Fire TV: settings from the host, the host-token cookie, the remote's keys, trust for the LAN certificate, and recovery from crashes and network loss.
+A thin Kotlin WebView host, package `org.firesong.tv`, app name **FireSong** (WP6 in the design). It shows the FireSong server's TV page fullscreen and adds only what a web page cannot do on a Fire TV: settings from the host, the host-token cookie, the remote's keys, trust for the LAN certificate, recovery from crashes and network loss, and a low-latency output for the singers' voices.
 
-- No NDK, no AndroidX, no autostart (a karaoke app should not start itself). `minSdk`/`targetSdk` 28 = Fire OS 7.
+- No AndroidX, no autostart (a karaoke app should not start itself). `minSdk`/`targetSdk` 28 = Fire OS 7.
+- **Voice output.** The WebView plays Web Audio through OpenSL ES on the Cube's normal HDMI mixer: 256 ms of output latency at best (`latencyHint: 0`). Android's AAudio low-latency path measured 31 ms (2026-11-22, silence probe). So the page sends its voice mix to the app instead: an AudioWorklet and a worker stream 48 kHz stereo s16le blocks to `VoiceDoor.kt`, a WebSocket on `127.0.0.1` (random port, per-launch token, TV origin checked), which feeds `src/main/cpp/voice_out.c` (AAudio, adaptive ring buffer). The page learns the address from `window.FireSongVoice.endpoint()` and reads `stats()` for the flight record; it falls back to its own output whenever the app is not playing. The song stays on the WebView output.
 - Build: AGP 8.5.2, Kotlin 1.9.24, Gradle 8.7 wrapper (checksum-pinned), JDK 17, compileSdk 34.
 - Tested on the Cube (AFTGAZL, Fire OS 7.7.1.7, Amazon WebView Chromium 138.0.7204.244). Spike S1 results are in [`probe/S1-RESULTS.md`](probe/S1-RESULTS.md).
 
@@ -15,7 +16,7 @@ cd android/firesong-tv
 # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The SDK needs `platforms;android-34` and `build-tools;34.0.0` (`$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager`).
+The SDK needs `platforms;android-34`, `build-tools;34.0.0`, `ndk;27.3.13750724` and `cmake;3.22.1` (`$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager`).
 
 Build values come from `-P<name>=<value>` or the git-ignored `firesong.local.properties` (copy [`firesong.local.properties.example`](firesong.local.properties.example)):
 

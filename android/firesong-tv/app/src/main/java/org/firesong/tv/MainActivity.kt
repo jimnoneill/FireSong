@@ -79,6 +79,7 @@ class MainActivity : Activity() {
     private var overlayState = Overlay.NONE
 
     private var webView: WebView? = null
+    private var voiceDoor: VoiceDoor? = null
     private val handler = Handler(Looper.getMainLooper())
     private val backoff = Backoff()
     private val backTracker = BackKeyTracker()
@@ -296,6 +297,9 @@ class MainActivity : Activity() {
         // Keep the renderer at foreground priority while visible (the Cube has 2 GB).
         wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
         wv.addJavascriptInterface(FsProbe(this), FsProbe.JS_NAME)
+        val door = VoiceDoor { UrlPolicy.origin(targetUrl) }.also { it.open() }
+        voiceDoor = door
+        wv.addJavascriptInterface(VoiceDoor.Js(door), VoiceDoor.JS_NAME)
         wv.webViewClient = Client()
         wv.webChromeClient = Chrome()
         root.addView(wv, 0, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -303,6 +307,8 @@ class MainActivity : Activity() {
     }
 
     private fun destroyWebView() {
+        voiceDoor?.close()
+        voiceDoor = null
         val wv = webView ?: return
         webView = null
         root.removeView(wv)

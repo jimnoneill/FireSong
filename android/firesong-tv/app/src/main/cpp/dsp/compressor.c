@@ -34,6 +34,9 @@
 // computed from), any frame count (the 32-frame division carries across
 // calls), a stereo link that detects on max(|l|, |r|), and no metering. The
 // parameters are clamped to the DynamicsCompressorNode AudioParam ranges.
+// Init and reset leave the kernel fully released (detector at 1), the state a
+// node reaches while it idles on silence. Chromium's Reset() starts the
+// detector at 0, which cuts input in the next ~200 ms by up to 12 dB.
 #include <float.h>
 #include <math.h>
 #include <string.h>
@@ -173,7 +176,7 @@ void fsv_compressor_init(fsv_compressor *c, float fs, float threshold_db, float 
 }
 
 void fsv_compressor_reset(fsv_compressor *c) {
-  c->detector_average = 0.0f;
+  c->detector_average = 1.0f;
   c->compressor_gain = 1.0f;
   c->db_max_attack_compression_diff = -1.0f;
   c->scaled_desired_gain = 0.0f;

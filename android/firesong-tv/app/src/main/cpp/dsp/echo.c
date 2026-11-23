@@ -11,6 +11,10 @@
 #define RETUNE_FRAMES 32
 #define FILTER_Q_DB 1.0f
 
+/* |HP 300 Hz x LP| peaks at 1.571 (lowpass near 500 Hz, both Q 1 dB), so a feedback above
+   0.637 makes the loop grow. At 0.6 its gain stays at or under 0.943 for any lowpass. */
+#define MAX_FEEDBACK 0.6f
+
 struct fsv_echo {
   float line[LINE_FRAMES];
   int write;
@@ -42,9 +46,14 @@ void fsv_echo_init(fsv_echo *e, float fs) {
   fsv_echo_reset(e);
 }
 
+static float clamp(float x, float lo, float hi) {
+  if (!(x >= lo)) return lo;
+  return x > hi ? hi : x;
+}
+
 void fsv_echo_set(fsv_echo *e, float feedback, float lowpass_hz) {
-  e->feedback.target = feedback;
-  e->lowpass_hz.target = lowpass_hz;
+  e->feedback.target = clamp(feedback, 0.0f, MAX_FEEDBACK);
+  e->lowpass_hz.target = clamp(lowpass_hz, 0.0f, 0.5f * e->fs);
 }
 
 /* While the lowpass frequency glides, its coefficients follow every 32 frames;

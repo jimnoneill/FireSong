@@ -12,7 +12,7 @@ Each persona then drives its phone with one command per step; every step is time
 (first change on the phone, settled, the server's answer on the phone's socket, the
 TV's reaction), screenshotted and journaled, and `say` adds the persona's comment:
 
-    party-rig.py up [--personas pride,greed,...] [--tv cube]
+    party-rig.py up [--personas pride,greed,...] [--tv cube [--restore-flags F]] [--voice native]
     party-rig.py <persona> open [slot|bad]      scan a slot's code (none = any free slot)
     party-rig.py <persona> look                 what the phone shows, numbered controls
     party-rig.py <persona> tap <n|"text">       tap a control
@@ -35,11 +35,25 @@ By default the TV is headless and the Cube is never touched: if the real TV open
 FireSong (the newest TV takes the seat), the rig stops and does not reconnect.
 `up --tv cube` uses the real Fire TV Cube instead, only when it is idle (as the release
 gate decides), with the song quiet, and restores it (URL, HOME, sleep, volume) at `down`.
+The URL gets back the flags of `--restore-flags` or FIRESONG_TV_URL_FLAGS (e.g.
+&voice=native once that is rolled out), none by default. Times the Cube's page stamps
+are moved to the host's clock, so a Cube clock that is off does not skew the judge.
+
+`up --voice native` opens the TV page with &voice=native: in the FireSong TV app the app
+itself receives and plays the phones (a headless TV has no app, so it stays on the page's
+own voices). The rig then records the voice door between the page and the app and the
+pitch each slot's scorer receives, and `judge` counts a voice as heard while its slot
+sings when the slot is monitored, its output is at least -45 dBFS and the received pitch
+is within 3 Hz of the persona's tone (the page's own mix carries no native voices). A poll
+where the page was on its own voices (before the door opened, or after a fall back) is
+judged on the mix as before, still with the pitch. It also reports the native path's
+latency, underrun, headroom and tap-delivery checks.
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import http.server
 import importlib.util
 import json
@@ -89,6 +103,9 @@ GAINS = {"tone": 0.05, "quiet": 0.0015, "loud": 0.9, "off": 0.0}
 # A voice "stands out" this far above the music at its pitch; four harmonic voices through the
 # TV's voice compressor sit 10-15 dB above a loud song.
 HEARD_DB = 10.0
+# The capture ids a party song gives its players: one per slot, or `solo` for a lone singer.
+CAPTURES = ["slot-1", "slot-2", "slot-3", "slot-4", "solo"]
+POLL_S = 2.0
 
 TAP_JS = r"""
 (() => {
@@ -188,7 +205,7 @@ TAP_JS = r"""
 MIC_JS = r"""
 (() => {
   if (window.__fakeMic) return;
-  const mic = window.__fakeMic = { opened: 0, deny: false, hz: __HZ__, gain: __GAIN__, vocal: null, ctx: null };
+  const mic = window.__fakeMic = { opened: 0, deny: false, hz: __HZ__, gain: __GAIN__, vocal: null, ctx: null, slot: null };
   const ensure = () => {
     if (mic.ctx) return;
     const ctx = new AudioContext({ sampleRate: 48000 });
@@ -229,13 +246,15 @@ MIC_JS = r"""
     src.start(0, Math.max(0, from)); mic.vocal = src;
     return { dur: buf.duration, from };
   };
-  mic.state = () => ({ opened: mic.opened, hz: mic.hz, gain: mic.gain, vocal: !!mic.vocal, ctx: mic.ctx ? mic.ctx.state : null, deny: mic.deny });
+  mic.state = () => ({ opened: mic.opened, hz: mic.hz, gain: mic.gain, vocal: !!mic.vocal, ctx: mic.ctx ? mic.ctx.state : null, deny: mic.deny, slot: mic.slot });
   const OrigWS = window.WebSocket;
   const ws = window.__ws = [];
   const note = (dir, data) => {
     if (typeof data !== 'string') return;
     try {
       const m = JSON.parse(data);
+      if (dir === 'in' && m.type === 'assign' && typeof m.slot === 'number') mic.slot = m.slot;
+      if (dir === 'in' && m.type === 'slot-lost') mic.slot = null;
       ws.push({ t: performance.now(), w: Date.now(), dir, type: m.type, code: m.code, ok: m.ok, cmd: m.cmd || m.action || m.kind });
       if (ws.length > 4000) ws.splice(0, 2000);
     } catch (e) {}
@@ -474,7 +493,7 @@ def cube_has_firesong() -> bool:
 class CubeTv:
     """The real Fire TV Cube as the party's TV, opened and restored like the release gate does."""
 
-    def __init__(self, quiet: float):
+    def __init__(self, quiet: float, keep_flags: str = ""):
         spec = importlib.util.spec_from_file_location("party_gate", HERE / "party-gate.py")
         self.gate = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.gate)
@@ -488,23 +507,24 @@ class CubeTv:
         self.token_file = self.gate.data_path() / "firesong/host-token"
         self.config = self.gate.data_path() / "config.json"
         self.saved: dict = {}
+        self.keep_flags = keep_flags
         self.start_state = self.cube.wakefulness()
 
     def busy(self) -> str | None:
         return self.gate.idle_problem(self.cube)
 
-    def open(self) -> Cdp:
+    def open(self, flags: str) -> Cdp:
         self.gate.set_master(self.config, self.quiet, self.saved)
         L.cmd("clear_playback_queue")
-        self.gate.open_firesong(self.cube, self.tvctl, self.lan_url, self.token_file)
+        self.gate.open_firesong(self.cube, self.tvctl, self.lan_url + flags, self.token_file)
         return Cdp(L.TV_CDP)
 
     def restore(self) -> None:
         for step in (["home"], ["undevtools", str(L.TV_CDP)]):
             subprocess.run([self.tvctl, *step], capture_output=True, timeout=30)
         time.sleep(2)
-        subprocess.run([self.tvctl, "configure", "--url", self.lan_url, "--token-file", str(self.token_file)],
-                       capture_output=True, timeout=60)
+        subprocess.run([self.tvctl, "configure", "--url", self.lan_url + self.keep_flags, "--token-file",
+                        str(self.token_file)], capture_output=True, timeout=60)
         time.sleep(3)
         for step in (["home"], ["stop"]):
             subprocess.run([self.tvctl, *step], capture_output=True, timeout=30)
@@ -530,6 +550,9 @@ def up(args) -> int:
     names = [n for n in args.personas.split(",") if n]
     run = pathlib.Path(args.run or f"/mnt/fast/firesong/artifacts/sins-party-{time.strftime('%Y%m%dT%H%M%S')}")
     (run / "shots").mkdir(parents=True, exist_ok=True)
+    native = args.voice == "native"
+    flags = L.NATIVE_FLAG if native else ""
+    keep_flags = L.restore_flags(args.restore_flags) if args.tv == "cube" else ""
     # Kept across `down`/`up` with the same --run, so phones keep their mic identity.
     profiles = run / "profiles"
     profiles.mkdir(exist_ok=True)
@@ -537,12 +560,13 @@ def up(args) -> int:
     token = (pathlib.Path(L.env_value("NIGHTINGALE_DATA_PATH") or "/mnt/fast/firesong/data")
              / "firesong/host-token").read_text().strip()
     tones = {n: PERSONAS[n]["hz"] for n in names}
+    (run / "rig.json").write_text(json.dumps({"voice": args.voice, "tv": args.tv, "personas": names, "tones": tones}))
 
     stems = socketserver.ThreadingTCPServer(("127.0.0.1", STEM_PORT), StemHandler)
     stems.daemon_threads = True
     threading.Thread(target=stems.serve_forever, daemon=True).start()
 
-    cube = CubeTv(args.quiet) if args.tv == "cube" else None
+    cube = CubeTv(args.quiet, keep_flags) if args.tv == "cube" else None
     tv_port = L.TV_CDP if cube else TV_PORT
     tap = TAP_JS.replace("__TONES__", json.dumps(tones))
     # The Cube's CPU is small: a slower tap and no recorder there.
@@ -559,7 +583,7 @@ def up(args) -> int:
         procs[n] = chrome(PERSONAS[n]["port"], str(profiles / n), "390,844")
     if cube:
         try:
-            tv = cube.open()
+            tv = cube.open(flags)
         except Exception as error:
             print(f"could not get FireSong onto the Cube: {error}", flush=True)
             cube.restore()
@@ -574,7 +598,9 @@ def up(args) -> int:
     if not cube:
         # The Fire TV Cube's WebView: 960x540 CSS pixels at 2x.
         tv.call("Emulation.setDeviceMetricsOverride", {"width": 960, "height": 540, "deviceScaleFactor": 2, "mobile": False})
-    tv.call("Page.addScriptToEvaluateOnNewDocument", {"source": tap})
+    page_scripts = [tap] + ([L.DOOR_JS] if native else [])
+    for source in page_scripts:
+        tv.call("Page.addScriptToEvaluateOnNewDocument", {"source": source})
     phones: dict[str, Cdp] = {}
     for n in names:
         p = wait_cdp(PERSONAS[n]["port"])
@@ -589,10 +615,17 @@ def up(args) -> int:
     if cube:
         tv.call("Page.reload")
     else:
-        tv.call("Page.navigate", {"url": f"http://127.0.0.1:64448/?tv=1&mode=noraebang&fsdiag=1&host={token}"})
+        tv.call("Page.navigate", {"url": f"http://127.0.0.1:64448/?tv=1&mode=noraebang&fsdiag=1&host={token}{flags}"})
     L.wait_for("TV seat", lambda: tv.eval("!!(window.fireSongDiag && fireSongDiag.snapshot().connected)"), 60)
+    # Host clock minus the TV page's: the Cube keeps its own clock; the headless TV shares the host's.
+    clock = L.PageClock()
+    if cube:
+        for _ in range(5):
+            clock.sample(lambda: tv.eval("Date.now()", gesture=False))
+    offset = round(clock.offset())
     state = {"pid": os.getpid(), "run": str(run), "since_ms": since, "personas": names, "tones": tones,
-             "tv_port": tv_port, "tv": "cube" if cube else "headless", "ports": {n: PERSONAS[n]["port"] for n in names}}
+             "tv_port": tv_port, "tv": "cube" if cube else "headless", "ports": {n: PERSONAS[n]["port"] for n in names},
+             "clock_offset_ms": offset}
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state))
     print(f"up: TV + {len(names)} phones, run {run}", flush=True)
@@ -600,23 +633,36 @@ def up(args) -> int:
     stop = {"why": None}
     signal.signal(signal.SIGTERM, lambda *a: stop.update(why="down"))
     signal.signal(signal.SIGINT, lambda *a: stop.update(why="down"))
-    last_hear, last_audio, last_cube, last_phone = since, 0.0, 0.0, 0.0
+    last_hear, last_audio, last_cube, last_phone = since - offset, 0.0, 0.0, 0.0
     tv_down_since = None
+    pitch = L.PitchTracker()
     audio_file = open(run / "tv-audio.webm", "ab")
     try:
         while stop["why"] is None:
             t = time.time()
             try:
+                if cube:
+                    clock.sample(lambda: tv.eval("Date.now()", gesture=False))
+                    offset = round(clock.offset())
                 rows = tv.eval(f"window.__hear ? __hear.take({last_hear}) : []", gesture=False) or []
                 if rows:
                     last_hear = rows[-1]["t"]
                     with open(run / "hear.jsonl", "a") as f:
                         for r in rows:
-                            f.write(json.dumps(r) + "\n")
+                            # Journaled on the host's clock (the cursor above stays on the page's).
+                            f.write(json.dumps({**r, "t": r["t"] + offset} if offset else r) + "\n")
                 snap = tv.eval("window.fireSongDiag ? {snap: fireSongDiag.snapshot(), stage: fireSongDiag.stage(),"
                                " media: window.__hear ? __hear.mediaState() : []} : null", gesture=False)
+                if native:
+                    try:
+                        probe = tv.eval(f"({L.TICK_JS})({json.dumps(CAPTURES)})", gesture=False)
+                    except CdpError as error:
+                        probe = None
+                        journal(run, "rig", {"t": now_ms(), "error": f"native probe: {str(error)[:200]}"})
+                    if probe:
+                        record_native(run, probe, pitch, offset)
                 if snap is not None:
-                    journal(run, "tv", {"t": now_ms(), **snap})
+                    journal(run, "tv", {"t": now_ms(), **snap, **({"clock_offset_ms": offset} if cube else {})})
                     if snap["snap"].get("connected"):
                         tv_down_since = None
                     elif tv_down_since is None:
@@ -641,6 +687,12 @@ def up(args) -> int:
                     tv.close()
                     tv = Cdp(tv_port)
                     tv.call("Runtime.enable")
+                    # Scripts for new documents belong to the DevTools session that added them: add them
+                    # again so the next page load is recorded too. Not run on the current page: a door
+                    # recorder installed after the door opened would see no door and read as web.
+                    tv.call("Page.enable")
+                    for source in page_scripts:
+                        tv.call("Page.addScriptToEvaluateOnNewDocument", {"source": source})
                 except Exception:
                     pass
             if t - last_phone > 5:
@@ -676,7 +728,7 @@ def up(args) -> int:
             if tv_down_since is not None and t - tv_down_since > 20:
                 journal(run, "rig", {"t": now_ms(), "note": "TV seat lost for 20 s"})
                 tv_down_since = t
-            time.sleep(max(0.0, 2.0 - (time.time() - t)))
+            time.sleep(max(0.0, POLL_S - (time.time() - t)))
     finally:
         why = stop["why"] or "ended"
         journal(run, "rig", {"t": now_ms(), "stopped": why})
@@ -703,6 +755,26 @@ def up(args) -> int:
             pass
         print(f"down: {why}", flush=True)
     return 0
+
+
+def record_native(run: pathlib.Path, probe: dict, pitch: L.PitchTracker, offset: int = 0) -> None:
+    """Journals the voice door's traffic (on the host's clock) and the pitch each singing capture's scorer received.
+
+    The summary row and the pitch row of one poll share their time, so the judge knows which
+    backend each pitch row was heard on.
+    """
+    t = now_ms()
+    door = probe.get("door") or {}
+    with open(run / "native.jsonl", "a") as f:
+        for e in L.on_host_clock(door.get("events") or [], offset):
+            f.write(json.dumps(e) + "\n")
+        f.write(json.dumps({"t": t, "tap": L.tap_summary(door.get("tap")), "long": door.get("long") or {},
+                            "ice": door.get("ice"), "state": door.get("state"), "backend": L.backend_kind(probe),
+                            "clock_offset_ms": offset, "errors": probe.get("errors") or []}) + "\n")
+    captures = {cid: d for cid, d in pitch.update(probe.get("pitch")).items() if d["frames"] or d["voiced"]}
+    if captures:
+        stage = probe.get("stage") or {}
+        journal(run, "pitch", {"t": t, "state": stage.get("state"), "singers": stage.get("singers"), "captures": captures})
 
 
 def down(_args) -> int:
@@ -1179,8 +1251,20 @@ def send_keys(cdp: Cdp, key: str, count: int, gap: float = 0.05) -> None:
             time.sleep(gap)
 
 
+def tone_db(row: dict, name: str, index: int) -> float:
+    """A persona's tone level (index 0) or its lift over the music (1) in a hear sample.
+
+    A silent mix makes the analyser read -Infinity, which arrives as null: that is -120 dB.
+    A persona missing from the sample reads 0 dB, as before.
+    """
+    pair = (row.get("tones") or {}).get(name, [0, 0])
+    value = pair[index] if isinstance(pair, list) and len(pair) > index else None
+    return value if isinstance(value, (int, float)) else -120.0
+
+
 def hear_report(p: Persona, secs: float, compact: bool = False):
-    since = now_ms() - int(secs * 1000)
+    # The page stamps its own clock: host time minus the host-minus-page offset.
+    since = now_ms() - int(secs * 1000) - int(p.st.get("clock_offset_ms") or 0)
     rows = p.tv.eval(f"window.__hear ? __hear.take({since}) : []", gesture=False) or []
     rows = [r for r in rows if "tones" in r]
     if not rows:
@@ -1195,8 +1279,8 @@ def hear_report(p: Persona, secs: float, compact: bool = False):
     out["by_source_db"] = {k: round(statistics.median(v), 1) for k, v in kinds.items()}
     heard = {}
     for n in tones:
-        lift = [r["tones"][n][1] for r in rows if n in r["tones"]]
-        level = [r["tones"][n][0] for r in rows if n in r["tones"]]
+        lift = [tone_db(r, n, 1) for r in rows if n in r["tones"]]
+        level = [tone_db(r, n, 0) for r in rows if n in r["tones"]]
         share = sum(1 for v in lift if v >= HEARD_DB) / len(lift) if lift else 0
         heard[n] = {"heard_share": round(share, 2), "level_db": round(statistics.median(level), 1),
                     "stands_out_db": round(statistics.median(lift), 1)}
@@ -1222,6 +1306,120 @@ def hear_report(p: Persona, secs: float, compact: bool = False):
     return "\n".join(lines)
 
 
+def rows_of(run: pathlib.Path, name: str) -> list[dict]:
+    path = run / f"{name}.jsonl"
+    rows = []
+    if path.exists():
+        for line in path.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+    return rows
+
+
+def native_voices(phones: list[dict], events: list[dict], pitch_rows: list[dict], summaries=(), hear=()) -> dict:
+    """Per persona, while its phone was live with its tone on and its slot was singing: was it heard?
+
+    Each pitch row is judged on the backend the page used in that poll (the summary row of the
+    same poll). Native: the slot is monitored, the app's output for the slot is at least
+    L.HEARD_OUT_DB dBFS, and the pitch the slot's scorer received is within L.PITCH_TOL_HZ of the
+    persona's tone. Web (before the door opened, or after a fall back): the persona's tone stands
+    HEARD_DB out of the TV's mix over that poll, and the pitch matches. `out_share_live` is the share
+    of the persona's live time (lobby too) its voice left the TV natively.
+    """
+    statuses = sorted(((e["t"], {s.get("slot"): s for s in e["m"].get("slots") or []}) for e in events
+                       if e.get("dir") == "in" and (e.get("m") or {}).get("t") == "status"), key=lambda x: x[0])
+    status_t = [t for t, _ in statuses]
+    kinds = sorted(((r["t"], r.get("backend")) for r in summaries if L.number(r.get("t"))), key=lambda x: x[0])
+    kind_t = [t for t, _ in kinds]
+    hears = sorted((h for h in hear if L.number(h.get("t"))), key=lambda h: h["t"])
+    hear_t = [h["t"] for h in hears]
+
+    def status_at(t: int, slot: int) -> dict | None:
+        i = bisect.bisect_left(status_t, t)
+        near = [j for j in (i - 1, i) if 0 <= j < len(statuses) and abs(statuses[j][0] - t) <= 3000]
+        return statuses[min(near, key=lambda j: abs(statuses[j][0] - t))][1].get(slot) if near else None
+
+    def backend_at(t: int) -> str | None:
+        i = bisect.bisect_right(kind_t, t)
+        return kinds[i - 1][1] if i and t - kinds[i - 1][0] <= 3000 else None
+
+    def mix_heard(t: int, name: str) -> bool:
+        rows = hears[bisect.bisect_right(hear_t, t - POLL_S * 1000):bisect.bisect_right(hear_t, t)]
+        return bool(rows) and statistics.median(tone_db(h, name, 1) for h in rows) >= HEARD_DB
+
+    def out_ok(st: dict | None) -> bool:
+        return bool(st and st.get("monitored") and L.db(st.get("outRms")) >= L.HEARD_OUT_DB)
+
+    voices = {}
+    for name in sorted({p["who"] for p in phones}):
+        hz = PERSONAS[name]["hz"]
+        mine = sorted((p for p in phones if p["who"] == name), key=lambda p: p["t"])
+        windows = []
+        for a, b in zip(mine, mine[1:]):
+            mic = a.get("mic") or {}
+            if a.get("live") and (mic.get("gain") or 0) >= 0.01 and not mic.get("vocal") and mic.get("slot"):
+                windows.append((a["t"] + 1000, b["t"], mic["slot"]))
+        live = [by_slot.get(slot) for a, b, slot in windows
+                for _, by_slot in statuses[bisect.bisect_left(status_t, a):bisect.bisect_right(status_t, b)]]
+        why = {"not_monitored": 0, "quiet": 0, "mix_quiet": 0, "pitch_off": 0}
+        on: dict[str, int] = {}
+        sung, heard, got, gaps, run_start, last_sung = 0, 0, [], [], None, None
+        for r in pitch_rows:
+            slot = next((s for a, b, s in windows if a <= r["t"] <= b), None)
+            if slot is None:
+                continue
+            caps = r.get("captures") or {}
+            cap = caps.get(f"slot-{slot}") or (caps.get("solo") if r.get("singers") == [slot] else None)
+            if not cap or not cap.get("frames"):
+                continue
+            sung += 1
+            last_sung = r["t"]
+            st = status_at(r["t"], slot)
+            kind = backend_at(r["t"])
+            on[kind or "?"] = on.get(kind or "?", 0) + 1
+            new = cap.get("new") or []
+            got.extend(new)
+            tuned = bool(new) and abs(statistics.median(new) - hz) <= L.PITCH_TOL_HZ
+            if kind == "native" or (kind is None and st is not None):
+                ok = out_ok(st) and tuned
+                if not (st and st.get("monitored")):
+                    why["not_monitored"] += 1
+                elif not out_ok(st):
+                    why["quiet"] += 1
+                elif not tuned:
+                    why["pitch_off"] += 1
+            else:
+                loud = mix_heard(r["t"], name)
+                ok = loud and tuned
+                if not loud:
+                    why["mix_quiet"] += 1
+                elif not tuned:
+                    why["pitch_off"] += 1
+            heard += 1 if ok else 0
+            if not ok and run_start is None:
+                run_start = r["t"]
+            if ok and run_start is not None:
+                if r["t"] - run_start > 2000:
+                    gaps.append((run_start, r["t"] - run_start))
+                run_start = None
+        # A voice lost for good (say after a fall back) is a gap that never closes: report it too.
+        if run_start is not None and last_sung - run_start > 2000:
+            gaps.append((run_start, last_sung - run_start))
+        voices[name] = {"live_secs": round(sum(b - a for a, b, _ in windows) / 1000),
+                        "slots": sorted({s for _, _, s in windows}),
+                        "singing_secs": round(sung * POLL_S),
+                        "singing_polls_by_backend": on,
+                        "heard_share": round(heard / sung, 3) if sung else None,
+                        "not_heard_because": why,
+                        "pitch_median_hz": round(statistics.median(got), 1) if got else None,
+                        "out_share_live": round(sum(1 for st in live if out_ok(st)) / len(live), 3) if live else None,
+                        "silent_gaps_over_2s": [{"at": time.strftime('%H:%M:%S', time.localtime(s / 1000)), "ms": d}
+                                                for s, d in gaps][:12]}
+    return voices
+
+
 def judge(_args) -> int:
     st_path = STATE if STATE.exists() else None
     run = pathlib.Path(_args.run) if _args.run else (pathlib.Path(json.loads(st_path.read_text())["run"]) if st_path else None)
@@ -1233,8 +1431,19 @@ def judge(_args) -> int:
     rows_t = [json.loads(line) for line in (run / "tv.jsonl").read_text().splitlines()] if (run / "tv.jsonl").exists() else []
     since = rows_t[0]["t"] - 5000 if rows_t else now_ms() - 3600_000
     until = rows_t[-1]["t"] + 5000 if rows_t else now_ms()
-    flight = [r for r in G.records(since) if r["t"] <= until]
+    # A TV row is placed by the TV's clock (`wall`); on the Cube that clock is moved to the host's.
+    offsets = [r["clock_offset_ms"] for r in rows_t if L.number(r.get("clock_offset_ms"))]
+    tv_offset = statistics.median(offsets) if offsets else 0
+    flight = []
+    for r in G.records(since - 600_000):
+        if tv_offset and L.number(r.get("wall")):
+            r["t"] = int(round(r["wall"] + tv_offset))
+        if since <= r["t"] <= until:
+            flight.append(r)
+    flight.sort(key=lambda r: r["t"])
     out = {"run": str(run), "from": since, "to": until}
+    if offsets:
+        out["tv_clock_offset_ms"] = tv_offset
     out["server_stalls_ms"] = [r.get("ms") for r in flight if r["ev"] == "stall"]
     out["tv_errors"] = [r.get("message") for r in flight if r["src"] == "tv" and r["ev"] in ("error", "rejection", "react-crash")][:10]
     out["rtc_closes"] = [{k: r.get(k) for k in ("role", "slot", "why", "t")} for r in flight if r["ev"] == "rtc-close"][:40]
@@ -1256,10 +1465,10 @@ def judge(_args) -> int:
             if a.get("live") and (mic.get("gain") or 0) >= 0.01 and not mic.get("vocal"):
                 live_windows.append((a["t"] + 1000, b["t"]))
         samples = [h for h in hear if any(s <= h["t"] <= e for s, e in live_windows)]
-        heard = [h for h in samples if h["tones"].get(name, [0, 0])[1] >= HEARD_DB]
+        heard = [h for h in samples if tone_db(h, name, 1) >= HEARD_DB]
         gaps, run_start = [], None
         for h in samples:
-            ok = h["tones"].get(name, [0, 0])[1] >= HEARD_DB
+            ok = tone_db(h, name, 1) >= HEARD_DB
             if not ok and run_start is None:
                 run_start = h["t"]
             if ok and run_start is not None:
@@ -1283,6 +1492,36 @@ def judge(_args) -> int:
                        "slow_steps": [(r["step"], r["action"], r.get("first_ms")) for r in acts if (r.get("first_ms") or 0) > 1000][:10],
                        "refused": [(r["step"], f.get("code")) for r in acts for f in (r.get("ws") or []) if f.get("ok") is False][:10]}
     out["personas"] = steps
+    rig = json.loads((run / "rig.json").read_text()) if (run / "rig.json").exists() else {}
+    if rig.get("voice") == "native":
+        native_rows = rows_of(run, "native")
+        events = [r for r in native_rows if "dir" in r]
+        summaries = [r for r in native_rows if "tap" in r]
+        seen: dict[str, int] = {}
+        for r in summaries:
+            seen[r.get("backend") or "?"] = seen.get(r.get("backend") or "?", 0) + 1
+        ready = any(e["dir"] == "in" and (e.get("m") or {}).get("t") == "ready" and e["m"].get("ok") for e in events)
+        out["backend"] = {"requested": "native", "seen": seen, "door_ready": ready}
+        if ready:
+            song_peaks = [(r["t"], v) for r in flight if r["src"] == "tv" and r["ev"] == "sample"
+                          for v in L.find_values(r, "songPeak") if L.number(v)]
+            rep = L.native_report(events, [{**r["tap"], "t": r["t"]} for r in summaries],
+                                  [{**(r.get("long") or {}), "t": r["t"]} for r in summaries], song_peaks)
+            if rig.get("tv") == "cube" and "H1" in rep:
+                rep["H1"]["note"] = "the rig plays the song quietly; the song's real peak needs cube-load-test.py"
+            out["native"] = rep
+            out["voices_mix"] = out["voices"]
+            out["voices"] = native_voices(phones, events, rows_of(run, "pitch"), summaries, hear)
+            print(L.format_native(rep), file=sys.stderr)
+    cube_rows = rows_of(run, "cube")
+    if cube_rows:
+        out["cube"] = {"samples": len(cube_rows),
+                       "app_cpu_median": L.rnd(L.median((r.get("cpu") or {}).get("app") for r in cube_rows)),
+                       "renderer_cpu_median": L.rnd(L.median((r.get("cpu") or {}).get("webview") for r in cube_rows)),
+                       "mem_available_min_mb": min((r["mem_available_mb"] for r in cube_rows
+                                                    if L.number(r.get("mem_available_mb"))), default=None),
+                       "native_heap_mb_max": L.top_value(r.get("native_heap_mb") for r in cube_rows),
+                       "so_mmap_mb_max": L.top_value(r.get("so_mmap_mb") for r in cube_rows)}
     (run / "judge.json").write_text(json.dumps(out, indent=1))
     print(json.dumps(out, indent=1))
     return 0
@@ -1299,6 +1538,11 @@ def main() -> int:
     u.add_argument("--tv", choices=("headless", "cube"), default="headless",
                    help="cube: the real Fire TV Cube (only when idle; quiet volume, restored after)")
     u.add_argument("--quiet", type=float, default=0.03, help="song volume on the Cube during the run")
+    u.add_argument("--voice", choices=("web", "native"), default="web",
+                   help="native: the TV page opens with &voice=native (in the TV app, the app plays the phones)")
+    u.add_argument("--restore-flags", default=None,
+                   help="with --tv cube: URL flags FireSong keeps after `down`, e.g. '&voice=native'"
+                        " (default: FIRESONG_TV_URL_FLAGS, else none)")
     sub.add_parser("down")
     j = sub.add_parser("judge")
     j.add_argument("--run", default=None)

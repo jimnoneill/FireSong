@@ -1,3 +1,5 @@
+import type { MicSlot } from '@/features/remote-mic/protocol';
+
 import { flight } from './flight';
 import {
   appMessageSchema,
@@ -16,13 +18,14 @@ import type { NativeVoiceEndpoint } from './native-voice';
  * The page's end of the app's door: `hello`, then `ready`, then JSON messages
  * both ways and binary tap messages from the app. After `ready` the link is
  * lost when the socket ends, the app sends `fatal`, nothing arrives for 5 s,
- * or the engine's audio output stays shut for 20 s.
+ * the engine's audio output stays shut for 20 s, or the app stops reading
+ * page messages.
  */
 
 const NORMAL_CLOSE = 1000;
 /** The door closes the socket on a page frame above this size. */
 const MAX_FRAME_BYTES = 65_536;
-/** Page messages the socket may hold unsent before `send` refuses more. */
+/** Page messages the socket may hold unsent; more means the door has stopped reading. */
 const MAX_BUFFERED_BYTES = 1_048_576;
 const WATCH_MS = 1000;
 /** `status` arrives at 4 Hz, so this much quiet means the app stopped. */
@@ -41,6 +44,8 @@ const encoder = new TextEncoder();
 
 type Phase = 'connecting' | 'ready' | 'lost' | 'closed';
 
+type ListenerKind = 'message' | 'tap' | 'lost';
+
 type TapArrival = { p99Ms: number; maxMs: number; count: number };
 
 type Settle = {
@@ -48,7 +53,7 @@ type Settle = {
   reject(error: Error): void;
 };
 
-type Decoded = { ok: true; message: AppMessage } | { ok: false; t: string | null };
+type Decoded = { ok: true; message: AppMessage } | { ok: false; type: string | null };
 
 /** UTF-8 takes at most 3 bytes per UTF-16 unit, so most frames need no encoding. */
 const fitsFrame = (text: string): boolean =>
@@ -67,19 +72,10 @@ const decodeText = (text: string): Decoded => {
   try {
     value = JSON.parse(text);
   } catch {
-    return { ok: false, t: null };
+    return { ok: false, type: null };
   }
   const result = appMessageSchema.safeParse(value);
-  return result.success ? { ok: true, message: result.data } : { ok: false, t: typeOf(value) };
-};
-
-/** A failing listener is reported and does not keep the others from running. */
-const notify = <T>(listener: (value: T) => void, value: T): void => {
-  try {
-    listener(value);
-  } catch (error) {
-    reportError(error);
-  }
+  return result.success ? { ok: true, message: result.data } : { ok: false, type: typeOf(value) };
 };
 
 /** Intervals between tap messages in 0.5 ms bins; the last bin holds everything longer. */
@@ -99,6 +95,11 @@ class ArrivalHistogram {
     this.last = now;
   }
 
+  /** The next message starts a new run instead of closing an interval across the pause. */
+  pause(): void {
+    this.last = null;
+  }
+
   /** The p99 is its bin's upper edge, at most `maxMs`; counting restarts. */
   take(): TapArrival | null {
     if (this.count === 0) {
@@ -112,7 +113,7 @@ class ArrivalHistogram {
       bin += 1;
     }
     const arrival = {
-      p99Ms: Math.min((bin + 1) * ARRIVAL_BIN_MS, this.maxMs),
+      p99Ms: bin === ARRIVAL_BINS ? this.maxMs : Math.min((bin + 1) * ARRIVAL_BIN_MS, this.maxMs),
       maxMs: this.maxMs,
       count: this.count,
     };
@@ -127,13 +128,13 @@ class ArrivalHistogram {
 class FlightReports {
   private readonly seen = new Set<string>();
 
-  once(why: string, t: string | null): void {
-    const key = `${why} ${t ?? ''}`;
+  once(why: string, type: string | null): void {
+    const key = `${why} ${type ?? ''}`;
     if (this.seen.has(key) || this.seen.size >= MAX_REPORTS) {
       return;
     }
     this.seen.add(key);
-    flight('native-mics', { why, t });
+    flight('native-mics', { why, type });
   }
 }
 
@@ -143,6 +144,8 @@ class DoorLink {
   private readonly messageListeners = new Set<(message: AppMessage) => void>();
   private readonly tapListeners = new Set<(block: TapBlock) => void>();
   private readonly lostListeners = new Set<(why: string) => void>();
+  private readonly failedListeners = new WeakSet<object>();
+  private readonly tapped = new Set<MicSlot>();
   private readonly arrivals = new ArrivalHistogram();
   private readonly reports = new FlightReports();
   private deadline: number | null = null;
@@ -182,6 +185,7 @@ class DoorLink {
     return this.isReady() && this.write(message);
   }
 
+  /** A door that leaves 1 MiB unread is stuck: the link is lost after the caller's turn. */
   private write(message: PageMessage): boolean {
     if (this.socket.readyState !== WebSocket.OPEN) {
       return false;
@@ -192,11 +196,24 @@ class DoorLink {
       return false;
     }
     if (this.socket.bufferedAmount > MAX_BUFFERED_BYTES) {
-      this.reports.once('backpressure', message.t);
+      queueMicrotask(() => this.lose('stalled'));
       return false;
     }
     this.socket.send(text);
+    this.trackTap(message);
     return true;
+  }
+
+  /** Tap arrivals are timed only while some slot is tapped, so pauses between songs are not intervals. */
+  private trackTap(message: PageMessage): void {
+    if (message.t === 'tap' && message.on) {
+      this.tapped.add(message.slot);
+    } else if (message.t === 'tap' || message.t === 'release') {
+      this.tapped.delete(message.slot);
+      if (this.tapped.size === 0) {
+        this.arrivals.pause();
+      }
+    }
   }
 
   private receive(data: unknown): void {
@@ -212,7 +229,7 @@ class DoorLink {
   private receiveText(text: string): void {
     const decoded = decodeText(text);
     if (!decoded.ok) {
-      this.reports.once('bad-message', decoded.t);
+      this.reports.once('bad-message', decoded.type);
     } else if (this.isReady()) {
       this.deliver(decoded.message);
     } else {
@@ -229,9 +246,11 @@ class DoorLink {
       this.reports.once('bad-tap', null);
       return;
     }
-    this.arrivals.arrive(now);
+    if (this.tapped.size > 0) {
+      this.arrivals.arrive(now);
+    }
     for (const block of blocks) {
-      this.dispatch(this.tapListeners, block);
+      this.dispatch('tap', this.tapListeners, block);
     }
   }
 
@@ -270,18 +289,35 @@ class DoorLink {
       this.engineStats = message;
       this.audioDownSince = message.open ? null : (this.audioDownSince ?? performance.now());
     }
-    this.dispatch(this.messageListeners, message);
+    this.dispatch('message', this.messageListeners, message);
     if (message.t === 'fatal') {
       this.lose(`fatal ${message.reason}`);
     }
   }
 
-  private dispatch<T>(listeners: ReadonlySet<(value: T) => void>, value: T): void {
-    for (const listener of listeners) {
-      if (!this.isReady()) {
-        return;
+  /** Listeners added during delivery wait for the next value; removed ones are skipped. */
+  private dispatch<T>(
+    kind: ListenerKind,
+    listeners: ReadonlySet<(value: T) => void>,
+    value: T,
+  ): void {
+    for (const listener of Array.from(listeners)) {
+      if (listeners.has(listener)) {
+        this.notify(kind, listener, value);
       }
-      notify(listener, value);
+    }
+  }
+
+  /** A failing listener is reported on its first failure and does not keep the others from running. */
+  private notify<T>(kind: ListenerKind, listener: (value: T) => void, value: T): void {
+    try {
+      listener(value);
+    } catch (error) {
+      if (!this.failedListeners.has(listener)) {
+        this.failedListeners.add(listener);
+        this.reports.once('listener-error', kind);
+        reportError(error);
+      }
     }
   }
 
@@ -332,12 +368,13 @@ class DoorLink {
     if (!this.isReady()) {
       return;
     }
-    const listeners = [...this.lostListeners];
     this.phase = 'lost';
     this.lostWhy = why;
     this.teardown();
-    for (const listener of listeners) {
-      notify(listener, why);
+    for (const listener of Array.from(this.lostListeners)) {
+      if (this.lostListeners.delete(listener)) {
+        this.notify('lost', listener, why);
+      }
     }
   }
 
@@ -347,6 +384,7 @@ class DoorLink {
     }
     this.phase = 'closed';
     this.teardown();
+    this.lostListeners.clear();
   }
 
   private teardown(): void {
@@ -358,7 +396,6 @@ class DoorLink {
     }
     this.messageListeners.clear();
     this.tapListeners.clear();
-    this.lostListeners.clear();
     this.socket.close(NORMAL_CLOSE);
   }
 
@@ -387,7 +424,7 @@ class DoorLink {
     let wanted = true;
     queueMicrotask(() => {
       if (wanted) {
-        notify(listener, why);
+        this.notify('lost', listener, why);
       }
     });
     return () => {
@@ -412,6 +449,7 @@ class DoorLink {
 /**
  * Opens the mics protocol on the app's door: `hello`, then `ready` within
  * `timeoutMs`. Rejects when the app does not answer with a usable `ready`.
+ * The door URL carries its token, so a constructor failure keeps only its name.
  */
 export const connectNativeMicLink = (
   endpoint: NativeVoiceEndpoint,
@@ -422,7 +460,8 @@ export const connectNativeMicLink = (
     try {
       socket = new WebSocket(endpoint.url);
     } catch (error) {
-      reject(new Error('native mic link cannot open', { cause: error }));
+      const name = error instanceof Error ? error.name : 'unknown';
+      reject(new Error(`native mic link cannot open (${name})`));
       return;
     }
     new DoorLink(socket, { resolve, reject }).start(timeoutMs);

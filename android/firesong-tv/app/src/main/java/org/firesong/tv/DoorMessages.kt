@@ -83,7 +83,10 @@ sealed class PageMessage(val t: String) {
 }
 
 sealed class AppMessage(val t: String) {
-    /** On the wire with `v` and `ok: true`. */
+    /**
+     * On the wire with `v` and `ok: true`. [outputLatencyMs] waits for the output's first timestamp, about 50 ms
+     * after it opens, so a session that has just opened the output says null here; `engine-stats` carries it.
+     */
     data class ReadyOk(
         val features: List<String>,
         val audio: ReadyAudio,

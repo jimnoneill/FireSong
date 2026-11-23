@@ -1,5 +1,6 @@
 // The voice output: one AAudio low-latency stream, its clock thread and its
-// restart path.
+// restart path, taken after an error, a disconnect, or a started stream whose
+// callbacks stopped.
 //
 // The data callback renders and counts frames, nothing else. Every other
 // AAudio call (open, close, getTimestamp, setBufferSizeInFrames, the xrun
@@ -30,6 +31,8 @@
 #define RETRY_FIRST_NS NS_MS(2000)
 #define RETRY_MAX_NS NS_MS(10000)
 #define SHRINK_AFTER_NS NS_MS(120000)
+#define SETTLE_NS NS_MS(500)
+#define STALL_TICKS 20
 #define STOP_WAIT_NS NS_MS(200)
 
 static pthread_mutex_t ao_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -38,8 +41,8 @@ static fsv_render_fn render_fn;
 static pthread_t clock_thread;
 static int clock_started;
 static intptr_t last_stream_id;
-static int64_t next_open_ns, retry_ns, last_xrun_ns, xruns_closed;
-static int32_t burst, stream_xruns;
+static int64_t next_open_ns, retry_ns, last_xrun_ns, xruns_closed, settle_until_ns, last_published;
+static int32_t burst, stream_xruns, stall_ticks;
 
 static _Atomic int wanted, need_restart;
 static _Atomic intptr_t stream_id;
@@ -171,6 +174,9 @@ static int open_locked(void) {
   stream = opened;
   stream_xruns = 0;
   last_xrun_ns = now_ns();
+  settle_until_ns = last_xrun_ns + SETTLE_NS;
+  last_published = 0;
+  stall_ticks = 0;
   atomic_store(&st_burst, burst);
   atomic_store(&st_buffer, AAudioStream_getBufferSizeInFrames(opened));
   atomic_store(&st_open, 1);
@@ -180,7 +186,10 @@ static int open_locked(void) {
   return 1;
 }
 
-/* After an xrun one burst more buffer, up to MAX_BURSTS; after SHRINK_AFTER_NS without one, a burst less. */
+/*
+ * After an xrun one burst more buffer, up to MAX_BURSTS; after SHRINK_AFTER_NS without one, a burst less. Xruns
+ * in the first SETTLE_NS of a stream come from its start, not its buffer: they are counted but change nothing.
+ */
 static void tune_buffer_locked(int64_t now) {
   int32_t xruns = AAudioStream_getXRunCount(stream);
   if (xruns < 0 || burst <= 0) return;
@@ -188,8 +197,10 @@ static void tune_buffer_locked(int64_t now) {
   int32_t wanted_size = size;
   if (xruns > stream_xruns) {
     stream_xruns = xruns;
-    last_xrun_ns = now;
-    if (size < burst * MAX_BURSTS) wanted_size = size + burst;
+    if (now >= settle_until_ns) {
+      last_xrun_ns = now;
+      if (size < burst * MAX_BURSTS) wanted_size = size + burst;
+    }
   } else if (now - last_xrun_ns >= SHRINK_AFTER_NS) {
     last_xrun_ns = now;
     if (size > burst * MIN_BURSTS) wanted_size = size - burst;
@@ -215,6 +226,17 @@ static void clock_tick_locked(void) {
   tune_buffer_locked(now_ns());
 }
 
+/* True once a started stream that has rendered renders nothing more for STALL_TICKS ticks. */
+static int stalled_locked(aaudio_stream_state_t state) {
+  int64_t published = atomic_load_explicit(&frames_published, memory_order_relaxed);
+  if (published != last_published || published == 0 || state != AAUDIO_STREAM_STATE_STARTED) {
+    last_published = published;
+    stall_ticks = 0;
+    return 0;
+  }
+  return ++stall_ticks >= STALL_TICKS;
+}
+
 static void *clock_main(void *arg) {
   (void)arg;
   pthread_setname_np(pthread_self(), "fsv-clock");
@@ -228,12 +250,19 @@ static void *clock_main(void *arg) {
     }
     int64_t now = now_ns();
     int lost = stream != NULL && atomic_exchange(&need_restart, 0);
-    if (stream != NULL && !lost && AAudioStream_getState(stream) == AAUDIO_STREAM_STATE_DISCONNECTED) {
-      atomic_store(&last_error, AAUDIO_ERROR_DISCONNECTED);
-      lost = 1;
+    int stalled = 0;
+    if (stream != NULL && !lost) {
+      aaudio_stream_state_t state = AAudioStream_getState(stream);
+      if (state == AAUDIO_STREAM_STATE_DISCONNECTED) {
+        atomic_store(&last_error, AAUDIO_ERROR_DISCONNECTED);
+        lost = 1;
+      } else {
+        lost = stalled = stalled_locked(state);
+      }
     }
     if (lost) {
-      LOGW("stream lost (%s): reopening", AAudio_convertResultToText(atomic_load(&last_error)));
+      LOGW("stream lost (%s): reopening",
+           stalled ? "no callbacks" : AAudio_convertResultToText(atomic_load(&last_error)));
       close_locked();
       atomic_fetch_add(&st_restarts, 1);
       next_open_ns = now + REOPEN_NS;

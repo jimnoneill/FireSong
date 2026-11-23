@@ -220,7 +220,8 @@ class MainActivity : Activity() {
         val b = intent.extras ?: return null
         val keys = setOf("url", "host_token", "leaf_pin", "devtools", "clear", "reload")
         if (b.keySet().none { it in keys }) return null
-        val devtools = when (val v = b.untyped("devtools")) {
+        @Suppress("DEPRECATION")
+        val devtools = when (val v = b.get("devtools")) {
             is Boolean -> v
             is String -> v.trim().equals("true", ignoreCase = true) || v.trim() == "1"
             else -> null
@@ -231,7 +232,7 @@ class MainActivity : Activity() {
             leafPin = b.getString("leaf_pin"),
             devtools = devtools,
             clear = b.getBoolean("clear", false),
-            issuedMs = when (val v = b.untyped("issued_ms")) {
+            issuedMs = when (val v = b.get("issued_ms")) {
                 is Long -> v
                 is Int -> v.toLong()
                 is String -> v.trim().toLongOrNull()
@@ -239,10 +240,6 @@ class MainActivity : Activity() {
             },
         )
     }
-
-    /** An extra as `am start` typed it (`--ez`, `--ei`, `--el` or `--es`): Bundle's only untyped getter is deprecated since API 33. */
-    @Suppress("DEPRECATION")
-    private fun Bundle.untyped(key: String): Any? = get(key)
 
     /** Applies a `.Configure` intent; true when the page should (re)load. */
     private fun applyConfigureIntent(intent: Intent?): Boolean {

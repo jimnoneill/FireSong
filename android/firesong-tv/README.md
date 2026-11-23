@@ -100,7 +100,7 @@ The path is **off by default**. The page uses it only when the TV URL carries `v
 
 With the flag set, the page picks the app's path only when all of these hold:
 - `window.FireSongVoice.endpoint()` offers a version-2 door with the `mics` feature;
-- the door answers `ready` within 3 s.
+- the door answers `ready` with `ok` true and `mics` in its `features`, within 3 s.
 
 Otherwise it uses its own Web Audio path, exactly as without the flag. An older app offers no door or a version-1 door, and an older page rejects version 2, so mixed versions fall back too.
 
@@ -118,8 +118,8 @@ Whether the Amazon WebView lets the https release page open `ws://127.0.0.1` is 
 ### How it works
 
 - **`VoiceDoor.kt`** is a WebSocket server on `127.0.0.1`:
-  - random port, a 128-bit per-launch token in the path, and the configured TV origin checked;
-  - one page connection at a time: a new one replaces the old, and the old session's teardown runs before the new `hello`.
+  - random port, a 128-bit per-WebView token in the path, and the configured TV origin checked;
+  - one page connection at a time: a new one replaces the old, and the replaced session's teardown runs before the new `hello`. A connection that ended on its own, as on a page reload, has its teardown posted as it ends; if that ever lands after the next `hello`, the new engine session has already replaced the old one and the old `stop` does nothing.
 
   The door lives exactly as long as the WebView. It opens with the WebView, and it closes when the page closes: FireSong leaving the screen, the renderer dying or the app ending. Closing ends the voice session, which closes every phone's connection and the AAudio stream.
 - **`MicEngine.kt` and `MicPeer.kt`** run one receive-only libwebrtc `PeerConnection` per phone.
@@ -181,7 +181,9 @@ The code is the reference: `DoorMessages.kt`, `DoorCodec.kt` and `client/src/bri
   - `fs-voice-door` accepts connections.
   - `fs-voice-in` reads frames.
   - `fs-voice-out` is the socket's only writer, for text and taps.
-  - `fs-mics` runs WebRTC and the engine's controls.
+  - `fs-voice-close` ends a connection whose close has not gone through within 3 s.
+  - `fs-mics` makes every WebRTC API call and runs the engine's controls, in order.
+  - libwebrtc's own worker thread, its 10 ms poller, calls each phone's `SlotSink`, which pushes the decoded frames into the C engine (`NativeMics.push`: high-pass, gate and auto level) and wakes `fs-voice-out` for the tap.
   - `fsv-guard` runs the feedback guard.
   - `fsv-clock` reads the AAudio timestamps, sets the buffer size and reopens the output.
   - The AAudio callback takes no locks, allocates nothing, never logs and makes no JNI or AAudio calls.
@@ -193,7 +195,7 @@ The code is the reference: `DoorMessages.kt`, `DoorCodec.kt` and `client/src/bri
   - `SdpFilter.kt` checks every offer before libwebrtc sees it: exactly one `m=audio` over `UDP/TLS/RTP/SAVPF`, no video or data channel, at most 300 lines of 1024 characters, and Opus present. It then strips every codec but Opus.
   - Candidates that are not IP literals or `.local` names are dropped, so a guest never makes the app look a name up.
   - The factory has no video codecs, and any data channel is closed at once.
-  - Answers carry no global IPv6 address (`maxIPv6Networks = 0`).
+  - Answers carry no IPv6 candidates: the app gathers on no IPv6 network (`maxIPv6Networks = 0`).
   - SDP and candidates are never logged.
 - A libwebrtc native crash ends the whole app, page included.
 
@@ -212,15 +214,19 @@ The code is the reference: `DoorMessages.kt`, `DoorCodec.kt` and `client/src/bri
 2. Regenerate the dependency metadata with all four tasks: `./gradlew --write-verification-metadata pgp,sha256 --export-keys assembleDebug assembleRelease testDebugUnitTest lintDebug`. A plain `help` run cannot discover detached configurations such as aapt2 and lint.
 3. Check that the metadata's entry for the AAR carries a PGP key or a sha256 that matches Central's `.asc` or `.sha256`.
 4. Run the same four tasks with an empty scratch `GRADLE_USER_HOME`, so every artifact is downloaded and verified again.
-5. On the Cube, while it is idle:
-   - install the release APK and open the page with `voice=native`;
-   - check that the flight record shows the native backend with the output open;
-   - make a rig run, `scripts/firesong/cube-load-test.py --ab --song <hash>`: no underruns or xruns, and no native crash in `logcat -b crash`.
+5. Build both APKs and check what changed outside the code: `aapt2 dump permissions` still lists only the three permissions above (a new AAR can add some), and the release APK still holds only `lib/armeabi-v7a/`.
+6. On the Cube, while it is idle, install the release APK and configure the https TV URL with `voice=native` (the release route: it also checks that the page may open `ws://127.0.0.1`). With no phones, check:
+   - the flight record: `mics.backend.kind = native`, `ready.ok` with `ready.audio = open`, `engine-stats.open`, `burstFrames` 384, `outputLatencyMs` 25-40, and `engine-stats.apm` present. `mic-backend web, why: unreachable` means the page could not open the door: stop there;
+   - `dumpsys media.audio_flinger`: besides the WebView's own player, the app's only output is the AAudio stream; there is no AudioTrack opened by WebRTC's Java audio device module, and no AudioRecord.
+7. With phones (the rig's are enough), check:
+   - the engine log's `first push: 48000 Hz, 1 ch`;
+   - the first answer to each phone carries `a=candidate` lines. The app sends its candidates only in the answer, and a phone whose host candidates are `.local` names can connect only through them.
+8. Soak and compare with the rig: `scripts/firesong/cube-load-test.py --voice native --phones 4 --seconds 240 --song <hash>`, then `--ab --song <hash>` for web against native on the same song. Every check must pass, among them no underruns after the first 2 s, no xruns, the app process alive at the end, and an empty crash log (`logcat -b crash`).
 
 ## Logs and debugging
 
 - `tools/tvctl logcat` shows tags `FireSong` (native) and `FireSongJS` (every page `console.*` message, with its source and line).
-- The voice door and engine log under `FireSong`: the door's port, connects and disconnects, `mics session <n> ready` / `closed`, the factory and its audio processing, and rejected offers (never SDP or addresses). The C engine logs under `FireSongVoice`: output opens, buffer resizes and session stops.
+- The voice door and engine log under `FireSong`: the door's port, connects and disconnects, `mics session <n> ready` / `closed`, the factory and its audio processing, and rejected offers (never SDP or addresses). The C engine logs under `FireSongVoice`: the first push's rate and channels, output opens, buffer resizes and session starts and stops. `tools/tvctl logcat` leaves that tag out; add it as an extra filter, `tools/tvctl logcat FireSongVoice:V` (logcat moves filter arguments behind its options).
 - `window.FSPROBE.info()` returns JSON with the app, WebView, device, audio (`PROPERTY_OUTPUT_FRAMES_PER_BUFFER`, sample rate, low-latency/pro features), display (including the HDMI mode) and memory.
 - `tools/tvctl devtools <port>` (a free loopback port; 9222 is taken on the server machine), then `CDP_PORT=<port> python3 probe/cdp.py eval|shot|crash` (needs `websocket-client`). **`adb screencap` is all black while the WebView is on screen** (native views capture fine), so take page screenshots through CDP (`cdp.py shot`).
 
@@ -277,7 +283,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-libwebrtc also builds in third-party code under its own licenses, among them Opus, BoringSSL, libsrtp, abseil-cpp, libc++, libvpx, libyuv, libaom and dav1d. For this source revision, their license texts are collected in the `LICENSE.md` of LiveKit's `webrtc-a545de4` prebuilt release.
+libwebrtc also builds in third-party code under its own licenses, among them Opus, BoringSSL, libsrtp, abseil-cpp, libc++, libvpx, libyuv, libaom and dav1d. For this source revision, their license texts are collected in `android-arm-release/LICENSE.md` inside `webrtc-android-arm-release.zip` of LiveKit's [`webrtc-a545de4`](https://github.com/livekit/rust-sdks/releases/tag/webrtc-a545de4) prebuilt release.
 
 **Chromium's `DynamicsCompressor`**, ported to C in `app/src/main/cpp/dsp/compressor.c` (from `third_party/blink/renderer/platform/audio/dynamics_compressor.cc`, Chrome 138):
 
@@ -308,3 +314,5 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+These notices are in this README only; the APK does not carry them yet.

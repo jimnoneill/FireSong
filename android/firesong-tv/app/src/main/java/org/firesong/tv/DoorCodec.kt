@@ -26,6 +26,7 @@ sealed class ParseResult {
  */
 object DoorCodec {
     const val CLOSE_NORMAL = 1000
+    const val CLOSE_GOING_AWAY = 1001
     const val CLOSE_PROTOCOL = 1002
     const val CLOSE_UNSUPPORTED = 1003
     const val CLOSE_NO_STATUS = 1005

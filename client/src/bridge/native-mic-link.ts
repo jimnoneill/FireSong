@@ -18,12 +18,13 @@ import type { NativeVoiceEndpoint } from './native-voice';
 /**
  * The page's end of the app's door: `hello`, then `ready`, then JSON messages
  * both ways and binary tap messages from the app. After `ready` the link is
- * lost when the socket ends, the app sends `fatal`, nothing arrives for 5 s,
- * the engine's audio output stays shut for 20 s, or the app stops reading
- * page messages.
+ * lost when the socket ends other than with the app's 1001, the app sends
+ * `fatal`, nothing arrives for 5 s, the engine's audio output stays shut for
+ * 20 s, or the app stops reading page messages.
  */
 
 const NORMAL_CLOSE = 1000;
+const GOING_AWAY_CLOSE = 1001;
 /** Page messages the socket may hold unsent; more means the door has stopped reading. */
 const MAX_BUFFERED_BYTES = 1_048_576;
 const WATCH_MS = 1000;
@@ -171,9 +172,7 @@ class DoorLink {
       { signal },
     );
     this.socket.addEventListener('error', () => this.end('error'), { signal });
-    this.socket.addEventListener('close', (event) => this.end(`closed ${event.code}`), {
-      signal,
-    });
+    this.socket.addEventListener('close', (event) => this.closed(event.code), { signal });
     this.deadline = window.setTimeout(() => this.fail('timeout'), timeoutMs);
   }
 
@@ -345,6 +344,15 @@ class DoorLink {
       return 'no-audio';
     }
     return null;
+  }
+
+  /** The app closes with 1001 only as it destroys this page's WebView: no fallback is worth starting then. */
+  private closed(code: number): void {
+    if (code === GOING_AWAY_CLOSE && this.isReady()) {
+      this.close();
+      return;
+    }
+    this.end(`closed ${code}`);
   }
 
   private end(why: string): void {

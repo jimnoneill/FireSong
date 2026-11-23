@@ -49,6 +49,9 @@ class VoiceDoor(
     @Volatile private var server: ServerSocket? = null
     private var current: Connection? = null
 
+    /** Sockets with a `fs-voice-in` thread, from accept until that thread ends. */
+    private val serving = AtomicInteger(0)
+
     fun open() {
         if (!NativeMics.available || server != null) return
         val socket = try {
@@ -62,12 +65,15 @@ class VoiceDoor(
         Log.i(TAG, "voice door on $LOOPBACK:${socket.localPort}")
     }
 
-    /** Stops listening and ends the page connection; its handler's teardown is only posted from here. */
+    /**
+     * Stops listening and closes the page connection with 1001 (going away), which the page takes as its WebView
+     * closing rather than a lost app. The connection ends on its own threads, within the close deadline.
+     */
     fun close() {
         val listener = server
         server = null
         listener?.let { closeQuietly(it) }
-        synchronized(lock) { current }?.end()
+        synchronized(lock) { current }?.close(DoorCodec.CLOSE_GOING_AWAY)
     }
 
     fun endpoint(): String {
@@ -82,6 +88,7 @@ class VoiceDoor(
         fun endpoint(): String = door.endpoint()
     }
 
+    /** Beyond [MAX_SERVING] sockets at once, or when no thread can start, a new socket is closed unread. */
     private fun accept(listener: ServerSocket) {
         while (!listener.isClosed) {
             val incoming = try {
@@ -89,11 +96,30 @@ class VoiceDoor(
             } catch (_: IOException) {
                 break
             }
-            Thread({ serve(listener, incoming) }, "fs-voice-in").apply { isDaemon = true }.start()
+            if (serving.incrementAndGet() > MAX_SERVING) {
+                serving.decrementAndGet()
+                closeQuietly(incoming)
+                continue
+            }
+            try {
+                Thread({ serve(listener, incoming) }, "fs-voice-in").apply { isDaemon = true }.start()
+            } catch (e: Throwable) {
+                serving.decrementAndGet()
+                closeQuietly(incoming)
+                Log.w(TAG, "voice door refused a connection: ${e.javaClass.simpleName}")
+            }
         }
     }
 
     private fun serve(listener: ServerSocket, socket: Socket) {
+        try {
+            serveSocket(listener, socket)
+        } finally {
+            serving.decrementAndGet()
+        }
+    }
+
+    private fun serveSocket(listener: ServerSocket, socket: Socket) {
         var connection: Connection? = null
         try {
             socket.tcpNoDelay = true
@@ -461,6 +487,9 @@ class VoiceDoor(
         private const val TEXT_QUEUE_MAX = 512
         private const val TEXT_BATCH = 64
         private const val TAP_BATCH = 8
+
+        /** The page's connection, one replacing it, and a few ending or still in their handshake. */
+        private const val MAX_SERVING = 8
 
         /** NativeMics.drainTap has one consumer process-wide; writers of old and new connections and doors overlap. */
         private val drainLock = Any()

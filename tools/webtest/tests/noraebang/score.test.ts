@@ -77,11 +77,12 @@ describe('noraebang display score', () => {
     expect(shown(0, 1)).toBe(60);
   });
 
-  it('snaps 98 and 99 to 100 but keeps 97', () => {
+  it('snaps 98 and 99 to 100 only at raw 650; below it the top shown is 97', () => {
     expect(shown(650, 0.9)).toBe(100);
-    expect(shown(560, 0.9)).toBe(100); // 98.9 before rounding
+    expect(shown(650, 0.9, -2)).toBe(100);
+    expect(shown(560, 0.9)).toBe(97); // 99.2 before rounding
     expect(shown(480, 0.9)).toBe(97);
-    expect(shown(480, 0.9, 1)).toBe(100);
+    expect(shown(480, 0.9, 1)).toBe(97);
   });
 
   it('stays within 0-100 for out-of-range and non-finite input', () => {

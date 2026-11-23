@@ -4,7 +4,7 @@
 // ffmpeg) over WebRTC to the TV page, through a minimal in-test /rtc relay.
 // The TV page runs the real client modules. Checks: frames reach the
 // microphone-samples bus, useMicPitch finds the tone, capture can stop and
-// restart without touching tracks, the latency-locked echo sits at d_i, and
+// restart without touching tracks, the noraebang echo sits at 120 ms, and
 // slots are independent.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -14,7 +14,7 @@ import { build } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { echoSettingsFor } from '@/audio/voice-params';
+import { ECHO_DELAY_MS } from '@/audio/voice-params';
 
 import { startRelay, type Relay } from './relay';
 
@@ -89,6 +89,8 @@ const launch = (capture: string): Promise<Browser> =>
       '--use-fake-device-for-media-stream',
       `--use-file-for-fake-audio-capture=${capture}`,
       '--autoplay-policy=no-user-gesture-required',
+      // Without a sound server the TV page's audio clock never runs; this gives it a fake one.
+      '--disable-audio-output',
       '--disable-features=WebRtcHideLocalIpsWithMdns',
     ],
   });
@@ -360,8 +362,8 @@ describe('TV voice engine, one phone at 440 Hz', () => {
   });
 });
 
-describe('latency-locked echo', () => {
-  it('puts the audible echo at the slot d_i and follows a new calibration', async () => {
+describe('noraebang echo', () => {
+  it('keeps the audible echo at 120 ms whatever the slot latency', async () => {
     const browser = await launch(burstWav);
     browsers.push(browser);
     const tv = await openTv(browser, relay, '?tv=1&mode=noraebang');
@@ -405,17 +407,14 @@ describe('latency-locked echo', () => {
       '[echo] TV jitter-buffer delay after join, every 1 s (ms):',
       jitter.map((value) => (value === null ? '-' : Math.round(value))).join(' '),
     );
-    const delays: number[] = [];
     for (const latency of [150, 205, 40]) {
       const { lag, delayMs, effectiveMs } = await measure(latency);
       console.info(
         `[echo] calibrated ${latency} ms, effective ${String(effectiveMs)} ms, d_i ${String(delayMs)} ms -> autocorrelation peak ${lag} ms`,
       );
-      expect(Math.abs((delayMs ?? 0) - echoSettingsFor(effectiveMs).delayMs)).toBeLessThan(10);
-      expect(Math.abs(lag - (delayMs ?? 0))).toBeLessThanOrEqual(5);
-      delays.push(delayMs ?? 0);
+      expect(delayMs).toBe(ECHO_DELAY_MS);
+      expect(Math.abs(lag - ECHO_DELAY_MS)).toBeLessThanOrEqual(5);
     }
-    expect(delays[1]).toBeGreaterThan(delays[0]);
   });
 });
 

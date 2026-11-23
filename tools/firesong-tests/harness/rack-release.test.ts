@@ -53,7 +53,7 @@ beforeAll(async () => {
   browser = await chromium.launch({
     executablePath: CHROME,
     headless: true,
-    args: ['--autoplay-policy=no-user-gesture-required'],
+    args: ['--autoplay-policy=no-user-gesture-required', '--disable-audio-output'],
   });
 });
 

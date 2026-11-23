@@ -11,7 +11,7 @@ FireSong is a Korean noraebang-style karaoke setup for an Amazon Fire TV Cube. I
 **What FireSong adds:**
 
 - **Phones as wireless mics.** Guests scan a per-slot QR code. Their phone opens a page and sends its voice peer-to-peer over the home Wi-Fi (WebRTC Opus) to the TV. Up to 4 slots, each with a fixed colour.
-- **A TV voice engine.** On the Cube, a long-lived MicRack owns the phone streams: gate, compressor, a latency-locked noraebang echo, reverb and a limiter, out to the TV speakers. It also feeds each slot into Nightingale's existing pitch and scoring pipeline as an ordinary microphone (`remote:<micId>`).
+- **A TV voice engine.** On the Cube, a long-lived MicRack owns the phone streams: gate, an automatic level, compressor, a noraebang echo (repeats 120 ms apart), reverb and a limiter, out to the TV speakers. It also feeds each slot into Nightingale's existing pitch and scoring pipeline as an ordinary microphone (`remote:<micId>`).
 - **A Fire TV app.** A thin Kotlin WebView host that loads the unchanged React client over LAN HTTPS. It pins the LAN CA, maps the remote's keys, and recovers from crashes and network loss.
 - **Noraebang mode.** Random cheesy background clips (original or license-safe only), a two-line wipe lyric bar, the live score hidden during songs, and a 0-100 score reveal with a synthesised drum roll and fanfare and Korean tier captions. Nightingale's raw 0-1000 score is still what profiles store.
 - **Deployment on the server machine.**

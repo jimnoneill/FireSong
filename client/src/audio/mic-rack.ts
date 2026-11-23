@@ -10,6 +10,7 @@ import {
   dbToGain,
   DEFAULT_ECHO_MIX,
   DEFAULT_SLOT_MIX,
+  ECHO_HIGHPASS_HZ,
   echoSettingsFor,
   FEEDBACK_DUCK_DB,
   FEEDBACK_NOTCH_DB,
@@ -71,7 +72,7 @@ export type MicRackPort = {
   setMonitor(slot: MicSlot, on: boolean): void;
   setMuted(slot: MicSlot, muted: boolean): void;
   setLatency(slot: MicSlot, latencyMs: number | null): void;
-  /** Echo and reverb levels of every slot (the echo preset); delays stay latency-locked. */
+  /** Echo and reverb levels of every slot (the echo preset); the echo delay is fixed. */
   setEchoMix(mix: EchoMix): void;
   /** The phone's own fader and echo amount (PROTOCOL.md §13.6 `mix`). */
   setSlotMix(slot: MicSlot, mix: SlotMix): void;
@@ -111,6 +112,7 @@ type StripNodes = {
   echoSend: GainNode;
   echoDelay: DelayNode;
   echoLowpass: BiquadFilterNode;
+  echoHighpass: BiquadFilterNode;
   echoFeedback: GainNode;
   reverbSend: GainNode;
 };
@@ -151,6 +153,9 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
   const echoLowpass = context.createBiquadFilter();
   echoLowpass.type = 'lowpass';
   echoLowpass.frequency.value = DEFAULT_ECHO_MIX.lowpassHz;
+  const echoHighpass = context.createBiquadFilter();
+  echoHighpass.type = 'highpass';
+  echoHighpass.frequency.value = ECHO_HIGHPASS_HZ;
   const echoFeedback = context.createGain();
   echoFeedback.gain.value = DEFAULT_ECHO_MIX.feedback;
   const reverbSend = context.createGain();
@@ -161,8 +166,9 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
   gate.connect(level).connect(compressor).connect(notch).connect(fader).connect(monitor);
   monitor.connect(dry).connect(engine.bus);
   monitor.connect(echoSend).connect(echoDelay);
-  echoDelay.connect(echoLowpass).connect(echoFeedback).connect(echoDelay);
-  echoDelay.connect(engine.bus);
+  echoDelay.connect(echoLowpass).connect(echoHighpass);
+  echoHighpass.connect(echoFeedback).connect(echoDelay);
+  echoHighpass.connect(engine.bus);
   monitor.connect(reverbSend).connect(engine.reverbSend);
 
   return {
@@ -179,6 +185,7 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
     echoSend,
     echoDelay,
     echoLowpass,
+    echoHighpass,
     echoFeedback,
     reverbSend,
   };
@@ -418,7 +425,7 @@ class SlotStrip {
 /**
  * Per-slot voice chains on the shared voice engine:
  * source -> HPF -> gate -> level -> compressor -> notch -> fader -> monitor,
- * which feeds the dry bus, the latency-locked echo and the shared reverb. The
+ * which feeds the dry bus, the noraebang echo and the shared reverb. The
  * pitch tap sits after the level (the automatic boost) and before any effect,
  * so a quiet phone still scores. Each slot is
  * independent, so one phone dropping never touches the others.

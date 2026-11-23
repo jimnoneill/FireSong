@@ -1,48 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  ECHO_FIXED_DELAY_MS,
-  ECHO_MAX_DELAY_MS,
-  ECHO_MIN_DELAY_MS,
-  ECHO_PRESETS,
-  slotEcho,
-} from '@/features/noraebang/echo';
+import { ECHO_PRESETS } from '@/features/noraebang/echo';
 import {
   applyUrlOverrides,
   DEFAULT_NORAEBANG_SETTINGS,
   parseStoredSettings,
 } from '@/features/noraebang/settings';
 
-describe('latency-locked echo', () => {
-  const preset = ECHO_PRESETS.noraebang;
-
-  it('locks the delay to the slot latency between 90 and 220 ms', () => {
-    expect(slotEcho(preset, 150).delayMs).toBe(150);
-    expect(slotEcho(preset, 75).delayMs).toBe(ECHO_MIN_DELAY_MS);
-    expect(slotEcho(preset, 220)).toMatchObject({ delayMs: 220, latencyWarning: false });
-  });
-
-  it('uses the fixed 160 ms echo when latency is low or unknown', () => {
-    for (const latency of [null, 0, 59, Number.NaN, -5]) {
-      expect(slotEcho(preset, latency).delayMs).toBe(ECHO_FIXED_DELAY_MS);
-    }
-  });
-
-  it('warns and raises the wet level over budget', () => {
-    const echo = slotEcho(preset, 300);
-    expect(echo.delayMs).toBe(ECHO_MAX_DELAY_MS);
-    expect(echo.latencyWarning).toBe(true);
-    expect(echo.wet).toBeGreaterThan(preset.wet);
-    expect(echo.wet).toBeLessThanOrEqual(0.6);
-  });
-
-  it('keeps the design values for the default preset and silences "off"', () => {
+describe('noraebang echo presets', () => {
+  it('keeps the noraebang preset and silences "off"', () => {
     expect(ECHO_PRESETS.noraebang).toMatchObject({
-      feedback: 0.38,
-      lowpassHz: 3500,
-      reverbSend: 0.2,
+      wet: 0.36,
+      feedback: 0.48,
+      lowpassHz: 3000,
+      reverbSend: 0.14,
     });
-    expect(slotEcho(ECHO_PRESETS.off, 150)).toMatchObject({ wet: 0, feedback: 0, reverbSend: 0 });
+    expect(ECHO_PRESETS.off).toMatchObject({ wet: 0, feedback: 0, reverbSend: 0 });
+  });
+
+  it('orders the presets from dry to wet', () => {
+    const { light, noraebang, hall } = ECHO_PRESETS;
+    expect(light.wet).toBeLessThan(noraebang.wet);
+    expect(noraebang.wet).toBeLessThan(hall.wet);
+    expect(light.reverbSend).toBeLessThan(hall.reverbSend);
   });
 });
 

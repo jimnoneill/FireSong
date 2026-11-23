@@ -140,10 +140,17 @@ const keepRunning = (engine: VoiceEngine): void => {
 
 let shared: VoiceEngine | null = null;
 
+/**
+ * The smallest output buffer the platform offers. Measured on the Fire TV Cube
+ * (2026-11-22): 'interactive' gave 64 ms base + 320 ms output latency, 0 gave
+ * 3 ms + 256 ms, so a singer hears themselves about 125 ms sooner.
+ */
+const LOWEST_LATENCY = 0;
+
 /** The page's single voice engine, created on first use and never closed. */
 export const getVoiceEngine = (): VoiceEngine => {
   if (shared === null) {
-    shared = createVoiceEngine(new AudioContext({ latencyHint: 'interactive' }));
+    shared = createVoiceEngine(new AudioContext({ latencyHint: LOWEST_LATENCY }));
     keepRunning(shared);
   }
   return shared;

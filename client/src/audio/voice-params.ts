@@ -13,17 +13,23 @@ export const BUS_COMPRESSOR_RATIO = 3;
 export const LIMITER_THRESHOLD_DB = -6;
 export const LIMITER_RATIO = 20;
 
-export const ECHO_MIN_DELAY_MS = 90;
+/**
+ * Noraebang echo: repeats about 120 ms apart behind the full voice, fading
+ * (feedback) and darkening (lowpass). It no longer follows the phone's latency:
+ * on the Fire TV Cube the voice itself reaches the speakers 300 ms or more
+ * after the singer, far past any echo spacing, and the old latency-locked echo
+ * (and its quieter dry voice when late) made that delay worse.
+ */
+export const ECHO_DELAY_MS = 120;
+/** Above this the TV copy of the voice is later than any echo can hide; the TV warns. */
 export const ECHO_MAX_DELAY_MS = 220;
-export const ECHO_LOW_LATENCY_MS = 60;
-export const ECHO_FIXED_DELAY_MS = 160;
-export const ECHO_FEEDBACK = 0.38;
-export const ECHO_LOWPASS_HZ = 3500;
-export const ECHO_WET_GAIN = 0.35;
-export const ECHO_LATE_WET_GAIN = 0.5;
-export const ECHO_LATE_DRY_GAIN = 0.75;
+export const ECHO_FEEDBACK = 0.48;
+export const ECHO_LOWPASS_HZ = 3000;
+/** Low cut inside the echo loop: repeats thin out like a noraebang echo instead of piling up bass. */
+export const ECHO_HIGHPASS_HZ = 300;
+export const ECHO_WET_GAIN = 0.36;
 
-export const REVERB_SEND = 0.2;
+export const REVERB_SEND = 0.14;
 export const REVERB_SECONDS = 1.4;
 
 /**
@@ -88,8 +94,6 @@ export const DEFAULT_ECHO_MIX: EchoMix = {
   reverbSend: REVERB_SEND,
 };
 
-/** A late slot's wet level is raised by the same ratio as the default mix. */
-const LATE_WET_RATIO = ECHO_LATE_WET_GAIN / ECHO_WET_GAIN;
 const MAX_WET_GAIN = 0.6;
 
 /**
@@ -119,32 +123,15 @@ export type EchoSettings = {
   late: boolean;
 };
 
-/**
- * The latency-locked echo: `d_i = clamp(L_i, 90, 220)` ms, so the singer hears
- * an even echo train at 0, L, 2L. An unknown or very low latency gets a fixed
- * 160 ms echo; a latency above the range raises the wet/dry ratio.
- */
+/** The slot's echo: the full voice and a noraebang echo; `late` only flags a latency warning. */
 export const echoSettingsFor = (
   latencyMs: number | null,
   mix: EchoMix = DEFAULT_ECHO_MIX,
-): EchoSettings => {
-  if (latencyMs === null || !Number.isFinite(latencyMs) || latencyMs < ECHO_LOW_LATENCY_MS) {
-    return { delayMs: ECHO_FIXED_DELAY_MS, dryGain: 1, wetGain: mix.wet, late: false };
-  }
-  if (latencyMs > ECHO_MAX_DELAY_MS) {
-    return {
-      delayMs: ECHO_MAX_DELAY_MS,
-      dryGain: ECHO_LATE_DRY_GAIN,
-      wetGain: Math.min(MAX_WET_GAIN, mix.wet * LATE_WET_RATIO),
-      late: true,
-    };
-  }
-  return {
-    delayMs: clamp(latencyMs, ECHO_MIN_DELAY_MS, ECHO_MAX_DELAY_MS),
-    dryGain: 1,
-    wetGain: mix.wet,
-    late: false,
-  };
-};
+): EchoSettings => ({
+  delayMs: ECHO_DELAY_MS,
+  dryGain: 1,
+  wetGain: mix.wet,
+  late: latencyMs !== null && Number.isFinite(latencyMs) && latencyMs > ECHO_MAX_DELAY_MS,
+});
 
 export const clampLatencyMs = (latencyMs: number): number => clamp(latencyMs, 0, MAX_LATENCY_MS);

@@ -297,7 +297,7 @@ class MainActivity : Activity() {
         // Keep the renderer at foreground priority while visible (the Cube has 2 GB).
         wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
         wv.addJavascriptInterface(FsProbe(this), FsProbe.JS_NAME)
-        val door = VoiceDoor { UrlPolicy.origin(targetUrl) }.also { it.open() }
+        val door = VoiceDoor({ UrlPolicy.origin(targetUrl) }) { ch -> MicEngine.session(applicationContext, ch) }.also { it.open() }
         voiceDoor = door
         wv.addJavascriptInterface(VoiceDoor.Js(door), VoiceDoor.JS_NAME)
         wv.webViewClient = Client()

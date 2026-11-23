@@ -11,27 +11,28 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
-import org.json.JSONObject
 
 /**
- * The page's way into [NativeVoice]: a WebSocket on 127.0.0.1 that the TV
- * page's voice worker connects to, with a per-launch token in the path and
- * the TV origin checked. The page reads the address from
+ * The page's way into the native voice engine: a WebSocket on 127.0.0.1 that
+ * the TV page connects to, with a per-launch token in the path and the TV
+ * origin checked. The page reads the address from
  * `window.FireSongVoice.endpoint()`. One connection at a time: a new one
- * replaces the old. The native stream runs only while a page is connected.
+ * replaces the old. Each connection gets its own [PageHandler] from
+ * [handlerFor].
  */
-class VoiceDoor(private val allowedOrigin: () -> String?) {
+class VoiceDoor(
+    private val allowedOrigin: () -> String?,
+    private val handlerFor: (PageChannel) -> PageHandler,
+) {
     private val token = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
 
     @Volatile private var server: ServerSocket? = null
     @Volatile private var client: Socket? = null
-    @Volatile private var connections = 0
 
     fun open() {
-        if (!NativeVoice.available || server != null) return
+        if (!NativeMics.available || server != null) return
         val socket = try {
             ServerSocket(0, 2, InetAddress.getByName(LOOPBACK))
         } catch (e: IOException) {
@@ -48,51 +49,15 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
         server = null
         client?.let { closeQuietly(it) }
         client = null
-        NativeVoice.stop()
     }
 
-    fun endpoint(): String {
-        val socket = server ?: return ""
-        return JSONObject().apply {
-            put("version", 1)
-            put("url", "ws://$LOOPBACK:${socket.localPort}$PATH?t=$token")
-            put("rate", NativeVoice.RATE)
-            put("channels", NativeVoice.CHANNELS)
-            put("format", "s16le")
-        }.toString()
-    }
-
-    fun stats(): String {
-        val v = LongArray(15)
-        NativeVoice.stats(v)
-        val framesPerMs = NativeVoice.RATE / 1000.0
-        return JSONObject().apply {
-            put("open", v[0] == 1L)
-            put("connected", client != null)
-            put("connections", connections)
-            put("playedFrames", v[1])
-            put("underruns", v[2])
-            put("trimmedFrames", v[3])
-            put("overflowFrames", v[4])
-            put("receivedFrames", v[5])
-            put("fillMs", v[6] / framesPerMs)
-            put("marginMs", v[7] / framesPerMs)
-            put("outputLatencyMs", if (v[8] < 0) JSONObject.NULL else v[8] / 1000.0)
-            put("burstFrames", v[9])
-            put("bufferFrames", v[10])
-            put("xruns", v[11])
-            put("peak", v[13] / 32768.0)
-            put("jumps", v[14])
-        }.toString()
-    }
+    /** Empty while the door does not speak the mics protocol, so the page keeps its own voice path. */
+    fun endpoint(): String = ""
 
     /** `window.FireSongVoice` for the page. */
     class Js(private val door: VoiceDoor) {
         @JavascriptInterface
         fun endpoint(): String = door.endpoint()
-
-        @JavascriptInterface
-        fun stats(): String = door.stats()
     }
 
     private fun accept(socket: ServerSocket) {
@@ -108,6 +73,7 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
 
     private fun serve(socket: Socket) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        var handler: PageHandler? = null
         try {
             socket.tcpNoDelay = true
             socket.soTimeout = HANDSHAKE_TIMEOUT_MS
@@ -116,23 +82,22 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
             val accept = handshake(input) ?: return reject(output, "403 Forbidden")
             client?.let { closeQuietly(it) }
             client = socket
-            connections += 1
-            if (!NativeVoice.start()) return reject(output, "503 Service Unavailable")
             output.write(
                 ("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
                     "Sec-WebSocket-Accept: $accept\r\n\r\n").toByteArray(Charsets.US_ASCII),
             )
             output.flush()
             socket.soTimeout = 0
+            handler = handlerFor(SocketChannel(socket))
             Log.i(TAG, "voice page connected")
             frames(input, output)
         } catch (_: IOException) {
             // The page went away or the door closed.
         } finally {
             closeQuietly(socket)
+            handler?.onClosed()
             if (client === socket) {
                 client = null
-                NativeVoice.stop()
                 Log.i(TAG, "voice page disconnected")
             }
         }
@@ -166,10 +131,9 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
         return null
     }
 
-    /** Client frames are masked; binary payloads are the voice, s16le stereo. */
+    /** Client frames are masked. */
     private fun frames(input: InputStream, output: OutputStream) {
         val payload = ByteArray(MAX_PAYLOAD)
-        val audio = ByteBuffer.allocateDirect(MAX_PAYLOAD)
         val mask = ByteArray(4)
         while (true) {
             val b0 = readByte(input)
@@ -189,11 +153,6 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
             readFully(input, payload, size)
             for (i in 0 until size) payload[i] = (payload[i].toInt() xor mask[i and 3].toInt()).toByte()
             when (opcode) {
-                OP_BINARY -> {
-                    audio.clear()
-                    audio.put(payload, 0, size)
-                    NativeVoice.write(audio, size)
-                }
                 OP_CLOSE -> return close(output, 1000)
                 OP_PING -> send(output, OP_PONG, payload, size)
             }
@@ -232,6 +191,15 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
         output.flush()
     }
 
+    /** The page's connection as the session sees it. */
+    private inner class SocketChannel(private val socket: Socket) : PageChannel {
+        override fun send(message: AppMessage) = Unit
+
+        override fun wakeTap() = Unit
+
+        override fun close(code: Int) = closeQuietly(socket)
+    }
+
     private fun closeQuietly(closeable: java.io.Closeable) {
         try {
             closeable.close()
@@ -249,7 +217,6 @@ class VoiceDoor(private val allowedOrigin: () -> String?) {
         private const val HANDSHAKE_TIMEOUT_MS = 2000
         private const val MAX_CONTROL_PAYLOAD = 125
         private const val MAX_PAYLOAD = 65536
-        private const val OP_BINARY = 0x2
         private const val OP_CLOSE = 0x8
         private const val OP_PING = 0x9
         private const val OP_PONG = 0xA

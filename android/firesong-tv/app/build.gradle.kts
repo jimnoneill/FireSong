@@ -62,11 +62,15 @@ android {
         debug {
             buildConfigField("String", "DEFAULT_TV_URL", javaString(debugTvUrl))
             buildConfigField("boolean", "ALLOW_CLEARTEXT", "true")
+            // x86_64 too, for the host emulator.
+            ndk { abiFilters += setOf("armeabi-v7a", "x86_64") }
         }
         release {
             isMinifyEnabled = false
             buildConfigField("String", "DEFAULT_TV_URL", javaString(releaseTvUrl))
             buildConfigField("boolean", "ALLOW_CLEARTEXT", "false")
+            // The Cube's userland is 32-bit ARM; other ABIs would add about 40 MB of libwebrtc.
+            ndk { abiFilters += setOf("armeabi-v7a") }
             // Sideloaded only (as FirePlay): sign with the debug key so `adb
             // install -r` can replace a debug build.
             signingConfig = signingConfigs.getByName("debug")
@@ -130,5 +134,10 @@ fsProp("firesong.lanCa")?.let { path ->
 }
 
 dependencies {
+    // LiveKit's libwebrtc build (BSD-3): receives the phones' voices in the app. Exact pin, checked by
+    // gradle/verification-metadata.xml.
+    implementation("io.github.webrtc-sdk:android:150.7871.04")
     testImplementation("junit:junit:4.13.2")
+    // android.jar's org.json is a stub under isReturnDefaultValues.
+    testImplementation("org.json:json:20240303")
 }

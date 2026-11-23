@@ -11,7 +11,7 @@
 #define FSV_TAP_BLOCK_BYTES 2056  /* 8 + 512*4 */
 #define FSV_TAP_MAX_BLOCKS 31
 #define FSV_STATUS_LEN 8
-#define FSV_STATS_LEN 40
+#define FSV_STATS_LEN 56
 
 enum fsv_result { FSV_OK = 0, FSV_ERR_STATE = -1, FSV_ERR_ARG = -2, FSV_ERR_FORMAT = -3, FSV_ERR_AUDIO = -4, FSV_ERR_STALE = -5 };
 enum fsv_control { FSV_MONITOR = 1, FSV_MUTED = 2, FSV_VOLUME = 3, FSV_ECHO_AMOUNT = 4, FSV_TAP = 5 };
@@ -28,13 +28,13 @@ enum fsv_status_index {
   FSV_STATUS_DUCKED_MS = 7    /* remaining */
 };
 
-/* fsv_engine_stats() layout: engine-wide values, then FSV_STATS_SLOT_STRIDE per slot.
-   Windowed (P50/P95/P99/MAX): the samples since the previous window cut. A call at least 900 ms after the
-   previous cut cuts the next window; an earlier call repeats the last window's figures. MicEngine reads
-   every 1 s, so each window is one engine-stats period, about 1 s.
-   Cumulative since the engine started (fsv_start with no session running; a replacing session keeps
-   counting): XRUNS, RESTARTS, OPEN_ATTEMPTS, TAP_DROPPED, CALLBACKS, TRIMS to CLAMP_HITS, and per slot
-   UNDERRUNS, TRIMMED_FRAMES and PUSHED_FRAMES. Gauges: the rest. */
+/* fsv_engine_stats() layout: engine-wide values, the per-slot block at 24, then more engine-wide values from 40.
+   Windowed (P50/P95/P99/MAX and the window figures from 40): the samples since the previous window cut. A call at
+   least 900 ms after the previous cut cuts the next window; an earlier call repeats the last window's figures.
+   MicEngine reads every 1 s, so each window is one engine-stats period, about 1 s.
+   Cumulative since the engine started (fsv_start with no session running; a replacing session keeps counting):
+   XRUNS, RESTARTS, OPEN_ATTEMPTS, TAP_DROPPED, CALLBACKS, CONCEALS to CLAMP_HITS, per slot UNDERRUNS,
+   DROPPED_FRAMES and PUSHED_FRAMES, and OUTPUT_STALLS to TAP_DRAINS. Gauges: the rest. */
 enum fsv_stats_index {
   FSV_STATS_OPEN = 0,
   FSV_STATS_OUTPUT_LATENCY_US = 1, /* -1 = unknown */
@@ -55,17 +55,33 @@ enum fsv_stats_index {
   FSV_STATS_TAP_DRAIN_P99_US = 16, /* interval between fsv_drain_tap calls that returned blocks */
   FSV_STATS_TAP_DRAIN_MAX_US = 17,
   FSV_STATS_OPEN_ATTEMPTS = 18,
-  FSV_STATS_TRIMS = 19,            /* trim splices: a quiet span skipped, or forced after 2 s without one */
-  FSV_STATS_JUMPS = 20,            /* ceiling jumps: a fill above margin + 40 ms cut to margin + 5 ms */
-  FSV_STATS_INSERTS = 21,          /* insert splices: a quiet span played twice */
-  FSV_STATS_INSERTED_FRAMES = 22,
-  FSV_STATS_CLAMP_HITS = 23        /* output frames the +-FSV_VOICE_CEILING clamp cut */
+  FSV_STATS_CONCEALS = 19,         /* a slot's ring ran dry: a concealment started */
+  FSV_STATS_RESYNCS = 20,          /* backlog-ceiling resyncs: a fill far above the low water cut back */
+  FSV_STATS_CONCEALED_FRAMES = 21, /* output frames played from a concealment, all slots */
+  FSV_STATS_SILENT_FRAMES = 22,    /* output frames of silence after a concealment faded out (not priming) */
+  FSV_STATS_CLAMP_HITS = 23,       /* output frames the +-FSV_VOICE_CEILING clamp cut */
+  FSV_STATS_RATIO_MIN_PPM = 40,    /* window: the resampling ratio's lowest deviation from 1, any playing slot */
+  FSV_STATS_RATIO_MAX_PPM = 41,    /* window: and its highest */
+  FSV_STATS_LONGEST_CONCEAL_US = 42, /* window: the longest dry spell that ended, running dry to resume */
+  FSV_STATS_CALLBACK_BUSY_PERMILLE = 43, /* window: time inside the callback per 1000 of wall time */
+  FSV_STATS_CALLBACK_GAP_MAX_US = 44,    /* window: the longest interval between callback starts */
+  FSV_STATS_OUTPUT_STALLS = 45,    /* callback intervals over 40 ms while a stream is open */
+  FSV_STATS_PUSH_GAPS_20 = 46,     /* push intervals over 20 ms, all slots */
+  FSV_STATS_PUSH_INTERVALS = 47,   /* push intervals, all slots */
+  FSV_STATS_CALLBACKS_OVER_2MS = 48, /* of CALLBACKS */
+  FSV_STATS_TAP_DRAINS_OVER_25MS = 49, /* of TAP_DRAINS */
+  FSV_STATS_TAP_DRAINS = 50        /* intervals between fsv_drain_tap calls that returned blocks; 51-55 are 0 */
 };
 
 /* Slot s (1..4) starts at FSV_STATS_SLOT_BASE + FSV_STATS_SLOT_STRIDE * (s - 1). */
 #define FSV_STATS_SLOT_BASE 24
 #define FSV_STATS_SLOT_STRIDE 4
-enum fsv_stats_slot_index { FSV_SLOT_UNDERRUNS = 0, FSV_SLOT_TRIMMED_FRAMES = 1, FSV_SLOT_MARGIN_FRAMES = 2, FSV_SLOT_PUSHED_FRAMES = 3 };
+enum fsv_stats_slot_index {
+  FSV_SLOT_UNDERRUNS = 0,        /* the ring ran dry */
+  FSV_SLOT_DROPPED_FRAMES = 1,   /* late audio skipped at a resume or a resync */
+  FSV_SLOT_LOW_WATER_FRAMES = 2, /* the last window's lowest fill after a callback */
+  FSV_SLOT_PUSHED_FRAMES = 3
+};
 
 /* fsv_monitor_result() layout. */
 enum fsv_monitor_state { FSV_MONITOR_PENDING = 0, FSV_MONITOR_DONE = 1, FSV_MONITOR_FAILED = 2 };
@@ -91,6 +107,7 @@ void fsv_monitor_result(int token, float out[3]);          /* C: state, ms, reas
 
 /* Engine-internal seam (engine.c <-> aaudio_out.c). frame_index = frames written to the stream before this call. */
 void fsv_render(int16_t *out, int frames, int64_t frame_index); /* R */
+void fsv_clock_tick(void);            /* fsv-clock, every tick: logs an output stall fsv_render measured, at most once per second */
 
 /* aaudio_out.c */
 typedef void (*fsv_render_fn)(int16_t *out, int frames, int64_t frame_index);

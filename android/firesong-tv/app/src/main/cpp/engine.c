@@ -45,24 +45,47 @@ _Static_assert(4 + FSV_TAP_MAX_BLOCKS * FSV_TAP_BLOCK_BYTES <= 65536, "a tap mes
 #define RENDER_MAX 2048
 #define OUT_METER_FRAMES 2400 /* outRms and fillMs: 50 ms */
 
-/* Ring servo, in frames. */
-#define MARGIN_START 144       /* 3 ms */
-#define MARGIN_MIN 96          /* 2 ms */
-#define MARGIN_MAX 1920        /* 40 ms */
-#define MARGIN_STEP 144        /* +3 ms per underrun */
-#define MARGIN_DECAY 24        /* -0.5 ms */
-#define MARGIN_DECAY_AFTER (20 * FSV_RATE) /* of play without an underrun */
-#define WINDOW_FRAMES 24000    /* 500 ms */
-#define TRIM_MIN 96            /* 2 ms of slack before trimming */
-#define TRIM_WINDOWS 4         /* a trim follows the lowest slack of the last 2 s */
-#define INSERT_MAX 240         /* frames replayed by one insert splice */
-#define QUIET 0.01f            /* -40 dBFS */
-#define FORCE_AFTER (2 * FSV_RATE)
-#define CEILING 1920           /* margin + 40 ms */
-#define AFTER_JUMP 240         /* margin + 5 ms */
-#define PRIME_EXTRA 240        /* 5 ms, over burst + margin + one push (the fill's low point before the next push) */
-#define XFADE 120              /* 2.5 ms */
-#define FADE 48                /* 1 ms in after priming, out at an underrun */
+/* Ring read, in frames: a resampling servo holds each slot's low water (the lowest fill after a callback, per
+   window) at LOW_WATER; an underrun is concealed and the ring resumes where the late audio would have played. */
+#define LOW_WATER 240          /* 5 ms */
+#define SERVO_CALLBACKS 25     /* callbacks per low-water window, about 200 ms */
+#define SERVO_SMOOTH 0.5       /* one-pole weight of each window's error */
+#define SERVO_GAIN 1.0e-5      /* ratio deviation per frame of smoothed error */
+#define RATIO_SPAN 0.005       /* |ratio - 1| at most: 8.7 cents */
+#define RATIO_SLEW 0.0005      /* ratio change per callback at most, ramped across it */
+#define BACKLOG_MAX 2880       /* 60 ms over the low water: an aligned resync */
+#define AHEAD 2                /* the cubic reads two frames past the read position */
+#define BEHIND 1               /* and one before it */
+#define XFADE 120              /* 2.5 ms: resume and resync cross-fades */
+#define ALIGN_MAX 240          /* 5 ms: the resume and resync search on either side */
+#define FADE 48                /* 1 ms in after priming, and out at an underrun without concealment */
+
+/* Concealment from the slot's own last output (FSV_CONCEAL 0: an underrun fades out to silence instead). */
+#ifndef FSV_CONCEAL
+#define FSV_CONCEAL 1
+#endif
+#define HIST_FRAMES 2048       /* the slot's recent output, a power of two */
+#define HIST_MASK (HIST_FRAMES - 1)
+#define PLC_DECIMATE 4
+#define PLC_WINDOW 128         /* decimated: the last 512 frames */
+#define PLC_LAG_MIN 12         /* decimated: periods of 48-720 frames */
+#define PLC_LAG_MAX 180
+#define PLC_REFINE 480         /* frames compared at full rate, within one decimated step */
+#define PLC_PEAK 0.9f          /* the first local peak at this share of the best correlation */
+#define PLC_VOICED 0.4f
+#define PLC_PERIOD_MAX 1024
+#define PLC_HOLD 1920          /* voiced: 40 ms at full level, */
+#define PLC_FADE 2880          /* then 60 ms down to silence */
+#define PLC_UNVOICED_PERIOD 480
+#define PLC_UNVOICED_HOLD 480
+#define PLC_UNVOICED_FADE 960
+
+/* Event thresholds for the counters, and the shortest interval between two log lines of a kind. */
+#define PUSH_GAP_NS NS_MS(20)
+#define SLOW_CALLBACK_NS NS_MS(2)
+#define SLOW_DRAIN_NS NS_MS(25)
+#define OUTPUT_STALL_NS NS_MS(40)
+#define LOG_EVERY_NS NS_MS(1000)
 
 /* Monitor beep. */
 #define BEEP_FRAMES (FSV_BEEP_MS * FSV_RATE / 1000)
@@ -148,9 +171,9 @@ typedef struct {
   _Atomic float boost_db; /* G */
   _Atomic float feedback_hz, notch_hz, notch_db;
   _Atomic int ducked, duck_ms;
-  _Atomic int fill, margin; /* R */
+  _Atomic int fill, low_water; /* R */
   _Atomic float out_rms;
-  _Atomic int64_t underruns, trimmed;
+  _Atomic int64_t underruns, dropped;
 } slot;
 
 typedef struct {
@@ -178,13 +201,20 @@ typedef struct {
 typedef struct {
   uint32_t live_seen;
   int active, priming, fade_in;
-  int64_t margin, lowest, window, clean;
-  int64_t lows[TRIM_WINDOWS];
-  int lows_n, lows_next;
-  int underrun_in_window;
-  int64_t pending, pending_age; /* > 0 trim, < 0 insert */
-  int insert_next;
-  int64_t insert_from;
+  int64_t ip;   /* the read position: a ring frame */
+  float frac;   /* and the fraction past it, 0 to 1 */
+  double ratio, ratio_target, err; /* ring frames per output frame now, the servo's aim, its smoothed error */
+  int64_t low_min;
+  int low_n;
+  int gap;      /* the ring ran dry: concealing, then silent, until the resume */
+  int64_t lost, gap_out; /* where it ran dry, and the output frames since */
+  int64_t drop_from, drop_to; /* the latest span of late audio skipped */
+  int resume_xf;
+  float xf_buf[XFADE];
+  float hist[HIST_FRAMES]; /* the slot's own output before its strip */
+  int64_t hist_w;
+  float plc_buf[PLC_PERIOD_MAX];
+  int plc_period, plc_i, plc_n, plc_voiced;
   fsv_compressor *comp;
   fsv_echo *echo;
   fsv_biquad notch;
@@ -237,11 +267,12 @@ static _Atomic float mix_wet, mix_feedback, mix_lowpass, mix_reverb;
 /* R */
 static fsv_compressor *bus_comp, *limiter;
 static fsv_reverb *reverb;
-static int64_t r_expected;
+static int64_t r_expected, cb_next_index, cb_last_ns;
 static int beep_on;
 static int64_t beep_from;
 static float in_buf[FSV_SLOTS][RENDER_MAX], bus_buf[RENDER_MAX], rev_buf[RENDER_MAX], left[RENDER_MAX],
-    right[RENDER_MAX];
+    right[RENDER_MAX], synth[RENDER_MAX];
+static float plc_dec[PLC_WINDOW + PLC_LAG_MAX], plc_ncc[PLC_LAG_MAX + 1];
 
 /* G */
 static float g_x[FSV_GUARD_FFT_SIZE], g_spectrum[FSV_GUARD_FFT_SIZE / 2], g_scratch[2 * FSV_GUARD_FFT_SIZE];
@@ -251,6 +282,9 @@ static int64_t g_format_errors_logged;
 /* D */
 static int d_start;
 static int64_t d_last_ns;
+
+/* fsv-clock */
+static int64_t c_stalls_logged, c_stall_logged_ns;
 
 /* Monitor beep */
 static _Atomic uint32_t mon_word;
@@ -263,7 +297,11 @@ static int64_t mon_started_ns;
 /* Statistics */
 static hist h_callback, h_push, h_present, h_drain;
 static _Atomic int64_t callbacks, tap_dropped, format_errors, format_seen, format_bad;
-static _Atomic int64_t trims, jumps, inserts, inserted_frames, clamp_hits; /* R */
+static _Atomic int64_t conceals, resyncs, concealed_frames, silent_frames, clamp_hits; /* R */
+static _Atomic int64_t output_stalls, last_stall_us, callbacks_over_2ms;            /* R */
+static _Atomic int64_t ratio_lo_ppm, ratio_hi_ppm, longest_gap_us, busy_ns, cb_gap_max_us; /* R, per window */
+static _Atomic int64_t push_gaps, push_intervals, push_gap_logged_ns;               /* P */
+static _Atomic int64_t drains, drains_over_25ms;                                    /* D */
 static _Atomic int peak_q15;
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t snap_callback[HIST_BUCKETS], snap_push[HIST_BUCKETS], snap_present[HIST_BUCKETS],
@@ -271,7 +309,7 @@ static uint32_t snap_callback[HIST_BUCKETS], snap_push[HIST_BUCKETS], snap_prese
 static uint32_t delta[HIST_BUCKETS];
 static int64_t window_started_ns;
 static int64_t w_callback_p99, w_callback_max, w_push_p50, w_push_p99, w_push_max, w_present_p50, w_present_p95,
-    w_drain_p99, w_drain_max;
+    w_drain_p99, w_drain_max, w_ratio_min, w_ratio_max, w_longest_gap, w_busy_permille, w_gap_max;
 
 static int64_t now_ns(void) {
   struct timespec ts;
@@ -286,6 +324,13 @@ static slot *slot_at(int slot_no) { return slot_no >= 1 && slot_no <= FSV_SLOTS 
 static void max_update(_Atomic int64_t *max, int64_t value) {
   int64_t cur = atomic_load_explicit(max, memory_order_relaxed);
   while (value > cur && !atomic_compare_exchange_weak_explicit(max, &cur, value, memory_order_relaxed,
+                                                               memory_order_relaxed)) {
+  }
+}
+
+static void min_update(_Atomic int64_t *min, int64_t value) {
+  int64_t cur = atomic_load_explicit(min, memory_order_relaxed);
+  while (value < cur && !atomic_compare_exchange_weak_explicit(min, &cur, value, memory_order_relaxed,
                                                                memory_order_relaxed)) {
   }
 }
@@ -337,18 +382,22 @@ static void init_render_dsp(render_slot *rs) {
   rs->out_n = 0;
 }
 
-static void start_priming(render_slot *rs, int64_t margin) {
+/* A new generation plays from the write position once its ring holds a callback, the low water and a push. */
+static void start_priming(slot *s, render_slot *rs, int64_t w) {
   rs->priming = 1;
   rs->fade_in = 0;
-  rs->margin = margin;
-  rs->lowest = INT64_MAX;
-  rs->window = 0;
-  rs->clean = 0;
-  rs->lows_n = 0;
-  rs->underrun_in_window = 0;
-  rs->pending = 0;
-  rs->pending_age = 0;
-  rs->insert_next = 0;
+  rs->ip = w;
+  rs->frac = 0.0f;
+  rs->ratio = rs->ratio_target = 1.0;
+  rs->err = 0.0;
+  rs->low_min = INT64_MAX;
+  rs->low_n = 0;
+  rs->gap = 0;
+  rs->drop_from = rs->drop_to = 0;
+  rs->resume_xf = 0;
+  memset(rs->hist, 0, sizeof(rs->hist));
+  rs->hist_w = 0;
+  atomic_store_explicit(&s->low_water, 0, memory_order_relaxed);
 }
 
 static void reset_level(push_state *ps) {
@@ -409,10 +458,10 @@ static int reset_all(void) {
     atomic_store(&s->boost_db, FSV_VOICE_START_BOOST_DB);
     atomic_store(&s->notch_hz, 0.0f);
     atomic_store(&s->fill, 0);
-    atomic_store(&s->margin, MARGIN_START);
+    atomic_store(&s->low_water, 0);
     atomic_store(&s->out_rms, 0.0f);
     atomic_store(&s->underruns, 0);
-    atomic_store(&s->trimmed, 0);
+    atomic_store(&s->dropped, 0);
 
     push_state *ps = &pstate[i];
     memset(ps, 0, sizeof(*ps));
@@ -429,7 +478,6 @@ static int reset_all(void) {
     fsv_echo_init(echo, FS);
     fsv_echo_set(echo, FSV_ECHO_FEEDBACK, FSV_ECHO_LOWPASS_HZ);
     init_render_dsp(rs);
-    start_priming(rs, MARGIN_START);
 
     guard_slot *gs = &gstate[i];
     memset(gs, 0, sizeof(*gs));
@@ -449,6 +497,10 @@ static int reset_all(void) {
   duck_gain = db_to_gain(FSV_FEEDBACK_DUCK_DB);
   trim_gain = db_to_gain(FSV_VOICE_TRIM_DB);
   r_expected = -1;
+  cb_next_index = -1;
+  cb_last_ns = 0;
+  c_stalls_logged = 0;
+  c_stall_logged_ns = 0;
   beep_on = 0;
   beep_from = 0;
   g_format_logged = 0;
@@ -463,11 +515,24 @@ static int reset_all(void) {
   atomic_store(&format_seen, 0);
   atomic_store(&format_bad, 0);
   atomic_store(&peak_q15, 0);
-  atomic_store(&trims, 0);
-  atomic_store(&jumps, 0);
-  atomic_store(&inserts, 0);
-  atomic_store(&inserted_frames, 0);
+  atomic_store(&conceals, 0);
+  atomic_store(&resyncs, 0);
+  atomic_store(&concealed_frames, 0);
+  atomic_store(&silent_frames, 0);
   atomic_store(&clamp_hits, 0);
+  atomic_store(&output_stalls, 0);
+  atomic_store(&last_stall_us, 0);
+  atomic_store(&callbacks_over_2ms, 0);
+  atomic_store(&ratio_lo_ppm, INT64_MAX);
+  atomic_store(&ratio_hi_ppm, INT64_MIN);
+  atomic_store(&longest_gap_us, 0);
+  atomic_store(&busy_ns, 0);
+  atomic_store(&cb_gap_max_us, 0);
+  atomic_store(&push_gaps, 0);
+  atomic_store(&push_intervals, 0);
+  atomic_store(&push_gap_logged_ns, 0);
+  atomic_store(&drains, 0);
+  atomic_store(&drains_over_25ms, 0);
   return 1;
 }
 
@@ -981,6 +1046,17 @@ static void put_mark(slot *s, push_state *ps, int64_t pos, int64_t t) {
   atomic_store_explicit(&s->marks_head, index + 1, memory_order_release);
 }
 
+/* Counts a push interval; one over 20 ms is logged, at most once a second across the slots. */
+static void note_push_interval(int index, int64_t t, int64_t interval) {
+  atomic_fetch_add_explicit(&push_intervals, 1, memory_order_relaxed);
+  if (interval <= PUSH_GAP_NS) return;
+  atomic_fetch_add_explicit(&push_gaps, 1, memory_order_relaxed);
+  int64_t logged = atomic_load_explicit(&push_gap_logged_ns, memory_order_relaxed);
+  if (t - logged >= LOG_EVERY_NS && atomic_compare_exchange_strong(&push_gap_logged_ns, &logged, t)) {
+    LOGW("fsv: push gap %d ms slot %d", (int)(interval / 1000000), index + 1);
+  }
+}
+
 static void tap_block_done(slot *s, push_state *ps) {
   ps->acc_n = 0;
   ps->made++;
@@ -1003,7 +1079,10 @@ static int push_owned(int index, slot *s, int gen, const int16_t *pcm, int frame
   int64_t t = now_ns();
   if (want != ps->cur_want) start_generation(s, ps, want);
   if (atomic_exchange_explicit(&s->p_req, 0, memory_order_acq_rel) & REQ_RELEASE) reset_level(ps);
-  if (ps->last_push_ns != 0) hist_add(&h_push, (t - ps->last_push_ns) / 1000);
+  if (ps->last_push_ns != 0) {
+    hist_add(&h_push, (t - ps->last_push_ns) / 1000);
+    note_push_interval(index, t, t - ps->last_push_ns);
+  }
   ps->last_push_ns = t;
 
   float boost = atomic_load_explicit(&s->boost_db, memory_order_relaxed);
@@ -1093,67 +1172,200 @@ int fsv_push(int slot_no, int gen, const int16_t *pcm, int frames, int rate, int
 
 /* ---- Render (R) ------------------------------------------------------------------------------------- */
 
-static int quiet_span(const slot *s, int64_t from, int64_t frames) {
-  for (int64_t k = 0; k < frames; k++) {
-    float v = s->ring[(from + k) & RING_MASK];
-    if (v >= QUIET || v <= -QUIET) return 0;
+static float cubic_at(const float *ring, int64_t ip, float f) {
+  float xm = ring[(ip - 1) & RING_MASK], x0 = ring[ip & RING_MASK], x1 = ring[(ip + 1) & RING_MASK],
+        x2 = ring[(ip + 2) & RING_MASK];
+  float c1 = 0.5f * (x1 - xm);
+  float c2 = xm - 2.5f * x0 + 2.0f * x1 - 0.5f * x2;
+  float c3 = 0.5f * (x2 - xm) + 1.5f * (x0 - x1);
+  return ((c3 * f + c2) * f + c1) * f + x0;
+}
+
+static void hist_put(render_slot *rs, const float *x, int n) {
+  for (int k = 0; k < n; k++) rs->hist[(rs->hist_w + k) & HIST_MASK] = x[k];
+  rs->hist_w += n;
+}
+
+static float hist_at(const render_slot *rs, int64_t back) { return rs->hist[(rs->hist_w - back) & HIST_MASK]; }
+
+/* The pitch period of the slot's recent output: the normalised autocorrelation of the last 512 frames, 4x
+   decimated, takes the first local peak near the best, then a search at full rate around it. */
+static int plc_period(const render_slot *rs, float *ncc_out) {
+  const int nd = PLC_WINDOW + PLC_LAG_MAX;
+  for (int t = 0; t < nd; t++) {
+    int64_t back = (int64_t)(nd - t) * PLC_DECIMATE;
+    plc_dec[t] = 0.25f * (hist_at(rs, back) + hist_at(rs, back - 1) + hist_at(rs, back - 2) + hist_at(rs, back - 3));
   }
-  return 1;
-}
-
-static void copy_ring(const slot *s, float *dst, int64_t from, int frames) {
-  for (int k = 0; k < frames; k++) dst[k] = s->ring[(from + k) & RING_MASK];
-}
-
-/* Crossfades from the old continuation `from` into dst, which already holds the new audio. */
-static void splice(const slot *s, float *dst, int64_t from, int frames) {
-  int n = frames < XFADE ? frames : XFADE;
-  for (int k = 0; k < n; k++) {
-    float w = ((float)k + 0.5f) / (float)n;
-    dst[k] = s->ring[(from + k) & RING_MASK] * (1.0f - w) + dst[k] * w;
-  }
-}
-
-static void end_window(render_slot *rs) {
-  if (!rs->underrun_in_window) {
-    rs->clean += rs->window;
-    if (rs->clean >= MARGIN_DECAY_AFTER) {
-      rs->clean = 0;
-      rs->margin = rs->margin - MARGIN_DECAY < MARGIN_MIN ? MARGIN_MIN : rs->margin - MARGIN_DECAY;
+  float e0 = 0.0f, best = -2.0f;
+  for (int t = PLC_LAG_MAX; t < nd; t++) e0 += plc_dec[t] * plc_dec[t];
+  for (int lag = PLC_LAG_MIN; lag <= PLC_LAG_MAX; lag++) {
+    float xy = 0.0f, e1 = 0.0f;
+    for (int t = PLC_LAG_MAX; t < nd; t++) {
+      xy += plc_dec[t] * plc_dec[t - lag];
+      e1 += plc_dec[t - lag] * plc_dec[t - lag];
     }
-    rs->lows[rs->lows_next] = rs->lowest;
-    rs->lows_next = (rs->lows_next + 1) % TRIM_WINDOWS;
-    if (rs->lows_n < TRIM_WINDOWS) rs->lows_n++;
-    int64_t low = rs->lows[0];
-    for (int k = 1; k < TRIM_WINDOWS; k++) low = rs->lows[k] < low ? rs->lows[k] : low;
-    int64_t next = 0;
-    if (rs->lows_n == TRIM_WINDOWS && low - rs->margin > TRIM_MIN) {
-      next = low - rs->margin;
-    } else if (rs->lowest < rs->margin / 2) {
-      next = rs->lowest - rs->margin;
-      if (next < -INSERT_MAX) next = -INSERT_MAX;
-    }
-    if (next == 0 || (next > 0) != (rs->pending > 0)) rs->pending_age = 0;
-    rs->pending = next;
-  } else {
-    rs->clean = 0;
-    rs->pending = 0;
-    rs->pending_age = 0;
+    plc_ncc[lag] = xy / sqrtf(e0 * e1 + 1e-12f);
+    if (plc_ncc[lag] > best) best = plc_ncc[lag];
   }
-  rs->lowest = INT64_MAX;
-  rs->window = 0;
-  rs->underrun_in_window = 0;
+  int pick = PLC_LAG_MIN;
+  for (int lag = PLC_LAG_MIN + 1; lag < PLC_LAG_MAX; lag++) {
+    if (plc_ncc[lag] >= PLC_PEAK * best && plc_ncc[lag] >= plc_ncc[lag - 1] && plc_ncc[lag] >= plc_ncc[lag + 1]) {
+      pick = lag;
+      break;
+    }
+  }
+  int period = pick * PLC_DECIMATE;
+  float best_full = -2.0f;
+  for (int p = (pick - 1) * PLC_DECIMATE; p <= (pick + 1) * PLC_DECIMATE; p++) {
+    float xy = 0.0f, a = 0.0f, b = 0.0f;
+    for (int t = 1; t <= PLC_REFINE; t++) {
+      float x = hist_at(rs, t), y = hist_at(rs, t + p);
+      xy += x * y;
+      a += x * x;
+      b += y * y;
+    }
+    float c = xy / sqrtf(a * b + 1e-12f);
+    if (c > best_full) {
+      best_full = c;
+      period = p;
+    }
+  }
+  *ncc_out = best_full;
+  return period;
 }
 
-static void spliced(render_slot *rs) {
-  rs->pending = 0;
-  rs->pending_age = 0;
-  rs->lowest = INT64_MAX;
-  rs->window = 0;
-  rs->lows_n = 0;
+/* The loop to conceal with: the last period, its last quarter cross-faded toward the period before it. */
+static void plc_start(render_slot *rs) {
+  float ncc;
+  int period = plc_period(rs, &ncc);
+  rs->plc_voiced = ncc >= PLC_VOICED;
+  if (!rs->plc_voiced) period = PLC_UNVOICED_PERIOD;
+  if (period > PLC_PERIOD_MAX) period = PLC_PERIOD_MAX;
+  rs->plc_period = period;
+  int x = period / 4;
+  for (int i = 0; i < period; i++) {
+    float v = hist_at(rs, period - i);
+    if (i >= period - x) {
+      float w = ((float)(i - (period - x)) + 0.5f) / (float)x;
+      v = v * (1.0f - w) + hist_at(rs, 2 * period - i) * w;
+    }
+    rs->plc_buf[i] = v;
+  }
+  rs->plc_i = 0;
+  rs->plc_n = 0;
 }
 
-static void map_marks(slot *s, render_slot *rs, int64_t frame_index, int64_t base, int64_t end) {
+static int plc_end(const render_slot *rs) {
+  return rs->plc_voiced ? PLC_HOLD + PLC_FADE : PLC_UNVOICED_HOLD + PLC_UNVOICED_FADE;
+}
+
+static float plc_next(render_slot *rs) {
+  float v = rs->plc_buf[rs->plc_i];
+  rs->plc_i = rs->plc_i + 1 == rs->plc_period ? 0 : rs->plc_i + 1;
+  int hold = rs->plc_voiced ? PLC_HOLD : PLC_UNVOICED_HOLD;
+  int fade = rs->plc_voiced ? PLC_FADE : PLC_UNVOICED_FADE;
+  float g = rs->plc_n < hold ? 1.0f : rs->plc_n < hold + fade ? 1.0f - (float)(rs->plc_n - hold) / (float)fade : 0.0f;
+  rs->plc_n++;
+  return v * g;
+}
+
+/* Output while the ring is dry: the concealment, then silence once it has faded out. */
+static void conceal_into(render_slot *rs, float *dst, int count) {
+  int64_t concealed = 0;
+  for (int k = 0; k < count; k++) {
+    if (FSV_CONCEAL && rs->plc_n < plc_end(rs)) {
+      dst[k] = plc_next(rs);
+      concealed++;
+    } else {
+      dst[k] = 0.0f;
+    }
+  }
+  if (concealed > 0) atomic_fetch_add_explicit(&concealed_frames, concealed, memory_order_relaxed);
+  if (concealed < count) atomic_fetch_add_explicit(&silent_frames, count - concealed, memory_order_relaxed);
+}
+
+/* The ring position within [pos + lo, pos + hi] whose next XFADE frames best continue `from` (the normalised
+   correlation), kept inside what the ring holds. */
+static int64_t align(const slot *s, int64_t pos, int lo, int hi, const float *from, int64_t w) {
+  if (pos + hi + XFADE > w) hi = (int)(w - XFADE - pos);
+  int64_t best_pos = pos;
+  float best = -1e30f;
+  for (int d = lo; d <= hi; d++) {
+    float xy = 0.0f, e = 1e-12f;
+    for (int k = 0; k < XFADE; k++) {
+      float y = s->ring[(pos + d + k) & RING_MASK];
+      xy += from[k] * y;
+      e += y * y;
+    }
+    float c = xy / sqrtf(e);
+    if (c > best) {
+      best = c;
+      best_pos = pos + d;
+    }
+  }
+  return best_pos;
+}
+
+static void skip_to(slot *s, render_slot *rs, int64_t from, int64_t to) {
+  rs->ip = to;
+  rs->frac = 0.0f;
+  if (to <= from) return;
+  atomic_fetch_add_explicit(&s->dropped, to - from, memory_order_relaxed);
+  rs->drop_from = from;
+  rs->drop_to = to;
+}
+
+/* Ends a dry spell at the position the late audio would be playing now, aligned to the concealment and
+   cross-faded from it; without concealment left, a fade-in from silence. */
+static void resume(slot *s, render_slot *rs, int64_t at, int64_t w, int n) {
+  int xf = FSV_CONCEAL && rs->plc_n < plc_end(rs) ? XFADE : 0;
+  for (int k = 0; k < xf; k++) synth[k] = plc_next(rs);
+  if (xf > 0) {
+    int half = rs->plc_period / 2 < ALIGN_MAX ? rs->plc_period / 2 : ALIGN_MAX;
+    at = align(s, at, -half, half, synth, w);
+    if (at < rs->lost) at = rs->lost;
+    if (w - at < n + AHEAD) at = w - (n + AHEAD);
+  }
+  max_update(&longest_gap_us, rs->gap_out * 1000000 / FSV_RATE);
+  skip_to(s, rs, rs->lost, at);
+  rs->resume_xf = xf;
+  memcpy(rs->xf_buf, synth, (size_t)xf * sizeof(float));
+  rs->fade_in = xf == 0;
+  rs->gap = 0;
+  rs->err = 0.0;
+  rs->low_min = INT64_MAX;
+  rs->low_n = 0;
+}
+
+/* A backlog far over the low water (the output stopped pulling): back to it, aligned and cross-faded. */
+static void resync(slot *s, render_slot *rs, int64_t w, int n, int push) {
+  if (rs->resume_xf == 0) {
+    for (int k = 0; k < XFADE; k++) rs->xf_buf[k] = s->ring[(rs->ip + k) & RING_MASK];
+  }
+  int64_t at = align(s, w - (n + LOW_WATER + push / 2), -ALIGN_MAX, ALIGN_MAX, rs->xf_buf, w);
+  atomic_fetch_add_explicit(&resyncs, 1, memory_order_relaxed);
+  skip_to(s, rs, rs->ip, at);
+  rs->resume_xf = XFADE;
+  rs->err = 0.0;
+  rs->ratio = rs->ratio_target = 1.0;
+}
+
+static void servo_window(slot *s, render_slot *rs) {
+  atomic_store_explicit(&s->low_water, (int)rs->low_min, memory_order_relaxed);
+  rs->err += SERVO_SMOOTH * ((double)(rs->low_min - LOW_WATER) - rs->err);
+  double dev = SERVO_GAIN * rs->err;
+  rs->ratio_target = 1.0 + (dev > RATIO_SPAN ? RATIO_SPAN : dev < -RATIO_SPAN ? -RATIO_SPAN : dev);
+  rs->low_min = INT64_MAX;
+  rs->low_n = 0;
+}
+
+/* Output frame of a ring position, through this callback's mean ratio: frame_index for `start`. */
+static int64_t frame_of(int64_t pos, int64_t frame_index, double start, double step) {
+  return frame_index + (int64_t)floor(((double)pos - start) / step + 0.5);
+}
+
+/* Push-to-present for the marks played this callback; a mark in skipped audio is passed over. */
+static void map_marks(slot *s, render_slot *rs, int64_t frame_index, double start, double end, double step) {
   uint32_t head = atomic_load_explicit(&s->marks_head, memory_order_acquire);
   if (head - rs->marks_tail > MARKS) rs->marks_tail = head - MARKS;
   while (rs->marks_tail != head) {
@@ -1166,44 +1378,51 @@ static void map_marks(slot *s, render_slot *rs, int64_t frame_index, int64_t bas
       rs->marks_tail++;
       continue;
     }
-    if (pos >= end) break;
+    if ((double)pos >= end) break;
     rs->marks_tail++;
     int64_t present;
-    if (pos >= base && ao_presentation_ns(frame_index + (pos - base), &present) == FSV_OK) {
+    if ((double)pos >= start && ao_presentation_ns(frame_of(pos, frame_index, start, step), &present) == FSV_OK) {
       hist_add(&h_present, (present - t) / 1000);
     }
   }
 }
 
-static void map_onset(uint32_t word, int64_t frame_index, int64_t base, int64_t end) {
+/* The beep's onset, found by P, to its presentation time: once played (earlier ones map back through this
+   callback's ratio), or a failure when it fell in skipped audio. */
+static void map_onset(const render_slot *rs, uint32_t word, int64_t frame_index, double start, double end,
+                      double step) {
   int64_t pos_on = atomic_load_explicit(&mon_pos_on, memory_order_relaxed);
-  if (pos_on >= end) return;
+  if ((double)pos_on >= end) return;
+  if (pos_on >= rs->drop_from && pos_on < rs->drop_to) {
+    mon_fail(word, FSV_MONITOR_STOPPED);
+    return;
+  }
   int64_t t_on;
-  if (ao_presentation_ns(frame_index + (pos_on - base), &t_on) != FSV_OK) return;
+  if (ao_presentation_ns(frame_of(pos_on, frame_index, start, step), &t_on) != FSV_OK) return;
   int64_t t_b = atomic_load_explicit(&mon_t_b, memory_order_relaxed);
   atomic_store_explicit(&mon_ms, (float)((double)(t_on - t_b) / 1e6), memory_order_relaxed);
   atomic_compare_exchange_strong(&mon_word, &word, MON_WORD(MON_SERIAL(word), MON_DONE));
 }
 
-/* Takes this callback's frames of one slot from its ring into `in`, running the fill servo. */
+/* Takes this callback's frames of one slot from its ring into `in`: a resampling read servoed to the low
+   water, a concealment while the ring is dry, and a resume on time after it. */
 static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int64_t frame_index, uint32_t word) {
   uint32_t live = atomic_load_explicit(&s->live, memory_order_acquire);
   int64_t w = atomic_load_explicit(&s->write, memory_order_acquire);
-  int64_t r = atomic_load_explicit(&s->read, memory_order_relaxed);
   if (live != rs->live_seen) {
     rs->live_seen = live;
     rs->active = live != 0;
-    r = w;
-    start_priming(rs, MARGIN_START);
+    start_priming(s, rs, w);
     rs->marks_tail = atomic_load_explicit(&s->marks_head, memory_order_acquire);
     rs->fill_sum = 0;
     rs->fill_n = 0;
     rs->fill_frames = 0;
   }
-  int64_t fill = w - r;
-  if (fill < 0 || fill > RING_FRAMES) {
-    r = w;
-    fill = 0;
+  double fill = (double)(w - rs->ip) - rs->frac;
+  if (fill < 0.0 || fill > RING_FRAMES - 4) {
+    rs->ip = w;
+    rs->frac = 0.0f;
+    fill = 0.0;
   }
   if (!rs->active) {
     memset(in, 0, (size_t)n * sizeof(float));
@@ -1212,7 +1431,7 @@ static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int
     return;
   }
 
-  rs->fill_sum += fill;
+  rs->fill_sum += (int64_t)fill;
   rs->fill_n++;
   rs->fill_frames += n;
   if (rs->fill_frames >= OUT_METER_FRAMES) {
@@ -1222,89 +1441,100 @@ static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int
     rs->fill_frames = 0;
   }
 
+  int push = atomic_load_explicit(&s->push_frames, memory_order_relaxed);
   if (rs->priming) {
-    if (fill < n + rs->margin + PRIME_EXTRA + atomic_load_explicit(&s->push_frames, memory_order_relaxed)) {
+    if (fill < n + AHEAD + LOW_WATER + push) {
       memset(in, 0, (size_t)n * sizeof(float));
-      atomic_store_explicit(&s->read, r, memory_order_release);
+      atomic_store_explicit(&s->read, rs->ip - BEHIND, memory_order_release);
       return;
     }
     rs->priming = 0;
     rs->fade_in = 1;
-    rs->lowest = INT64_MAX;
-    rs->window = 0;
+    rs->low_min = INT64_MAX;
+    rs->low_n = 0;
   }
 
-  int64_t slack = fill - n;
-  int64_t to = r;     /* ring position played at frame_index */
-  int64_t from = -1;  /* old continuation to crossfade from */
-  int64_t hold = 0;   /* frames to replay next callback (an insert) */
-  if (rs->insert_next) {
-    from = rs->insert_from;
-    rs->insert_next = 0;
-  } else if (slack > rs->margin + CEILING) {
-    int64_t skip = slack - (rs->margin + AFTER_JUMP);
-    from = r;
-    to = r + skip;
-    atomic_fetch_add_explicit(&s->trimmed, skip, memory_order_relaxed);
-    atomic_fetch_add_explicit(&jumps, 1, memory_order_relaxed);
-    spliced(rs);
-  } else if (rs->pending != 0) {
-    rs->pending_age += n;
-    int forced = rs->pending_age >= FORCE_AFTER;
-    if (rs->pending > 0) {
-      int64_t k = rs->pending;
-      if (slack >= k + rs->margin && fill >= k + XFADE && (forced || quiet_span(s, r, k + XFADE))) {
-        from = r;
-        to = r + k;
-        atomic_fetch_add_explicit(&s->trimmed, k, memory_order_relaxed);
-        atomic_fetch_add_explicit(&trims, 1, memory_order_relaxed);
-        spliced(rs);
-      }
-    } else {
-      int64_t k = -rs->pending;
-      if (slack >= XFADE && (forced || quiet_span(s, r + n - k, k + XFADE))) {
-        hold = k;
-        rs->insert_next = 1;
-        rs->insert_from = r + n;
-        atomic_fetch_add_explicit(&inserts, 1, memory_order_relaxed);
-        atomic_fetch_add_explicit(&inserted_frames, k, memory_order_relaxed);
-        spliced(rs);
-      }
+  if (rs->gap) {
+    int64_t need = n + AHEAD + LOW_WATER + push / 2;
+    int64_t at = rs->lost + rs->gap_out;
+    if (w - at < need) at = w - need;
+    if (at < rs->lost) at = rs->lost;
+    if (w - at < need) {
+      conceal_into(rs, in, n);
+      hist_put(rs, in, n);
+      rs->gap_out += n;
+      int64_t keep = at - ALIGN_MAX - BEHIND;
+      atomic_store_explicit(&s->read, keep > rs->lost - BEHIND ? keep : rs->lost - BEHIND, memory_order_release);
+      return;
+    }
+    resume(s, rs, at, w, n);
+    fill = (double)(w - rs->ip);
+  }
+  if (fill - n - LOW_WATER > BACKLOG_MAX) resync(s, rs, w, n, push);
+
+  double rho0 = rs->ratio;
+  double rho1 = rs->ratio_target;
+  if (rho1 > rho0 + RATIO_SLEW) rho1 = rho0 + RATIO_SLEW;
+  if (rho1 < rho0 - RATIO_SLEW) rho1 = rho0 - RATIO_SLEW;
+  int64_t ip = rs->ip;
+  float fr = rs->frac;
+  double start = (double)ip + fr;
+  float rr = (float)rho0, drr = (float)((rho1 - rho0) / n);
+  int k = 0;
+  for (; k < n && ip + AHEAD < w; k++) {
+    in[k] = cubic_at(s->ring, ip, fr);
+    rr += drr;
+    fr += rr;
+    while (fr >= 1.0f) {
+      fr -= 1.0f;
+      ip++;
     }
   }
-
-  int64_t avail = w - to;
-  int played = n;
-  if (avail >= n) {
-    copy_ring(s, in, to, n);
-    if (from >= 0) splice(s, in, from, n);
-  } else {
-    played = (int)avail;
-    copy_ring(s, in, to, played);
-    for (int k = 0; k < FADE && k < played; k++) in[played - 1 - k] *= (float)k / FADE;
-    memset(in + played, 0, (size_t)(n - played) * sizeof(float));
-    atomic_fetch_add_explicit(&s->underruns, 1, memory_order_relaxed);
-    int64_t margin = rs->margin + MARGIN_STEP > MARGIN_MAX ? MARGIN_MAX : rs->margin + MARGIN_STEP;
-    start_priming(rs, margin);
-    rs->underrun_in_window = 1;
-    hold = 0;
+  double end = (double)ip + fr;
+  rs->ip = ip;
+  rs->frac = fr;
+  rs->ratio = rho1;
+  if (rs->resume_xf > 0) {
+    int xf = rs->resume_xf < k ? rs->resume_xf : k;
+    for (int j = 0; j < xf; j++) {
+      float wgt = ((float)j + 0.5f) / (float)xf;
+      in[j] = rs->xf_buf[j] * (1.0f - wgt) + in[j] * wgt;
+    }
+    rs->resume_xf = 0;
   }
   if (rs->fade_in) {
-    for (int k = 0; k < FADE && k < n; k++) in[k] *= (float)(k + 1) / FADE;
+    for (int j = 0; j < FADE && j < k; j++) in[j] *= (float)(j + 1) / FADE;
     rs->fade_in = 0;
   }
-  atomic_store_explicit(&s->read, to + played - hold, memory_order_release);
 
-  if (!rs->priming) {
-    int64_t slack_after = slack - (to - r) + hold;
-    if (slack_after < rs->lowest) rs->lowest = slack_after;
-    rs->window += n;
-    if (rs->window >= WINDOW_FRAMES) end_window(rs);
+  if (k < n) {
+    atomic_fetch_add_explicit(&s->underruns, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&conceals, 1, memory_order_relaxed);
+    rs->gap = 1;
+    rs->lost = ip;
+    rs->gap_out = n - k;
+    if (FSV_CONCEAL) {
+      hist_put(rs, in, k);
+      plc_start(rs);
+      conceal_into(rs, in + k, n - k);
+      hist_put(rs, in + k, n - k);
+    } else {
+      for (int j = 0; j < FADE && j < k; j++) in[k - 1 - j] *= (float)j / FADE;
+      conceal_into(rs, in + k, n - k);
+      hist_put(rs, in, n);
+    }
+  } else {
+    hist_put(rs, in, n);
+    double low = (double)(w - ip) - fr - AHEAD;
+    if (low < (double)rs->low_min) rs->low_min = (int64_t)low;
+    if (++rs->low_n >= SERVO_CALLBACKS) servo_window(s, rs);
   }
-  atomic_store_explicit(&s->margin, (int)rs->margin, memory_order_relaxed);
-  map_marks(s, rs, frame_index, to, to + played);
+  atomic_store_explicit(&s->read, ip - BEHIND, memory_order_release);
+  if (k == 0) return;
+  double step = (end - start) / k;
+  map_marks(s, rs, frame_index, start, end, step);
   if (MON_CODE(word) == MON_FOUND && atomic_load_explicit(&mon_slot, memory_order_relaxed) == index) {
-    map_onset(word, frame_index, to, to + played);
+    map_onset(rs, word, frame_index, start, end, step);
   }
 }
 
@@ -1413,6 +1643,7 @@ static void render_piece(int16_t *out, int n, int64_t frame_index) {
 
   memset(bus_buf, 0, (size_t)n * sizeof(float));
   memset(rev_buf, 0, (size_t)n * sizeof(float));
+  int64_t ratio_lo = INT64_MAX, ratio_hi = INT64_MIN;
   for (int i = 0; i < FSV_SLOTS; i++) {
     slot *s = &slots[i];
     render_slot *rs = &rstate[i];
@@ -1430,6 +1661,15 @@ static void render_piece(int16_t *out, int n, int64_t frame_index) {
     }
     take_slot(i, s, rs, in_buf[i], n, frame_index, word);
     run_strip(s, rs, in_buf[i], n, &mix, mon_measuring(word, i));
+    if (rs->active && !rs->priming && !rs->gap) {
+      int64_t ppm = (int64_t)floor((rs->ratio - 1.0) * 1e6 + 0.5);
+      if (ppm < ratio_lo) ratio_lo = ppm;
+      if (ppm > ratio_hi) ratio_hi = ppm;
+    }
+  }
+  if (ratio_hi != INT64_MIN) {
+    min_update(&ratio_lo_ppm, ratio_lo);
+    max_update(&ratio_hi_ppm, ratio_hi);
   }
 
   memcpy(left, bus_buf, (size_t)n * sizeof(float));
@@ -1466,6 +1706,16 @@ void fsv_render(int16_t *out, int frames, int64_t frame_index) {
     memset(out, 0, (size_t)frames * 2 * sizeof(int16_t));
     return;
   }
+  if (frame_index == cb_next_index) {
+    int64_t gap = t0 - cb_last_ns;
+    max_update(&cb_gap_max_us, gap / 1000);
+    if (gap > OUTPUT_STALL_NS) {
+      atomic_store_explicit(&last_stall_us, gap / 1000, memory_order_relaxed);
+      atomic_fetch_add_explicit(&output_stalls, 1, memory_order_release);
+    }
+  }
+  cb_last_ns = t0;
+  cb_next_index = frame_index + frames;
   while (frames > 0) {
     int n = frames < RENDER_MAX ? frames : RENDER_MAX;
     render_piece(out, n, frame_index);
@@ -1473,8 +1723,22 @@ void fsv_render(int16_t *out, int frames, int64_t frame_index) {
     frame_index += n;
     frames -= n;
   }
-  hist_add(&h_callback, (now_ns() - t0) / 1000);
+  int64_t busy = now_ns() - t0;
+  hist_add(&h_callback, busy / 1000);
+  atomic_fetch_add_explicit(&busy_ns, busy, memory_order_relaxed);
+  if (busy > SLOW_CALLBACK_NS) atomic_fetch_add_explicit(&callbacks_over_2ms, 1, memory_order_relaxed);
   atomic_fetch_add_explicit(&callbacks, 1, memory_order_relaxed);
+}
+
+void fsv_clock_tick(void) {
+  int64_t stalls = atomic_load_explicit(&output_stalls, memory_order_acquire);
+  if (stalls == c_stalls_logged) return;
+  int64_t now = now_ns();
+  if (now - c_stall_logged_ns < LOG_EVERY_NS) return;
+  int64_t gap_us = atomic_load_explicit(&last_stall_us, memory_order_relaxed);
+  LOGW("fsv: output stall %d ms (%d in all)", (int)(gap_us / 1000), (int)stalls);
+  c_stalls_logged = stalls;
+  c_stall_logged_ns = now;
 }
 
 /* ---- Tap drain (D) ---------------------------------------------------------------------------------- */
@@ -1538,7 +1802,11 @@ static int drain_owned(uint8_t *out, int capacity) {
   out[1] = 1;
   memcpy(out + 2, &count16, sizeof(count16));
   int64_t now = now_ns();
-  if (d_last_ns != 0) hist_add(&h_drain, (now - d_last_ns) / 1000);
+  if (d_last_ns != 0) {
+    hist_add(&h_drain, (now - d_last_ns) / 1000);
+    atomic_fetch_add_explicit(&drains, 1, memory_order_relaxed);
+    if (now - d_last_ns > SLOW_DRAIN_NS) atomic_fetch_add_explicit(&drains_over_25ms, 1, memory_order_relaxed);
+  }
   d_last_ns = now;
   return 4 + count * FSV_TAP_BLOCK_BYTES;
 }
@@ -1612,11 +1880,19 @@ void fsv_engine_stats(int64_t out[FSV_STATS_LEN]) {
   pthread_mutex_lock(&stats_lock);
   int64_t now = now_ns();
   if (window_started_ns == 0 || now - window_started_ns >= STATS_WINDOW_NS) {
-    window_started_ns = now;
     hist_window(&h_callback, snap_callback, NULL, NULL, &w_callback_p99, &w_callback_max);
     hist_window(&h_push, snap_push, &w_push_p50, NULL, &w_push_p99, &w_push_max);
     hist_window(&h_present, snap_present, &w_present_p50, &w_present_p95, NULL, NULL);
     hist_window(&h_drain, snap_drain, NULL, NULL, &w_drain_p99, &w_drain_max);
+    int64_t lo = atomic_exchange_explicit(&ratio_lo_ppm, INT64_MAX, memory_order_relaxed);
+    int64_t hi = atomic_exchange_explicit(&ratio_hi_ppm, INT64_MIN, memory_order_relaxed);
+    w_ratio_min = hi == INT64_MIN ? 0 : lo;
+    w_ratio_max = hi == INT64_MIN ? 0 : hi;
+    w_longest_gap = atomic_exchange_explicit(&longest_gap_us, 0, memory_order_relaxed);
+    int64_t busy = atomic_exchange_explicit(&busy_ns, 0, memory_order_relaxed);
+    w_busy_permille = window_started_ns == 0 ? 0 : busy * 1000 / (now - window_started_ns);
+    w_gap_max = atomic_exchange_explicit(&cb_gap_max_us, 0, memory_order_relaxed);
+    window_started_ns = now;
   }
   out[FSV_STATS_CALLBACK_P99_US] = w_callback_p99;
   out[FSV_STATS_CALLBACK_MAX_US] = w_callback_max;
@@ -1627,21 +1903,32 @@ void fsv_engine_stats(int64_t out[FSV_STATS_LEN]) {
   out[FSV_STATS_PUSH_TO_PRESENT_P95_US] = w_present_p95;
   out[FSV_STATS_TAP_DRAIN_P99_US] = w_drain_p99;
   out[FSV_STATS_TAP_DRAIN_MAX_US] = w_drain_max;
+  out[FSV_STATS_RATIO_MIN_PPM] = w_ratio_min;
+  out[FSV_STATS_RATIO_MAX_PPM] = w_ratio_max;
+  out[FSV_STATS_LONGEST_CONCEAL_US] = w_longest_gap;
+  out[FSV_STATS_CALLBACK_BUSY_PERMILLE] = w_busy_permille;
+  out[FSV_STATS_CALLBACK_GAP_MAX_US] = w_gap_max;
   pthread_mutex_unlock(&stats_lock);
 
   out[FSV_STATS_TAP_DROPPED] = atomic_load(&tap_dropped);
   out[FSV_STATS_PEAK_Q15] = atomic_exchange(&peak_q15, 0);
   out[FSV_STATS_CALLBACKS] = atomic_load(&callbacks);
-  out[FSV_STATS_TRIMS] = atomic_load(&trims);
-  out[FSV_STATS_JUMPS] = atomic_load(&jumps);
-  out[FSV_STATS_INSERTS] = atomic_load(&inserts);
-  out[FSV_STATS_INSERTED_FRAMES] = atomic_load(&inserted_frames);
+  out[FSV_STATS_CONCEALS] = atomic_load(&conceals);
+  out[FSV_STATS_RESYNCS] = atomic_load(&resyncs);
+  out[FSV_STATS_CONCEALED_FRAMES] = atomic_load(&concealed_frames);
+  out[FSV_STATS_SILENT_FRAMES] = atomic_load(&silent_frames);
   out[FSV_STATS_CLAMP_HITS] = atomic_load(&clamp_hits);
   for (int i = 0; i < FSV_SLOTS; i++) {
     int64_t *o = &out[FSV_STATS_SLOT_BASE + FSV_STATS_SLOT_STRIDE * i];
     o[FSV_SLOT_UNDERRUNS] = atomic_load(&slots[i].underruns);
-    o[FSV_SLOT_TRIMMED_FRAMES] = atomic_load(&slots[i].trimmed);
-    o[FSV_SLOT_MARGIN_FRAMES] = atomic_load(&slots[i].margin);
+    o[FSV_SLOT_DROPPED_FRAMES] = atomic_load(&slots[i].dropped);
+    o[FSV_SLOT_LOW_WATER_FRAMES] = atomic_load(&slots[i].low_water);
     o[FSV_SLOT_PUSHED_FRAMES] = atomic_load(&slots[i].pushed);
   }
+  out[FSV_STATS_OUTPUT_STALLS] = atomic_load(&output_stalls);
+  out[FSV_STATS_PUSH_GAPS_20] = atomic_load(&push_gaps);
+  out[FSV_STATS_PUSH_INTERVALS] = atomic_load(&push_intervals);
+  out[FSV_STATS_CALLBACKS_OVER_2MS] = atomic_load(&callbacks_over_2ms);
+  out[FSV_STATS_TAP_DRAINS_OVER_25MS] = atomic_load(&drains_over_25ms);
+  out[FSV_STATS_TAP_DRAINS] = atomic_load(&drains);
 }

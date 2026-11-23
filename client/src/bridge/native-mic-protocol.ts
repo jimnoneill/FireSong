@@ -117,13 +117,18 @@ const slotStatusSchema = z.object({
 });
 
 /**
- * Every second. The percentile and max fields cover the window since the
- * previous `engine-stats`; `peak` is the output peak over the same time.
- * Cumulative since this connection's `hello` started the engine: `xruns`,
- * `restarts`, `openAttempts`, `tapDropped`, `trims`, `jumps`, `inserts`,
- * `insertedFrames`, `clampHits` and per slot `underruns` and
- * `trimmedFrames`; `sinkErrors` since the app started; `ignored` since this
- * connection opened.
+ * Every second. The percentile and max fields, `ratioMinPpm`, `ratioMaxPpm`,
+ * `longestConcealUs`, `callbackBusyPermille` and `callbackGapMaxUs` cover the
+ * window since the previous `engine-stats`; `peak` is the output peak over
+ * the same time. Cumulative since this connection's `hello` started the
+ * engine: `xruns`, `restarts`, `openAttempts`, `tapDropped`, `conceals`,
+ * `resyncs`, `concealedFrames`, `silentFrames`, `clampHits`, `outputStalls`,
+ * `pushGaps20` of `pushIntervals`, `callbacksOver2ms`, `tapDrainsOver25ms` of
+ * `tapDrains`, and per slot `underruns` and `droppedFrames`; `sinkErrors`
+ * since the app started; `ignored` since this connection opened. The ring
+ * fields are optional so that an app from before the resampling ring (which
+ * sends `trims`, `jumps`, `inserts`, `insertedFrames` and per slot
+ * `trimmedFrames` and `marginMs` instead) still validates.
  */
 const engineStatsSchema = z.object({
   t: z.literal('engine-stats'),
@@ -144,15 +149,32 @@ const engineStatsSchema = z.object({
   tapDropped: countSchema,
   tapDrainP99Us: countSchema,
   tapDrainMaxUs: countSchema,
-  /** Trim splices (a quiet span skipped). */
-  trims: countSchema,
-  /** Ceiling jumps (a fill far above the margin cut back). */
-  jumps: countSchema,
-  /** Insert splices (a quiet span played twice). */
-  inserts: countSchema,
-  insertedFrames: countSchema,
+  /** A slot's ring ran dry and a concealment started. */
+  conceals: countSchema.optional(),
+  /** A backlog far over the low water cut back. */
+  resyncs: countSchema.optional(),
+  concealedFrames: countSchema.optional(),
+  /** Silence after a concealment faded out. */
+  silentFrames: countSchema.optional(),
+  trims: countSchema.optional(),
+  jumps: countSchema.optional(),
+  inserts: countSchema.optional(),
+  insertedFrames: countSchema.optional(),
   /** Output frames the voice ceiling clamp cut. */
   clampHits: countSchema,
+  /** The resampling ratio's lowest and highest deviation from 1. */
+  ratioMinPpm: z.number().optional(),
+  ratioMaxPpm: z.number().optional(),
+  longestConcealUs: countSchema.optional(),
+  callbackBusyPermille: countSchema.optional(),
+  callbackGapMaxUs: countSchema.optional(),
+  /** Callback intervals over 40 ms. */
+  outputStalls: countSchema.optional(),
+  pushGaps20: countSchema.optional(),
+  pushIntervals: countSchema.optional(),
+  callbacksOver2ms: countSchema.optional(),
+  tapDrainsOver25ms: countSchema.optional(),
+  tapDrains: countSchema.optional(),
   peak: z.number(),
   sinkErrors: countSchema,
   ignored: countSchema,
@@ -161,8 +183,12 @@ const engineStatsSchema = z.object({
     z.object({
       slot: slotSchema,
       underruns: countSchema,
-      trimmedFrames: countSchema,
-      marginMs: z.number(),
+      /** Late audio skipped at a resume or a resync. */
+      droppedFrames: countSchema.optional(),
+      /** The last window's lowest fill after a callback. */
+      lowWaterMs: z.number().optional(),
+      trimmedFrames: countSchema.optional(),
+      marginMs: z.number().optional(),
     }),
   ),
 });

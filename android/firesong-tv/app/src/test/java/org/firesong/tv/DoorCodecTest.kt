@@ -694,8 +694,11 @@ class DoorCodecTest {
                 keys(
                     "t", "open", "outputLatencyMs", "burstFrames", "bufferFrames", "xruns", "restarts", "openAttempts",
                     "callbackP99Us", "callbackMaxUs", "pushIntervalP50Us", "pushIntervalP99Us", "pushIntervalMaxUs",
-                    "pushToPresentP50Ms", "pushToPresentP95Ms", "tapDropped", "tapDrainP99Us", "tapDrainMaxUs", "trims",
-                    "jumps", "inserts", "insertedFrames", "clampHits", "peak", "sinkErrors", "ignored", "apm", "slots",
+                    "pushToPresentP50Ms", "pushToPresentP95Ms", "tapDropped", "tapDrainP99Us", "tapDrainMaxUs",
+                    "conceals", "resyncs", "concealedFrames", "silentFrames", "clampHits", "ratioMinPpm", "ratioMaxPpm",
+                    "longestConcealUs", "callbackBusyPermille", "callbackGapMaxUs", "outputStalls", "pushGaps20",
+                    "pushIntervals", "callbacksOver2ms", "tapDrainsOver25ms", "tapDrains", "peak", "sinkErrors", "ignored",
+                    "apm", "slots",
                 )
                 val slots = o.getJSONArray("slots")
                 EngineStatsMsg(
@@ -716,19 +719,30 @@ class DoorCodecTest {
                     o.getLong("tapDropped"),
                     o.getLong("tapDrainP99Us"),
                     o.getLong("tapDrainMaxUs"),
-                    o.getLong("trims"),
-                    o.getLong("jumps"),
-                    o.getLong("inserts"),
-                    o.getLong("insertedFrames"),
+                    o.getLong("conceals"),
+                    o.getLong("resyncs"),
+                    o.getLong("concealedFrames"),
+                    o.getLong("silentFrames"),
                     o.getLong("clampHits"),
+                    o.getLong("ratioMinPpm"),
+                    o.getLong("ratioMaxPpm"),
+                    o.getLong("longestConcealUs"),
+                    o.getLong("callbackBusyPermille"),
+                    o.getLong("callbackGapMaxUs"),
+                    o.getLong("outputStalls"),
+                    o.getLong("pushGaps20"),
+                    o.getLong("pushIntervals"),
+                    o.getLong("callbacksOver2ms"),
+                    o.getLong("tapDrainsOver25ms"),
+                    o.getLong("tapDrains"),
                     o.getDouble("peak"),
                     o.getLong("sinkErrors"),
                     o.getLong("ignored"),
                     if (o.isNull("apm")) null else o.getString("apm"),
                     (0 until slots.length()).map { i ->
                         val s = slots.getJSONObject(i)
-                        assertEquals(setOf("slot", "underruns", "trimmedFrames", "marginMs"), s.keySet())
-                        EngineSlotStatsMsg(s.getInt("slot"), s.getLong("underruns"), s.getLong("trimmedFrames"), s.getDouble("marginMs"))
+                        assertEquals(setOf("slot", "underruns", "droppedFrames", "lowWaterMs"), s.keySet())
+                        EngineSlotStatsMsg(s.getInt("slot"), s.getLong("underruns"), s.getLong("droppedFrames"), s.getDouble("lowWaterMs"))
                     },
                 )
             }
@@ -816,11 +830,22 @@ class DoorCodecTest {
             tapDropped = 0,
             tapDrainP99Us = 11800,
             tapDrainMaxUs = 21000,
-            trims = 4,
-            jumps = 1,
-            inserts = 6,
-            insertedFrames = 840,
+            conceals = 4,
+            resyncs = 1,
+            concealedFrames = 1536,
+            silentFrames = 0,
             clampHits = 37,
+            ratioMinPpm = -310,
+            ratioMaxPpm = 125,
+            longestConcealUs = 4500,
+            callbackBusyPermille = 92,
+            callbackGapMaxUs = 8900,
+            outputStalls = 0,
+            pushGaps20 = 2,
+            pushIntervals = 47_520,
+            callbacksOver2ms = 1,
+            tapDrainsOver25ms = 3,
+            tapDrains = 9_200,
             peak = 0.4987,
             sinkErrors = 0,
             ignored = 5,

@@ -7,7 +7,7 @@ object NativeMics {
     const val ABI = 1
     const val RATE = 48000
     const val STATUS_LEN = 8
-    const val STATS_LEN = 40
+    const val STATS_LEN = 56
     const val TAP_MESSAGE_MAX = 65536
     const val MONITOR = 1
     const val MUTED = 2
@@ -56,10 +56,12 @@ object NativeMics {
      * out[0..23]: open, outputLatencyUs (-1 unknown), burstFrames, bufferFrames, xruns, restarts,
      * callbackP99Us, callbackMaxUs, pushIntervalP50Us, pushIntervalP99Us, pushIntervalMaxUs,
      * pushToPresentP50Us, pushToPresentP95Us, tapDropped, peakQ15 (reset on read), callbacks,
-     * tapDrainP99Us, tapDrainMaxUs, openAttempts, trims, jumps, inserts, insertedFrames, clampHits; then per
-     * slot at 24 + 4 * (slot - 1): underruns, trimmedFrames, marginFrames, pushedFrames. The percentiles and
-     * maxima cover the window since the previous call at least 900 ms before; the counters are cumulative
-     * since the engine started (fsv_api.h).
+     * tapDrainP99Us, tapDrainMaxUs, openAttempts, conceals, resyncs, concealedFrames, silentFrames, clampHits;
+     * per slot at 24 + 4 * (slot - 1): underruns, droppedFrames, lowWaterFrames, pushedFrames; out[40..50]:
+     * ratioMinPpm, ratioMaxPpm, longestConcealUs, callbackBusyPermille, callbackGapMaxUs, outputStalls,
+     * pushGaps20, pushIntervals, callbacksOver2ms, tapDrainsOver25ms, tapDrains; 51..55 are 0. The percentiles,
+     * maxima and the window figures (40..44) cover the window since the previous call at least 900 ms before;
+     * the counters are cumulative since the engine started (fsv_api.h).
      */
     @JvmStatic external fun engineStats(out: LongArray)
 

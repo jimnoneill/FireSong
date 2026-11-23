@@ -278,6 +278,7 @@ static void *clock_main(void *arg) {
     }
     if (stream != NULL) clock_tick_locked();
     pthread_mutex_unlock(&ao_lock);
+    fsv_clock_tick();
   }
   return NULL;
 }

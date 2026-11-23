@@ -42,13 +42,17 @@ voices together stay under full scale). Under native it also holds the app engin
 statistics (the `engine-stats` message): output `open`, `outputLatencyMs`, `burstFrames`,
 `bufferFrames`, `apm`; over about the last second `pushIntervalP50Us`, `pushIntervalP99Us`,
 `pushIntervalMaxUs`, `callbackP99Us`, `callbackMaxUs`, `pushToPresentP50Ms`, `pushToPresentP95Ms`,
-`tapDrainP99Us`, `tapDrainMaxUs` and `peak` (the voices' output peak); the counters `xruns`,
-`restarts`, `openAttempts`, `tapDropped`, `trims`, `jumps`, `inserts`, `insertedFrames`,
-`clampHits` and `ignored`, which count up from the start of the link, and `sinkErrors`, from the
-app's start; `slots`, with each slot's `underruns`, `trimmedFrames` and `marginMs` and its ring
-`fillMs`, output `outRms` and last `monitorMs`; and `tapArrival` (`p99Ms`, `maxMs`, `count`), the
-intervals between tap messages reaching the page since the previous sample, while any slot is
-tapped.
+`tapDrainP99Us`, `tapDrainMaxUs`, `ratioMinPpm` and `ratioMaxPpm` (the ring's resampling ratio),
+`longestConcealUs`, `callbackBusyPermille`, `callbackGapMaxUs` and `peak` (the voices' output
+peak); the counters `xruns`, `restarts`, `openAttempts`, `tapDropped`, `conceals`, `resyncs`,
+`concealedFrames`, `silentFrames`, `clampHits`, `outputStalls`, `pushGaps20` of `pushIntervals`,
+`callbacksOver2ms`, `tapDrainsOver25ms` of `tapDrains` and `ignored`, which count up from the start
+of the link, and `sinkErrors`, from the app's start; `slots`, with each slot's `underruns`,
+`droppedFrames` and `lowWaterMs` and its ring `fillMs`, output `outRms` and last `monitorMs`; and
+`tapArrival` (`p99Ms`, `maxMs`, `count`), the intervals between tap messages reaching the page
+since the previous sample, while any slot is tapped. Records from an app before the resampling ring
+carry `trims`, `jumps`, `inserts`, `insertedFrames` and per slot `trimmedFrames` and `marginMs`
+instead.
 
 The TV page posts its events to `POST /api/firesong/flight` on the TV door (host token) every
 5 s; the server adds `t` (arrival) and `src`. TV events also carry `wall`, the TV's own clock when

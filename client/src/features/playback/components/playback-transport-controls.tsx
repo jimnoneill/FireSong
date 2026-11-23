@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 
+import { fireSongLaunch } from '@/bridge/firesong-launch';
 import { usePlaybackTransportActions } from '@/features/playback/providers';
 import { findCurrentSegment } from '@/features/playback/utils/lyrics-gap';
 import { t } from '@/i18n';
@@ -186,6 +187,47 @@ export function TransportControls({
   );
 }
 
+/**
+ * The TV's song position: time and a plain bar. The remote cannot reach seek
+ * or line buttons, so the TV shows none.
+ */
+function TvSongPosition({
+  duration,
+  subscribe,
+  getCurrentTime,
+}: Pick<TransportControlsProps, 'duration' | 'subscribe' | 'getCurrentTime'>) {
+  const timerRef = useRef<HTMLParagraphElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const update = (time: number) => {
+      const clamped = Math.max(0, Math.min(duration, time));
+      if (timerRef.current) {
+        timerRef.current.textContent = `${formatSeconds(clamped)} / ${formatSeconds(duration)}`;
+      }
+      if (barRef.current) {
+        barRef.current.style.width = `${duration > 0 ? (clamped / duration) * 100 : 0}%`;
+      }
+    };
+    update(getCurrentTime());
+    return subscribe(update);
+  }, [duration, getCurrentTime, subscribe]);
+
+  return (
+    <div
+      className="mt-1.5 flex w-full max-w-[340px] flex-col gap-1.5"
+      aria-label={t('playback.playbackTransportControls.playbackPosition')}
+    >
+      <p ref={timerRef} className="text-[16px] text-white/70 tabular-nums">
+        0:00 / {formatSeconds(duration)}
+      </p>
+      <div className="h-1 w-full overflow-hidden rounded-full bg-white/25" aria-hidden="true">
+        <div ref={barRef} className="h-full rounded-full bg-white/80" style={{ width: '0%' }} />
+      </div>
+    </div>
+  );
+}
+
 /** Binds the transport controls to the playback surface's own audio engine. */
 export function PlaybackTransportControls({
   duration,
@@ -222,6 +264,11 @@ export function PlaybackTransportControls({
     };
   }, [getCurrentTime, seek, segments]);
 
+  if (fireSongLaunch().tv) {
+    return (
+      <TvSongPosition duration={duration} subscribe={subscribe} getCurrentTime={getCurrentTime} />
+    );
+  }
   return (
     <TransportControls
       duration={duration}

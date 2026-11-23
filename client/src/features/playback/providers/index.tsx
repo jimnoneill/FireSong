@@ -5,6 +5,7 @@
 
 import type { ReactNode } from 'react';
 
+import { fireSongLaunch } from '@/bridge/firesong-launch';
 import type { PlaybackPlayer } from '@/bridge/playback-session';
 import type { AppConfig } from '@/types/AppConfig';
 import type { Song } from '@/types/Song';
@@ -14,6 +15,14 @@ import { PlaybackStartupProvider } from './playback-startup-provider';
 import { PlaybackThemeProvider } from './playback-theme-context';
 import { PlaybackTranscriptProvider } from './playback-transcript-context';
 import { PlaybackTransportProvider } from './playback-transport-context';
+
+/**
+ * The original singer's vocal under the song. On the TV the guests sing over
+ * the song from their phones, and the original drowned them out, so it starts
+ * off there; a level someone chose is kept.
+ */
+const DEFAULT_GUIDE_VOLUME = 0.3;
+const defaultGuideVolume = (): number => (fireSongLaunch().tv ? 0 : DEFAULT_GUIDE_VOLUME);
 
 type PlaybackProvidersProps = {
   song: Song;
@@ -26,7 +35,7 @@ export function PlaybackProviders({ song, config, players, children }: PlaybackP
   return (
     <PlaybackTransportProvider
       fileHash={song.file_hash}
-      initialGuideVolume={config?.guide_volume ?? 0.3}
+      initialGuideVolume={config?.guide_volume ?? defaultGuideVolume()}
       initialMasterVolume={config?.master_volume ?? 1}
     >
       <PlaybackThemeProvider song={song} config={config}>

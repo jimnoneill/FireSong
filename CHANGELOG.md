@@ -48,6 +48,8 @@ below.
 
 ### Fixes
 
+- You can hear yourself sing on the TV: each phone's voice is now brought up to a singing level on the TV (phones send their microphones without automatic gain, so a singer came out 20-30 dB under the song), and quiet phones are scored properly. On the TV the original singer's vocal no longer plays under your voice unless someone turns it up.
+- During a song the TV shows only what the remote can use: the song's time and a progress bar instead of seek and line buttons, "OK · Skip intro" instead of a button, and no touch-screen "Playback controls".
 - A guest whose phone locks or whose browser restarts keeps their mic and their queued songs for two minutes, even when every mic is taken; before, someone waiting could take the seat at once and the songs were gone.
 - Songs prepared from a media server get the real length of their audio: some showed as a few seconds long, which also kept synced lyrics from being found for them.
 - A 100 now takes real singing: a steady hum used to score a perfect 100 on some songs.

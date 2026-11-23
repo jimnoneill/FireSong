@@ -47,18 +47,34 @@ function formatThemeText(theme: PlaybackTheme, videoFlavor: VideoFlavor): string
   });
 }
 
+/**
+ * Skip the intro or outro. On the TV the remote's OK does it, so it is a
+ * hint there ("OK · Skip intro") that the remote never focuses.
+ */
 const SkipButton = forwardRef<HTMLButtonElement, { label: string; onClick: () => void }>(
-  ({ label, onClick }, ref) => (
-    <button
-      ref={ref}
-      type="button"
-      onClick={onClick}
-      className="pointer-events-auto flex gap-1 rounded-sm border-2 border-white/70 bg-black/60 px-2.5 py-1 text-sm text-white transition-colors hover:bg-black/75"
-      style={{ display: 'none' }}
-    >
-      <span>{label}</span> <span>⏎</span>
-    </button>
-  ),
+  ({ label, onClick }, ref) =>
+    fireSongLaunch().tv ? (
+      <button
+        ref={ref}
+        type="button"
+        tabIndex={-1}
+        onClick={onClick}
+        className="pointer-events-none rounded-sm bg-black/60 px-2.5 py-1 text-sm text-white"
+        style={{ display: 'none' }}
+      >
+        {t('firesong.playback.okHint', { action: label })}
+      </button>
+    ) : (
+      <button
+        ref={ref}
+        type="button"
+        onClick={onClick}
+        className="pointer-events-auto flex gap-1 rounded-sm border-2 border-white/70 bg-black/60 px-2.5 py-1 text-sm text-white transition-colors hover:bg-black/75"
+        style={{ display: 'none' }}
+      >
+        <span>{label}</span> <span>⏎</span>
+      </button>
+    ),
 );
 
 function HintText({ children, fontSize = 'sm' }: { children: React.ReactNode; fontSize?: string }) {
@@ -430,7 +446,8 @@ function PlaybackHudImpl({
   const gapHintRef = useRef(0);
 
   const showPixabayCredit = isPixabayTheme(theme);
-  const hasTouch = useHasTouchInput();
+  // The Fire TV's web view reports touch, but the TV is driven by a remote.
+  const hasTouch = useHasTouchInput() && !fireSongLaunch().tv;
 
   // Update playback text without triggering React renders every frame.
   useEffect(() => {

@@ -33,6 +33,24 @@ export const REVERB_SECONDS = 1.4;
  */
 export const GATE_THRESHOLD_DB = -60;
 
+/**
+ * Phones send their microphones raw (no automatic gain), so a singer often
+ * reaches the TV 20-30 dB under the song (a 2026-11-22 party: -60 to -42 dBFS
+ * while singing). Each slot levels the loud parts of its singing toward
+ * VOICE_TARGET_DB before the compressor, boosting by at most VOICE_MAX_BOOST_DB.
+ * The level follows singing quickly up and slowly down, so a pause or the song
+ * leaking into the phone does not pump the boost; quieter input never counts.
+ */
+export const VOICE_TARGET_DB = -24;
+export const VOICE_MAX_BOOST_DB = 24;
+/** The boost a slot starts with, before it has heard any singing. */
+export const VOICE_START_BOOST_DB = 12;
+export const VOICE_FLOOR_DB = -54;
+export const VOICE_RISE_SEC = 0.3;
+export const VOICE_FALL_SEC = 20;
+/** Each confirmed howl lowers the slot's boost ceiling by this much. */
+export const VOICE_HOWL_CUT_DB = 6;
+
 export const FEEDBACK_PROMINENCE_DB = 15;
 export const FEEDBACK_HOLD_MS = 300;
 export const FEEDBACK_NOTCH_DB = -12;

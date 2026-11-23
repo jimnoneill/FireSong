@@ -16,8 +16,16 @@ import {
   FEEDBACK_NOTCH_Q,
   FEEDBACK_RELEASE_MS,
   GATE_THRESHOLD_DB,
+  gainToDb,
   HPF_HZ,
   mixedEchoWet,
+  VOICE_FALL_SEC,
+  VOICE_FLOOR_DB,
+  VOICE_HOWL_CUT_DB,
+  VOICE_MAX_BOOST_DB,
+  VOICE_RISE_SEC,
+  VOICE_START_BOOST_DB,
+  VOICE_TARGET_DB,
   type EchoMix,
   type EchoSettings,
   type SlotMix,
@@ -47,6 +55,8 @@ export type RackSlotStatus = {
   muted: boolean;
   gateThreshold: number;
   feedbackHz: number | null;
+  /** The automatic boost the slot applies to the phone's raw microphone, dB. */
+  boostDb: number;
   echo: EchoSettings;
   /** The phone's own volume and echo amount. */
   mix: SlotMix;
@@ -92,6 +102,7 @@ type StripNodes = {
   gate: AudioWorkletNode;
   chunker: AudioWorkletNode;
   analyser: AnalyserNode;
+  level: GainNode;
   compressor: DynamicsCompressorNode;
   fader: GainNode;
   notch: BiquadFilterNode;
@@ -122,6 +133,8 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
   const analyser = context.createAnalyser();
   analyser.fftSize = GUARD_FFT_SIZE;
   analyser.smoothingTimeConstant = 0;
+  const level = context.createGain();
+  level.gain.value = dbToGain(VOICE_START_BOOST_DB);
   const compressor = context.createDynamicsCompressor();
   compressor.threshold.value = COMPRESSOR_THRESHOLD_DB;
   compressor.ratio.value = COMPRESSOR_RATIO;
@@ -145,7 +158,7 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
 
   hpf.connect(gate);
   gate.connect(analyser);
-  gate.connect(compressor).connect(notch).connect(fader).connect(monitor);
+  gate.connect(level).connect(compressor).connect(notch).connect(fader).connect(monitor);
   monitor.connect(dry).connect(engine.bus);
   monitor.connect(echoSend).connect(echoDelay);
   echoDelay.connect(echoLowpass).connect(echoFeedback).connect(echoDelay);
@@ -157,6 +170,7 @@ const buildStrip = (engine: VoiceEngine): StripNodes => {
     gate,
     chunker,
     analyser,
+    level,
     compressor,
     fader,
     notch,
@@ -186,6 +200,11 @@ class SlotStrip {
   private levelRms = 0;
   private gateOpen = false;
   private feedbackHz: number | null = null;
+  /** Follows the loud parts of the singing (linear RMS). */
+  private singing = dbToGain(VOICE_TARGET_DB - VOICE_START_BOOST_DB);
+  private boostDb = VOICE_START_BOOST_DB;
+  private boostCeilingDb = VOICE_MAX_BOOST_DB;
+  private levelledAt = 0;
   private readonly tracker = new FeedbackTracker();
   private readonly spectrum: Float32Array<ArrayBuffer>;
   private readonly onMeter = (event: MessageEvent<unknown>) => this.meter(event.data);
@@ -284,6 +303,7 @@ class SlotStrip {
 
   /** One feedback-guard step: notch and duck a confirmed howl, and release both once it is gone. */
   guard(nowMs: number): void {
+    this.levelVoice(nowMs);
     if (this.duckedUntil !== 0 && nowMs >= this.duckedUntil) {
       this.duckedUntil = 0;
       this.feedbackHz = null;
@@ -303,6 +323,8 @@ class SlotStrip {
       return;
     }
     this.feedbackHz = howlHz;
+    this.boostCeilingDb = Math.max(0, this.boostCeilingDb - VOICE_HOWL_CUT_DB);
+    this.applyBoost(Math.min(this.boostDb, this.boostCeilingDb));
     this.nodes.notch.frequency.setValueAtTime(howlHz, this.engine.context.currentTime);
     ramp(this.nodes.notch.gain, FEEDBACK_NOTCH_DB, this.engine.context);
     this.duckedUntil = nowMs + FEEDBACK_RELEASE_MS;
@@ -318,6 +340,7 @@ class SlotStrip {
       muted: this.muted,
       gateThreshold: this.gateThreshold,
       feedbackHz: this.feedbackHz,
+      boostDb: Math.round(this.boostDb * 10) / 10,
       echo: this.echo,
       mix: this.slotMix,
     };
@@ -330,11 +353,34 @@ class SlotStrip {
       return;
     }
     if (wanted) {
-      this.nodes.gate.connect(this.nodes.chunker);
+      this.nodes.level.connect(this.nodes.chunker);
     } else {
-      this.nodes.gate.disconnect(this.nodes.chunker);
+      this.nodes.level.disconnect(this.nodes.chunker);
     }
     this.tapConnected = wanted;
+  }
+
+  /** One auto-level step on the latest meter block (see VOICE_TARGET_DB). */
+  private levelVoice(nowMs: number): void {
+    const elapsedSec = this.levelledAt === 0 ? 0 : (nowMs - this.levelledAt) / 1000;
+    this.levelledAt = nowMs;
+    if (this.source === null || !this.gateOpen || gainToDb(this.levelRms) < VOICE_FLOOR_DB) {
+      return;
+    }
+    const seconds = this.levelRms > this.singing ? VOICE_RISE_SEC : VOICE_FALL_SEC;
+    this.singing += (this.levelRms - this.singing) * (1 - Math.exp(-elapsedSec / seconds));
+    const wanted = Math.min(
+      this.boostCeilingDb,
+      Math.max(0, VOICE_TARGET_DB - gainToDb(this.singing)),
+    );
+    if (Math.abs(wanted - this.boostDb) >= 0.5) {
+      this.applyBoost(wanted);
+    }
+  }
+
+  private applyBoost(db: number): void {
+    this.boostDb = db;
+    this.nodes.level.gain.setTargetAtTime(dbToGain(db), this.engine.context.currentTime, 0.25);
   }
 
   private applyFader(): void {
@@ -371,9 +417,10 @@ class SlotStrip {
 
 /**
  * Per-slot voice chains on the shared voice engine:
- * source -> HPF -> gate -> compressor -> notch -> fader -> monitor, which
- * feeds the dry bus, the latency-locked echo and the shared reverb. The
- * pitch tap sits after the gate and before any effect. Each slot is
+ * source -> HPF -> gate -> level -> compressor -> notch -> fader -> monitor,
+ * which feeds the dry bus, the latency-locked echo and the shared reverb. The
+ * pitch tap sits after the level (the automatic boost) and before any effect,
+ * so a quiet phone still scores. Each slot is
  * independent, so one phone dropping never touches the others.
  */
 export class MicRack implements MicRackPort {

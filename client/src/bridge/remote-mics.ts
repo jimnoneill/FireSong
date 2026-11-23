@@ -300,6 +300,7 @@ export class RemoteMics {
               levelRms: Number(status.levelRms.toFixed(4)),
               gateOpen: status.gateOpen,
               feedbackHz: status.feedbackHz,
+              boostDb: status.boostDb,
               volume: status.mix.volume,
             }),
       };

@@ -120,8 +120,9 @@ Whether the Amazon WebView lets the https release page open `ws://127.0.0.1` is 
 - **`VoiceDoor.kt`** is a WebSocket server on `127.0.0.1`:
   - random port, a 128-bit per-WebView token in the path, and the configured TV origin checked;
   - one page connection at a time: a new one replaces the old, and the replaced session's teardown runs before the new `hello`. A connection that ended on its own, as on a page reload, has its teardown posted as it ends; if that ever lands after the next `hello`, the new engine session has already replaced the old one and the old `stop` does nothing.
+  - at most 8 sockets are served at once (the page's connection, one replacing it, and a few ending or in their handshake); more are closed unread.
 
-  The door lives exactly as long as the WebView. It opens with the WebView, and it closes when the page closes: FireSong leaving the screen, the renderer dying or the app ending. Closing ends the voice session, which closes every phone's connection and the AAudio stream.
+  The door lives as long as the WebView. It opens with the WebView, and it closes as the app destroys the WebView: FireSong leaving the screen, the renderer dying or the app ending. It closes the page connection with 1001 (going away), which the page takes as its own end, so a dying page never falls back to the web path and asks every phone to reconnect. Closing ends the voice session, which closes every phone's connection and the AAudio stream.
 - **`MicEngine.kt` and `MicPeer.kt`** run one receive-only libwebrtc `PeerConnection` per phone.
   - Playout and recording are off (`setAudioPlayout(false)`, `setAudioRecording(false)`), so libwebrtc's own 10 ms poller hands each phone's decoded 48 kHz mono frames to an `AudioTrackSink`.
   - Every WebRTC call and every engine control runs in order on one thread, `fs-mics`.
@@ -131,7 +132,7 @@ Whether the Amazon WebView lets the https release page open `ws://127.0.0.1` is 
   - per phone, in the AAudio callback: compressor, feedback notch, fader, monitor, a 120 ms echo and a reverb send;
   - for the mix: an FDN reverb, the bus compressor and the limiter, into one AAudio low-latency output.
 
-  A failed or lost output is retried every 2 s, backing off to 10 s (HDMI may still be waking), and is never fatal.
+  A failed or lost output is retried every 2 s, backing off to 10 s (HDMI may still be waking), and is never fatal. A started output whose callbacks stop for 1 s counts as lost and is reopened. Xruns in an output's first 0.5 s are counted but do not grow its buffer.
 - **Headroom.** Song and voices now sum in Android, with no limiter over the sum. So the app trims the voices by 4 dB and clamps them at ±0.5 (−6 dBFS), and while this path is on the page trims the song by 6 dB. Their sum stays below full scale. Everything is about 6 dB quieter at HDMI; turn the TV up to match.
 - **Scoring.** The app sends each phone's input back to the page, after high-pass, gate and auto level, as 512-sample float blocks. Pitch and scoring run on them unchanged.
 - **Calibration.** A phone's "Tune my mic" runs two beeps:
@@ -193,7 +194,7 @@ The code is the reference: `DoorMessages.kt`, `DoorCodec.kt` and `client/src/bri
 - No new permission: still `INTERNET`, `ACCESS_NETWORK_STATE` and `MODIFY_AUDIO_SETTINGS`. There is no `RECORD_AUDIO`, no service and no autostart.
 - The phones' SDP, RTP, DTLS and STUN traffic is now parsed by libwebrtc inside the app process, which also holds the host token, instead of in the sandboxed WebView renderer. To narrow that surface:
   - `SdpFilter.kt` checks every offer before libwebrtc sees it: exactly one `m=audio` over `UDP/TLS/RTP/SAVPF`, no video or data channel, at most 300 lines of 1024 characters, and Opus present. It then strips every codec but Opus.
-  - Candidates that are not IP literals or `.local` names are dropped, so a guest never makes the app look a name up.
+  - Only candidates whose address is a unicast IP literal are kept: a name, `.local` included, would make libwebrtc look it up on a new thread, and loopback, unspecified, multicast, broadcast and link-local addresses (IPv4-mapped forms included) would aim the app's connectivity checks at itself or the LAN. An offer keeps at most 16 candidates, and at most 32 trickled ones are taken per offer; the rest are dropped (trickled ones counted in `ignored`). A phone whose host candidates are all `.local` names, as Firefox's are, connects through the peer-reflexive candidate its checks to the TV create.
   - The factory has no video codecs, and any data channel is closed at once.
   - Answers carry no IPv6 candidates: the app gathers on no IPv6 network (`maxIPv6Networks = 0`).
   - SDP and candidates are never logged.
@@ -216,12 +217,12 @@ The code is the reference: `DoorMessages.kt`, `DoorCodec.kt` and `client/src/bri
 4. Run the same four tasks with an empty scratch `GRADLE_USER_HOME`, so every artifact is downloaded and verified again.
 5. Build both APKs and check what changed outside the code: `aapt2 dump permissions` still lists only the three permissions above (a new AAR can add some), and the release APK still holds only `lib/armeabi-v7a/`.
 6. On the Cube, while it is idle, install the release APK and configure the https TV URL with `voice=native` (the release route: it also checks that the page may open `ws://127.0.0.1`). With no phones, check:
-   - the flight record: `mic-backend` with `kind: native, why: ready`, and in the TV samples `mics.backend` with `kind` `native`, `open` true, `burstFrames` 384, `outputLatencyMs` 25-40 and `apm` present. `mic-backend` with `kind: web` and a `why` starting `native mic link` (`error`, `closed <code>`, `timeout`, `cannot open (…)`) means the page could not use the door: stop there;
+   - the flight record: `mic-backend` with `kind: native, why: ready`, and in the TV samples `mics.backend` with `kind` `native`, `open` true, `burstFrames` 384, `outputLatencyMs` 25-40 and `apm` present. Any other `mic-backend` means the page could not use the door: stop there. It is `kind: web` with a `why` of `no-endpoint` (the app offered no door, for example because `libfiresongvoice.so` did not load) or one starting `native mic link` (`error`, `closed <code>`, `timeout`, `cannot open (…)`, `refused lib|webrtc`, `fatal <reason>`, `no-mics`);
    - `dumpsys media.audio_flinger`: besides the WebView's own player, the app's only output is the AAudio stream; there is no AudioTrack opened by WebRTC's Java audio device module, and no AudioRecord.
 7. With phones (the rig's are enough), check:
    - the engine log's `first push: 48000 Hz, 1 ch`;
    - the first answer to each phone carries `a=candidate` lines. The app sends its candidates only in the answer, and a phone whose host candidates are `.local` names can connect only through them.
-8. Soak and compare with the rig: `scripts/firesong/cube-load-test.py --voice native --phones 4 --seconds 240 --song <hash>`, then `--ab --song <hash>` for web against native on the same song. Every check must pass, among them no underruns after the first 2 s, no xruns, the app process alive at the end, and an empty crash log (`logcat -b crash`).
+8. Soak and compare with the rig: `scripts/firesong/cube-load-test.py --voice native --phones 4 --seconds 240 --song <hash>`, then `--ab --song <hash>` for web against native on the same song. Every check must pass, among them no underruns after the first 2 s, no xruns, the app process alive at the end, and an empty crash log (`logcat -b crash`). During one more run, unplug HDMI and power the TV off and on: the `FireSongVoice` log shows `stream lost` and a new `open`, and the voices come back without the page falling back to web.
 
 ## Logs and debugging
 

@@ -78,7 +78,7 @@ function StageSingers({ slots, names }: { slots: readonly MicSlot[]; names: Name
   return (
     <ul
       aria-label={t('firesong.party.onStage')}
-      className="pointer-events-none fixed top-[9vh] right-[3vw] z-40 flex max-w-[45vw] flex-wrap justify-end gap-[1vh]"
+      className="pointer-events-none fixed top-[21vh] right-[3vw] z-40 flex max-w-[45vw] flex-wrap justify-end gap-[1vh]"
     >
       {slots.map((slot) => (
         <li
@@ -127,7 +127,7 @@ export function PartyOverlays() {
           aria-live="polite"
           className={cn(
             'pointer-events-none fixed right-[3vw] z-50 flex flex-col items-end gap-[1vh]',
-            singing.length > 0 ? 'top-[16vh]' : 'top-[4vh]',
+            singing.length > 0 ? 'top-[28vh]' : 'top-[4vh]',
           )}
         >
           {flashes.map((flash) => (

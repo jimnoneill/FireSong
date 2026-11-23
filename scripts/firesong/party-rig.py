@@ -662,6 +662,12 @@ def up(args) -> int:
                         p.events.clear()
                     except Exception as error:
                         journal(run, "phones", {"t": now_ms(), "who": n, "error": str(error)[:200]})
+            if cube and t - last_cube > 20:
+                last_cube = t
+                try:
+                    journal(run, "cube", {"t": now_ms(), **cube.cube.cpu_and_mem()})
+                except Exception as error:
+                    journal(run, "rig", {"t": now_ms(), "error": f"cube sample: {error}"})
             if not cube and t - last_cube > 30:
                 last_cube = t
                 if cube_has_firesong():

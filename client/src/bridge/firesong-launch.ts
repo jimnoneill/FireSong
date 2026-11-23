@@ -8,7 +8,11 @@ export type FireSongLaunch = {
   tv: boolean;
   /** Noraebang mode (`?mode=noraebang`). */
   noraebang: boolean;
-  /** Voices through the TV app's own output (`?voice=native`), while that path is on trial. */
+  /**
+   * The TV app receives and plays the phones' voices itself (`?voice=native`,
+   * a trial, off by default) when it offers its voice engine; otherwise, and
+   * after the app's engine is lost, the page does (`mic-backend.ts`).
+   */
   nativeVoice: boolean;
 };
 

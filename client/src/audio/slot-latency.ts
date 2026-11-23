@@ -24,12 +24,15 @@ export const jitterBufferDelayMs = (
  * persisted per mic on the server) is taken as the steady-state latency, when
  * the jitter buffer sits at its lowest level for the connection. Whenever the
  * buffer holds more than that (start-up, Wi-Fi trouble), the excess adds to
- * the latency, so it follows the jitter buffer between calibrations.
+ * the latency, so it follows the jitter buffer between calibrations. A
+ * calibration measured on the other voice backend (the page or the TV app)
+ * also gets that backend's difference in delivery delay.
  */
 export class SlotLatency {
   private calibratedMs: number | null = null;
   private baselineJitterMs: number | null = null;
   private jitterMs: number | null = null;
+  private backendCorrectionMs = 0;
 
   /** Returns true when the calibrated value changed. */
   setCalibrated(latencyMs: number | null): boolean {
@@ -37,6 +40,15 @@ export class SlotLatency {
       return false;
     }
     this.calibratedMs = latencyMs;
+    return true;
+  }
+
+  /** Added to the calibrated value; returns true when it changed. */
+  setBackendCorrectionMs(correctionMs: number): boolean {
+    if (correctionMs === this.backendCorrectionMs) {
+      return false;
+    }
+    this.backendCorrectionMs = correctionMs;
     return true;
   }
 
@@ -60,7 +72,7 @@ export class SlotLatency {
       this.jitterMs !== null && this.baselineJitterMs !== null
         ? this.jitterMs - this.baselineJitterMs
         : 0;
-    return clampLatencyMs(this.calibratedMs + excess);
+    return clampLatencyMs(this.calibratedMs + this.backendCorrectionMs + excess);
   }
 
   currentJitterMs(): number | null {

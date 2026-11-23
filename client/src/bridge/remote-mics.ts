@@ -1,7 +1,7 @@
-import { MicRack, type MicRackPort, type RackSlotStatus, type TapListener } from '@/audio/mic-rack';
+import type { MicRackPort, RackSlotStatus, TapListener } from '@/audio/mic-rack';
 import { SlotLatency } from '@/audio/slot-latency';
-import { getVoiceEngine } from '@/audio/voice-engine';
 import { slotMixFromPct, type EchoMix, type SlotMix } from '@/audio/voice-params';
+import type { LatencyTestOutput } from '@/features/microphone/lib/latency-test';
 import { installDiag } from '@/features/remote-mic/diag';
 import {
   linkNoraebang,
@@ -36,17 +36,30 @@ import type { MicSampleFrame } from '@/types/MicSampleFrame';
 
 import { fireSongLaunch } from './firesong-launch';
 import { addFlightSampler, flight, type FlightFields } from './flight';
+import {
+  backendCorrectionMs,
+  calibrationBackend,
+  chooseMicBackend,
+  recordCalibrationBackend,
+  webMicBackend,
+  type MicBackend,
+  type MicBackendKind,
+  type MonitorResult,
+} from './mic-backend';
 import { dispatchMicFrame } from './microphone-samples';
-import { TvMicPeer, type PeerInit, type PeerPort, type PeerStats } from './remote-mic-peer';
+import type { PeerPort, PeerStats } from './remote-mic-peer';
 import { createRtcSocket, rtcSocketUrl } from './rtc-socket';
 import { isTauri } from './runtime';
 
 /**
  * The TV's phone-mic registry (PROTOCOL.md §7-8). It holds the `/rtc` TV
- * seat, one receive-only peer per slot, and the MicRack that owns every phone
- * voice. Capture ids (players) bind to a `micId`; the slot's pre-FX tap then
- * feeds `dispatchMicFrame` for each bound id. Binding and unbinding never stop
- * tracks: streams live from join to leave.
+ * seat, one receive-only peer per slot, and the rack that owns every phone
+ * voice, both from the voice backend: the page's own (web) or the TV app's
+ * (native), chosen once per page load. Capture ids (players) bind to a
+ * `micId`; the slot's pre-FX tap then feeds `dispatchMicFrame` for each bound
+ * id. Binding and unbinding never stop tracks: streams live from join to
+ * leave. A native backend that is lost falls back to web for the rest of the
+ * page load, and every phone is asked to reconnect.
  */
 
 /** Effective latency moves smaller than this do not re-render scoring. */
@@ -84,10 +97,15 @@ export type TvPartyEvent =
   | { kind: 'ready' }
   | { kind: 'frame'; frame: Exclude<ServerToTvParty, { type: 'mix' }> };
 
+/** The voice backend in use, and why it serves. */
+export type BackendSample = { kind: MicBackendKind; why: string };
+
 export type RemoteMicsDeps = {
-  rack: () => Promise<MicRackPort>;
+  /** The backend for this page load; called once. */
+  backend: () => Promise<MicBackend>;
+  /** The web backend that replaces a lost native one, `why` it was lost. */
+  fallback: (why: string) => Promise<MicBackend>;
   connect: (onFrame: (frame: TvInbound) => void, onOpen: (open: boolean) => void) => TvSocketPort;
-  createPeer: (init: PeerInit) => PeerPort;
   dispatchFrame: (captureId: string, frame: MicSampleFrame) => void;
   devicesChanged: () => void;
   label: (slot: TvSlot) => string;
@@ -154,7 +172,10 @@ export class RemoteMics {
   private readonly tapped = new Set<MicSlot>();
   private roster: ActiveSlot[] = [];
   private iceServers: readonly IceServer[] = [];
+  private backendLoad: Promise<void> | null = null;
+  private backend: MicBackend | null = null;
   private rack: MicRackPort | null = null;
+  private stopLostWatch: (() => void) | null = null;
   private socket: TvSocketPort | null = null;
   private starts = 0;
   private stopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -283,7 +304,34 @@ export class RemoteMics {
     return this.rack?.status(slot) ?? null;
   }
 
-  /** The flight recorder's view: the TV seat and each joined slot's voice path. */
+  /** The voice backend in use and why; null until it is chosen, while a lost one is replaced, and when none could be. */
+  backendSample(): BackendSample | null {
+    return this.backend === null ? null : { kind: this.backend.kind, why: this.backend.why };
+  }
+
+  /** Where a scoring beep plays so it takes the path the scorer hears against; null without a backend. */
+  calibrationOutput(): LatencyTestOutput | null {
+    return this.backend?.calibrationOutput() ?? null;
+  }
+
+  /** The singer's own loop through the TV app, or why there is none (always on the web backend). */
+  measureMonitor(slot: MicSlot): Promise<MonitorResult> {
+    return (
+      this.backend?.measureMonitor(slot) ??
+      Promise.resolve({ monitorMs: null, reason: 'not-native' })
+    );
+  }
+
+  /** Drops the link to the TV app's voice engine as a failure would; false when the voices are not native. */
+  dropNativeLink(): boolean {
+    if (this.backend?.kind !== 'native') {
+      return false;
+    }
+    this.fallBack('dropped');
+    return true;
+  }
+
+  /** The flight recorder's view: the TV seat, the voice backend and each joined slot's voice path. */
   flightSample(): FlightFields {
     const slots = this.roster.map((entry) => {
       const status = this.rack?.status(entry.slot) ?? null;
@@ -291,6 +339,7 @@ export class RemoteMics {
         slot: entry.slot,
         peer: this.peers.has(entry.slot),
         jitterMs: this.latencies.get(entry.micId)?.currentJitterMs() ?? null,
+        ...(entry.latencyMs === undefined ? {} : { calBackend: calibrationBackend(entry.micId) }),
         ...(status === null
           ? { attached: false }
           : {
@@ -305,16 +354,30 @@ export class RemoteMics {
             }),
       };
     });
-    return { connected: this.connected, slots };
+    return { connected: this.connected, backend: this.backend?.flightSample() ?? null, slots };
   }
 
-  /** Sends a calibrated mouth-to-speaker latency for the mic's slot. */
-  reportLatency(micId: string, latencyMs: number, method: LatencyMethod): boolean {
+  /**
+   * Sends a calibrated mouth-to-speaker latency for the mic's slot, and notes
+   * the voice backend it was measured on: `measuredOn`, the backend the whole
+   * beep test ran on; without it, the one in use now.
+   */
+  reportLatency(
+    micId: string,
+    latencyMs: number,
+    method: LatencyMethod,
+    measuredOn?: MicBackendKind,
+  ): boolean {
     const slot = this.roster.find((entry) => entry.micId === micId);
     if (slot === undefined || this.socket === null) {
       return false;
     }
-    return this.socket.send({ type: 'latency', slot: slot.slot, latencyMs, method });
+    const sent = this.socket.send({ type: 'latency', slot: slot.slot, latencyMs, method });
+    const kind = measuredOn ?? this.backend?.kind;
+    if (sent && kind !== undefined) {
+      recordCalibrationBackend(micId, kind);
+    }
+    return sent;
   }
 
   setHostMute(slot: MicSlot, muted: boolean): boolean {
@@ -326,10 +389,8 @@ export class RemoteMics {
   }
 
   private async open(): Promise<void> {
-    if (this.rack === null) {
-      this.rack = await this.deps.rack();
-      this.rack.setEchoMix(this.deps.echoMix());
-    }
+    this.backendLoad ??= this.deps.backend().then((backend) => this.adopt(backend));
+    await this.backendLoad;
     if (this.starts === 0 || this.socket !== null) {
       return;
     }
@@ -342,8 +403,76 @@ export class RemoteMics {
     );
   }
 
+  private adopt(backend: MicBackend): void {
+    this.backend = backend;
+    this.rack = backend.rack;
+    flight('mic-backend', { kind: backend.kind, why: backend.why });
+    this.stopLostWatch = backend.onLost((why) => this.fallBack(why));
+    backend.rack.setEchoMix(this.deps.echoMix());
+  }
+
+  /**
+   * Once per page load, whatever the reason: closing the native backend tears
+   * down the app's connections and gives the song its level back; the web
+   * backend then gets every slot's state, and each phone is asked for a
+   * restart, which it answers with a fresh connection. Taking the seat again
+   * waits for the web backend.
+   */
+  private fallBack(why: string): void {
+    const lost = this.backend;
+    if (lost?.kind !== 'native') {
+      return;
+    }
+    this.stopLostWatch?.();
+    this.stopLostWatch = null;
+    lost.close();
+    this.backend = null;
+    this.rack = null;
+    for (const peer of this.peers.values()) {
+      peer.close();
+    }
+    this.peers.clear();
+    const load = this.deps.fallback(why).then((web) => {
+      this.adopt(web);
+      this.restoreSlots();
+      return undefined;
+    });
+    this.backendLoad = load;
+    load.catch((error: unknown) => this.noBackend(error));
+  }
+
+  /**
+   * No web backend replaces the lost one: the TV gives up its seat for the
+   * rest of the page load, so phones see the TV is gone instead of talking
+   * to a TV that plays nothing, as when the page's rack fails at the start.
+   */
+  private noBackend(error: unknown): void {
+    flight('mic-backend', { kind: 'none', why: errorText(error) });
+    this.releaseSeat();
+    this.fail(error);
+  }
+
+  /** A new rack gets each slot's mute, latency, mix, monitor and tap; connected phones reconnect. */
+  private restoreSlots(): void {
+    this.tapped.clear();
+    for (const entry of this.roster) {
+      this.applySlot(entry);
+    }
+    this.syncSlots();
+    for (const entry of this.roster) {
+      if (entry.state === 'connected') {
+        this.socket?.send({ type: 'restart', slot: entry.slot });
+      }
+    }
+  }
+
   private shutdown(): void {
     this.stopTimer = null;
+    this.releaseSeat();
+  }
+
+  /** Gives up the TV seat and every slot. */
+  private releaseSeat(): void {
     this.socket?.stop();
     this.socket = null;
     for (const slot of MIC_SLOTS) {
@@ -438,20 +567,28 @@ export class RemoteMics {
     recordRosterChange(this.roster, next);
     this.roster = next;
     for (const entry of next) {
-      const latency = this.latencyFor(entry.micId);
-      latency.setCalibrated(entry.latencyMs ?? null);
-      this.rack?.setMuted(entry.slot, entry.muted);
-      this.rack?.setLatency(entry.slot, latency.effectiveMs());
-      const mix = this.mixes.get(entry.slot);
-      if (mix !== undefined) {
-        this.rack?.setSlotMix(entry.slot, mix);
-      }
+      this.latencyFor(entry.micId).setCalibrated(entry.latencyMs ?? null);
+      this.applySlot(entry);
     }
     this.syncSlots();
   }
 
+  /** The slot's mute, latency (with the backend correction) and the phone's own mix, on the rack. */
+  private applySlot(entry: ActiveSlot): void {
+    const latency = this.latencyFor(entry.micId);
+    const backend = this.backend?.kind ?? 'web';
+    latency.setBackendCorrectionMs(backendCorrectionMs(backend, calibrationBackend(entry.micId)));
+    this.rack?.setMuted(entry.slot, entry.muted);
+    this.rack?.setLatency(entry.slot, latency.effectiveMs());
+    const mix = this.mixes.get(entry.slot);
+    if (mix !== undefined) {
+      this.rack?.setSlotMix(entry.slot, mix);
+    }
+  }
+
+  /** While a lost backend is being replaced there is no backend; the phones are asked for restarts after. */
   private onOffer(slot: number, micId: string, sdp: string, restart: boolean): void {
-    if (!isMicSlot(slot)) {
+    if (!isMicSlot(slot) || this.backend === null) {
       return;
     }
     const existing = this.peers.get(slot);
@@ -461,7 +598,7 @@ export class RemoteMics {
     }
     existing?.close();
     this.latencyFor(micId).resetJitter();
-    const peer = this.deps.createPeer({
+    const peer = this.backend.createPeer({
       micId,
       slot,
       iceServers: this.iceServers,
@@ -471,6 +608,7 @@ export class RemoteMics {
         onRestartNeeded: () => this.socket?.send({ type: 'restart', slot }),
         onStats: (stats) => this.onStats(slot, micId, stats),
         onError: (error) => this.fail(error),
+        onNewConnection: () => this.onNewConnection(slot, micId),
       },
     });
     this.peers.set(slot, peer);
@@ -492,6 +630,17 @@ export class RemoteMics {
     this.syncSlots();
   }
 
+  /** The slot's peer opened a new connection in the app, with a jitter buffer of its own. */
+  private onNewConnection(slot: MicSlot, micId: string): void {
+    if (this.peers.get(slot)?.micId !== micId) {
+      return;
+    }
+    const latency = this.latencyFor(micId);
+    const before = latency.effectiveMs();
+    latency.resetJitter();
+    this.applyLatency(slot, before, latency.effectiveMs());
+  }
+
   private onStats(slot: MicSlot, micId: string, stats: PeerStats): void {
     if (stats.jitterMs === null) {
       return;
@@ -499,7 +648,11 @@ export class RemoteMics {
     const latency = this.latencyFor(micId);
     const before = latency.effectiveMs();
     latency.observeJitter(stats.jitterMs);
-    const after = latency.effectiveMs();
+    this.applyLatency(slot, before, latency.effectiveMs());
+  }
+
+  /** Sets the slot's latency on the rack, and publishes it when it moved enough to re-render scoring. */
+  private applyLatency(slot: MicSlot, before: number | null, after: number | null): void {
     this.rack?.setLatency(slot, after);
     const moved =
       before === null || after === null
@@ -660,15 +813,10 @@ export const loadMicLinks = async (): Promise<MicLinks> => {
   return parseMicLinks(await response.json());
 };
 
-let rackPromise: Promise<MicRackPort> | null = null;
-
 export const remoteMics = new RemoteMics({
-  rack: () => {
-    rackPromise ??= MicRack.create(getVoiceEngine());
-    return rackPromise;
-  },
+  backend: chooseMicBackend,
+  fallback: webMicBackend,
   connect: connectTv,
-  createPeer: (init) => new TvMicPeer(init),
   dispatchFrame: dispatchMicFrame,
   devicesChanged: notifyDeviceChange,
   label: slotLabel,

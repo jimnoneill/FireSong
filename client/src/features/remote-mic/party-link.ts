@@ -1,5 +1,7 @@
 import { createFxSynth, type FxSynth } from '@/audio/fx-synth';
 import { getVoiceEngine } from '@/audio/voice-engine';
+import { flight } from '@/bridge/flight';
+import type { MicBackendKind } from '@/bridge/mic-backend';
 import { microphoneAdapter } from '@/bridge/microphone';
 import type { RemoteMics, TvPartyEvent } from '@/bridge/remote-mics';
 import { measureMicLatencySec } from '@/features/microphone/lib/latency-test';
@@ -19,6 +21,36 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
+/** A scoring beep result, in seconds, and the voice backend it was measured on. */
+type BackendMeasurement = { seconds: number; backend: MicBackendKind };
+
+/**
+ * The scoring beep on the voice backend's path; then, when the TV app plays
+ * the voices, its monitor beep for the singer's own loop, which only goes to
+ * the flight recorder. A backend that changes during the scoring beep fails
+ * it, because the result would belong to neither; one lost during the
+ * monitor beep does not, as the scoring beep was all on the app.
+ */
+const measureOnBackend = async (
+  mics: RemoteMics,
+  deviceId: string,
+): Promise<BackendMeasurement> => {
+  const backend = mics.backendSample()?.kind;
+  const output = mics.calibrationOutput();
+  if (backend === undefined || output === null) {
+    throw new Error('no voice backend for the beep test');
+  }
+  const seconds = await measureMicLatencySec(deviceId, microphoneAdapter, output);
+  if (mics.backendSample()?.kind !== backend) {
+    throw new Error('the voice backend changed during the beep test');
+  }
+  const slot = mics.slotForMicrophone(deviceId);
+  if (backend === 'native' && slot !== null) {
+    flight('monitor-latency', { slot, ...(await mics.measureMonitor(slot)) });
+  }
+  return { seconds, backend };
+};
+
 export const linkParty = (mics: RemoteMics): (() => void) => {
   let synth: FxSynth | null = null;
   const fx = (): FxSynth => {
@@ -29,16 +61,18 @@ export const linkParty = (mics: RemoteMics): (() => void) => {
     return synth;
   };
 
+  /** The backend of the beep test just finished; one calibration runs at a time. */
+  let measuredOn: MicBackendKind | undefined;
   const calibrator = new PhoneCalibrator({
-    measure: (deviceId) => {
-      const engine = getVoiceEngine();
-      return measureMicLatencySec(deviceId, microphoneAdapter, {
-        context: engine.context,
-        destination: engine.output,
-      });
+    measure: async (deviceId) => {
+      measuredOn = undefined;
+      const measured = await measureOnBackend(mics, deviceId);
+      measuredOn = measured.backend;
+      return measured.seconds;
     },
     send: (frame) => mics.sendParty(frame),
-    reportLatency: (micId, latencyMs, method) => mics.reportLatency(micId, latencyMs, method),
+    reportLatency: (micId, latencyMs, method) =>
+      mics.reportLatency(micId, latencyMs, method, measuredOn),
     hasAudio: (slot) => mics.slotStatus(slot)?.attached === true,
     idle: () => partyTv.getState().stage.state === 'lobby',
     setTuning: (slot) => partyTv.setTuning(slot),

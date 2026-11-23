@@ -102,6 +102,9 @@ class NegotiationQueue(
 
     fun isRunning(seq: Int): Boolean = !closed && running == seq
 
+    /** The newest offer still owed an answer or an error, the one the page waits for; null when none is. */
+    fun pendingSeq(): Int? = if (closed || (running == null && waitingSdp == null)) null else lastSeq
+
     fun answered(seq: Int, sdp: String) = finish(seq) { AppMessage.Answer(peer, seq, sdp) }
 
     fun failed(seq: Int, code: PeerErrorCode, detail: String) =
@@ -146,11 +149,14 @@ internal interface PeerHost {
     fun attached(peer: MicPeer)
 
     fun statsUpdated(peer: MicPeer)
+
+    /** The peer failed on its own and is closing; the session forgets it, so the phone's next offer opens a new one. */
+    fun dropped(peer: MicPeer)
 }
 
 /**
  * One phone's receive-only PeerConnection. Runs on fs-mics; WebRTC observer callbacks only post there, and
- * every posted callback first checks [closed].
+ * every posted callback first checks [closed]. A throw in this peer's own work closes this peer only.
  */
 internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
     var closed = false
@@ -204,11 +210,11 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
     }
 
     /** An offer that passed [SdpFilter]; answered or refused through the negotiation queue. */
-    fun offer(seq: Int, sdp: String) = queue.offer(seq, sdp)
+    fun offer(seq: Int, sdp: String) = guard { queue.offer(seq, sdp) }
 
-    fun addIce(spec: IceCandidateSpec) {
-        val connection = pc ?: return
-        if (closed) return
+    /** A candidate that passed [SdpFilter.candidateAllowed]. */
+    fun addIce(spec: IceCandidateSpec) = guard {
+        val connection = pc ?: return@guard
         val candidate = IceCandidate(spec.sdpMid ?: "", spec.sdpMLineIndex ?: 0, spec.candidate)
         if (remoteReady) {
             connection.addIceCandidate(candidate)
@@ -217,10 +223,8 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
         }
     }
 
-    fun requestStats() {
-        val connection = pc ?: return
-        if (closed) return
-        connection.getStats { report -> host.post { if (!closed) onStats(report) } }
+    fun requestStats() = guard {
+        pc?.getStats { report -> onFsMics { onStats(report) } }
     }
 
     /**
@@ -253,8 +257,8 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
         val connection = pc ?: return
         restart.onOffer()
         remoteReady = false
-        answerTimer = host.schedule(ANSWER_TIMEOUT_MS) {
-            if (!closed && queue.isRunning(seq)) fail(seq, PeerErrorCode.TIMEOUT, "no answer within ${ANSWER_TIMEOUT_MS / 1000} s")
+        answerTimer = later(ANSWER_TIMEOUT_MS) {
+            if (queue.isRunning(seq)) fail(seq, PeerErrorCode.TIMEOUT, "no answer within ${ANSWER_TIMEOUT_MS / 1000} s")
         }
         connection.setRemoteDescription(
             Step(seq, PeerErrorCode.SDP, "setRemoteDescription", set = { onRemoteSet(seq) }),
@@ -281,13 +285,22 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
     }
 
     private fun onLocalSet(seq: Int) {
-        val connection = pc ?: return
-        if (connection.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE) {
-            answer(seq)
-            return
-        }
         gatherSeq = seq
-        gatherTimer = host.schedule(GATHER_TIMEOUT_MS) { if (!closed && queue.isRunning(seq)) answer(seq) }
+        gatherTimer = later(GATHER_TIMEOUT_MS) { if (queue.isRunning(seq)) answer(seq) }
+        answerIfGathered()
+    }
+
+    /**
+     * Answers once gathering is complete and the answer carries a candidate. A gather that found no network
+     * completes with none and leaves the phone nothing to reach; then a late candidate or the 2 s timer answers.
+     */
+    private fun answerIfGathered() {
+        val seq = gatherSeq
+        val connection = pc ?: return
+        if (seq == 0 || !queue.isRunning(seq)) return
+        if (connection.iceGatheringState() != PeerConnection.IceGatheringState.COMPLETE) return
+        if (connection.localDescription?.description?.contains(CANDIDATE_ATTRIBUTE) != true) return
+        answer(seq)
     }
 
     private fun answer(seq: Int) {
@@ -314,11 +327,6 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
         gatherSeq = 0
     }
 
-    private fun onGatheringComplete() {
-        val seq = gatherSeq
-        if (seq != 0 && queue.isRunning(seq)) answer(seq)
-    }
-
     private fun onConnectionState(state: PeerConnectionState) {
         link = state
         Log.i(TAG, "peer $id slot $slot: $state")
@@ -330,11 +338,9 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
         }
         val due = restart.dueAtMs()
         if (due != null && disconnectedTimer == null) {
-            disconnectedTimer = host.schedule(maxOf(0L, due - now)) {
+            disconnectedTimer = later(maxOf(0L, due - now)) {
                 disconnectedTimer = null
-                if (!closed && restart.onTimer(link, SystemClock.elapsedRealtime())) {
-                    host.send(AppMessage.RestartNeeded(id))
-                }
+                if (restart.onTimer(link, SystemClock.elapsedRealtime())) host.send(AppMessage.RestartNeeded(id))
             }
         }
     }
@@ -402,6 +408,35 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
 
     private fun RTCStats.number(key: String): Double? = (members[key] as? Number)?.toDouble()
 
+    /** Runs [task] on fs-mics unless this peer has closed by then. */
+    private fun onFsMics(task: () -> Unit) = host.post { guard(task) }
+
+    private fun later(delayMs: Long, task: () -> Unit): ScheduledFuture<*> = host.schedule(delayMs) { guard(task) }
+
+    /** Runs [task] now unless this peer has closed; a throw closes this peer ([crash]). */
+    private fun guard(task: () -> Unit) {
+        if (closed) return
+        try {
+            task()
+        } catch (e: Throwable) {
+            crash(e)
+        }
+    }
+
+    /**
+     * A throw in this peer's own work. The peer closes and the session lives on: the page's waiting offer
+     * gets `peer-error 'internal'`, or with none waiting the phone is asked for a restart, whose offer opens
+     * a new peer.
+     */
+    private fun crash(e: Throwable) {
+        Log.e(TAG, "peer $id slot $slot: ${e.javaClass.name} at ${e.stackTrace.firstOrNull()}")
+        val seq = queue.pendingSeq()
+        host.dropped(this)
+        close()
+        val message = seq?.let { AppMessage.PeerError(id, it, PeerErrorCode.INTERNAL, "internal error") }
+        host.send(message ?: AppMessage.RestartNeeded(id))
+    }
+
     /** Runs a description step's result on fs-mics, only while its offer is still the running one. */
     private inner class Step(
         private val seq: Int,
@@ -418,7 +453,7 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
 
         override fun onSetFailure(error: String?) = onFsMics { fail(seq, failure, "$stage failed") }
 
-        private fun onFsMics(action: () -> Unit) = host.post { if (!closed && queue.isRunning(seq)) action() }
+        private fun onFsMics(action: () -> Unit) = this@MicPeer.onFsMics { if (queue.isRunning(seq)) action() }
     }
 
     /** Called on libwebrtc's signaling thread: only posts to fs-mics. */
@@ -427,15 +462,15 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = Unit
 
-        override fun onConnectionChange(state: PeerConnectionState) = host.post { if (!closed) onConnectionState(state) }
+        override fun onConnectionChange(state: PeerConnectionState) = onFsMics { onConnectionState(state) }
 
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
 
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
-            if (state == PeerConnection.IceGatheringState.COMPLETE) host.post { if (!closed) onGatheringComplete() }
+            if (state == PeerConnection.IceGatheringState.COMPLETE) onFsMics { answerIfGathered() }
         }
 
-        override fun onIceCandidate(candidate: IceCandidate) = Unit
+        override fun onIceCandidate(candidate: IceCandidate) = onFsMics { answerIfGathered() }
 
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
 
@@ -450,13 +485,14 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
 
         override fun onRenegotiationNeeded() = Unit
 
-        override fun onTrack(transceiver: RtpTransceiver) = host.post { if (!closed) attachTrack(transceiver) }
+        override fun onTrack(transceiver: RtpTransceiver) = onFsMics { attachTrack(transceiver) }
     }
 
     companion object {
         const val ANSWER_TIMEOUT_MS = 5000L
         const val GATHER_TIMEOUT_MS = 2000L
         private const val MAX_PENDING_ICE = 64
+        private const val CANDIDATE_ATTRIBUTE = "a=candidate:"
         private const val TAG = "FireSong"
     }
 }

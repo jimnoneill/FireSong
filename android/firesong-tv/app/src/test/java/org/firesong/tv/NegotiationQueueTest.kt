@@ -2,6 +2,7 @@ package org.firesong.tv
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -55,6 +56,20 @@ class NegotiationQueueTest {
         queue.answered(1, "answer 1 again")
         assertEquals(listOf(superseded(1)), sent)
         assertTrue(queue.isRunning(2))
+    }
+
+    @Test fun thePendingSeqIsTheNewestOfferOwedAReply() {
+        assertNull(queue.pendingSeq())
+        queue.offer(1, "offer 1")
+        assertEquals(1, queue.pendingSeq())
+        queue.offer(2, "offer 2")
+        assertEquals(2, queue.pendingSeq())
+        queue.answered(1, "answer 1")
+        queue.answered(2, "answer 2")
+        assertNull(queue.pendingSeq())
+        queue.offer(3, "offer 3")
+        queue.close()
+        assertNull(queue.pendingSeq())
     }
 
     @Test fun closeDuringAPendingAnswerSendsNothing() {

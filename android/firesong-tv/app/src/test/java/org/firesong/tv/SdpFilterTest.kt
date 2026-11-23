@@ -78,6 +78,28 @@ class SdpFilterTest {
         rejected(CHROME_OFFER + (prefix + "x".repeat(SdpFilter.MAX_LINE_CHARS + 1 - prefix.length)))
     }
 
+    @Test fun hostnameCandidatesAreDroppedAndTheOfferKept() {
+        val mdns = "a=candidate:1510613869 1 udp 2113937151 0f8c1a2e-5b7d-4c3a-9e21-6d4f0a8b3c55.local 35840 typ host generation 0"
+        val offer = CHROME_OFFER + listOf(
+            "a=candidate:1 1 udp 2113937151 phone.example 35841 typ host generation 0",
+            "a=candidate:2 1 udp 2113937151 192.0.2.256 35842 typ host generation 0",
+            mdns,
+        )
+        val lines = accepted(offer.crlf()).removeSuffix("\r\n").split("\r\n")
+        assertEquals(CHROME_OFFER.filter { it.startsWith("a=candidate:") } + mdns, lines.filter { it.startsWith("a=candidate:") })
+    }
+
+    @Test fun onlyIpLiteralsAndLocalNamesAreAllowedCandidates() {
+        listOf("192.0.2.10", "2001:db8::10", "2001:db8:0:0:0:0:0:1", "::", "::ffff:192.0.2.1", "0f8c1a2e-5b7d-4c3a-9e21-6d4f0a8b3c55.local")
+            .forEach { assertTrue(it, SdpFilter.candidateAllowed(candidate(it))) }
+        listOf(
+            "phone.example", "a.b.local", "local", "192.0.2.256", "192.0.2", "192.0.02.1", "2001:db8::1::2",
+            "1:2:3:4:5:6:7:8:9", "1:2:3:4::5:6:7:8", "2001:db8:::1", "fe80::1%wlan0", "192.0.2.1::", "",
+        ).forEach { assertFalse(it, SdpFilter.candidateAllowed(candidate(it))) }
+        assertFalse(SdpFilter.candidateAllowed("candidate:1 1 udp 2113937151"))
+        assertFalse(SdpFilter.candidateAllowed("a=" + candidate("192.0.2.10")))
+    }
+
     @Test fun rejectionReasonsCarryNoSdp() {
         val result = SdpFilter.filter((CHROME_OFFER + "a=sctp-port:5000").crlf())
         val reason = (result as? SdpFilter.Result.Rejected)?.reason ?: return fail("not rejected")
@@ -96,6 +118,8 @@ class SdpFilterTest {
     }
 
     private fun List<String>.crlf(): String = joinToString("\r\n", postfix = "\r\n")
+
+    private fun candidate(address: String): String = "candidate:842163049 1 udp 2113937151 $address 56143 typ host generation 0"
 
     private companion object {
         /** A headless Chrome 156 send-only offer from the rig's phone setup; addresses replaced. */

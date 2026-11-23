@@ -21,13 +21,22 @@ object MicEngine {
     private const val ENGINE_STATS_MS = 1000L
     private const val PEER_STATS_MS = 2000L
     private const val MONITOR_POLL_MS = 50L
-    private const val MONITOR_LIMIT_MS = 3000L
+
+    /** A backstop only: the engine reports `no-tone` itself, 2.2 s after the beep plays (about 2.7 s in). */
+    private const val MONITOR_LIMIT_MS = 4000L
     private const val CLOSE_INTERNAL_ERROR = 1011
     private const val ECHO_DELAY_MS = 120.0
     private const val ECHO_MAX_DELAY_MS = 220.0
     private const val DEFAULT_ECHO_WET = 0.36
     private const val GATE_THRESHOLD = 0.001
     private const val PEAK_FULL_SCALE = 32768.0
+
+    /**
+     * The network monitor lists networks from ConnectivityManager when it starts. By default it reads its
+     * callback cache, still empty at that moment, so a connection opened while no other was open gathered on
+     * no network and answered without a candidate.
+     */
+    private const val FIELD_TRIALS = "WebRTC-NetworkMonitorAutoDetect/getAllNetworksFromCache:false/"
 
     /** States of [NativeMics.monitorResult]. */
     private const val MONITOR_DONE = 1
@@ -98,7 +107,7 @@ object MicEngine {
                 .createAudioDeviceModule()
             val created = try {
                 PeerConnectionFactory.builder()
-                    .setFieldTrials("")
+                    .setFieldTrials(FIELD_TRIALS)
                     .setAudioDeviceModule(adm)
                     .createPeerConnectionFactory()
             } finally {
@@ -191,6 +200,10 @@ object MicEngine {
             if (slot.gen == peer.gen) slot.jitterMs = peer.jitterMs
         }
 
+        override fun dropped(peer: MicPeer) {
+            if (peers[peer.id] === peer) peers.remove(peer.id)
+        }
+
         private fun guarded(task: () -> Unit) = Runnable {
             try {
                 task()
@@ -247,7 +260,7 @@ object MicEngine {
             )
             timers += every(STATUS_MS) { sendStatus() }
             timers += every(ENGINE_STATS_MS) { sendEngineStats() }
-            timers += every(PEER_STATS_MS) { peers.values.forEach { it.requestStats() } }
+            timers += every(PEER_STATS_MS) { peers.values.toList().forEach { it.requestStats() } }
             Log.i(TAG, "mics session $number ready, token $token, audio ${if (open) "open" else "pending"}")
         }
 
@@ -270,7 +283,8 @@ object MicEngine {
                 is PageMessage.Offer -> offer(message)
                 is PageMessage.Ice -> {
                     val peer = peers[message.peer] ?: return ignore()
-                    message.candidate?.let { peer.addIce(it) }
+                    val candidate = message.candidate ?: return
+                    if (SdpFilter.candidateAllowed(candidate.candidate)) peer.addIce(candidate) else ignore()
                 }
                 is PageMessage.Close -> peers.remove(message.peer)?.close() ?: ignore()
                 is PageMessage.Detach -> slots[message.slot]?.gen?.takeIf { it != 0 }?.let { gen ->

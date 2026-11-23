@@ -16,6 +16,9 @@ import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -26,10 +29,12 @@ import java.util.concurrent.locks.LockSupport
  * per-launch token in the path and the TV origin checked. The page reads the address from
  * `window.FireSongVoice.endpoint()`. One connection at a time: a new one replaces the old, and the old
  * connection's handler hears [PageHandler.onClosed] before the new connection's first frame is read. Each
- * connection gets its own [PageHandler] from [handlerFor].
+ * connection gets its own [PageHandler] from [handlerFor], which hears nothing more once its `onClosed()` has run.
  *
  * Threads per connection: `fs-voice-in` reads frames and hands page messages to the handler; `fs-voice-out` is
- * the socket's only writer after the upgrade, sending the handler's messages and the engine's tap blocks.
+ * the socket's only writer after the upgrade, sending the handler's messages and the engine's tap blocks. When a
+ * close has not gone through within 3 s (the page stopped reading), `fs-voice-close` ends the connection.
+ * Handler callbacks must not block or call back into the door: the door may wait for one to return.
  */
 class VoiceDoor(
     private val allowedOrigin: () -> String?,
@@ -37,6 +42,9 @@ class VoiceDoor(
 ) {
     private val token = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
     private val lock = Any()
+
+    /** Held across a whole replacement: each replaced handler's `onClosed()` runs before the next admission. */
+    private val admitLock = Any()
 
     @Volatile private var server: ServerSocket? = null
     private var current: Connection? = null
@@ -125,16 +133,16 @@ class VoiceDoor(
         }
     }
 
-    /** Makes [connection] the door's one connection, ending the one it replaces first; false once the door is closed. */
-    private fun admit(listener: ServerSocket, connection: Connection): Boolean = synchronized(lock) {
-        if (server !== listener) {
-            connection.end()
-            return false
+    /**
+     * Makes [connection] the door's one connection, ending the one it replaces first; false once the door is closed.
+     * The ending happens outside [lock], which may wait for the old reader to finish a delivery.
+     */
+    private fun admit(listener: ServerSocket, connection: Connection): Boolean = synchronized(admitLock) {
+        val replaced = synchronized(lock) {
+            if (server !== listener) connection else current.also { current = connection }
         }
-        val replaced = current
-        current = connection
         replaced?.end()
-        true
+        replaced !== connection
     }
 
     private fun released(connection: Connection) {
@@ -163,6 +171,9 @@ class VoiceDoor(
         private val output: OutputStream,
     ) : PageChannel {
         private val ended = AtomicBoolean(false)
+
+        /** Held while the handler hears anything, so nothing reaches it once its `onClosed()` has run. */
+        private val delivery = Any()
         private val texts = ConcurrentLinkedQueue<ByteArray>()
         private val queued = AtomicInteger(0)
         private val closeCode = AtomicInteger(0)
@@ -214,22 +225,28 @@ class VoiceDoor(
             end()
         }
 
-        /** Idempotent, from any thread: closes the socket and tells the handler, exactly once. */
+        /**
+         * Idempotent, from any thread: closes the socket and tells the handler, exactly once, after any delivery in
+         * progress. Must not be called with the door's [lock] held.
+         */
         fun end() {
             if (!ended.compareAndSet(false, true)) return
             closeQuietly(socket)
             writer?.let { LockSupport.unpark(it) }
             reader?.let { LockSupport.unpark(it) }
             released(this)
-            handler.onClosed()
+            synchronized(delivery) { handler.onClosed() }
             Log.i(TAG, "voice page disconnected")
         }
 
-        /** Returns normally once a close was asked for (by the page or by a broken rule); throws at the end of the stream. */
+        /**
+         * Returns normally once a close was asked for (by the page or by a broken rule) or the connection ended;
+         * throws at the end of the stream.
+         */
         private fun read() {
             val frames = WsReader(input)
             val gate = HelloGate()
-            while (true) {
+            while (!ended.get()) {
                 val event = try {
                     frames.next()
                 } catch (_: SocketTimeoutException) {
@@ -240,10 +257,12 @@ class VoiceDoor(
                         when (val result = gate.admit(DoorCodec.parsePage(event.text))) {
                             is ParseResult.Message -> {
                                 deadline.disarm()
-                                handler.onMessage(result.message)
-                                if (result.unknownFields) handler.onIgnored()
+                                deliver {
+                                    handler.onMessage(result.message)
+                                    if (result.unknownFields) handler.onIgnored()
+                                }
                             }
-                            ParseResult.Ignored -> handler.onIgnored()
+                            ParseResult.Ignored -> deliver { handler.onIgnored() }
                             is ParseResult.Fatal -> return fail(result.code)
                         }
                     }
@@ -261,6 +280,13 @@ class VoiceDoor(
             }
         }
 
+        /** Runs [block] with the handler unless the connection has ended. */
+        private inline fun deliver(block: () -> Unit) {
+            synchronized(delivery) {
+                if (!ended.get()) block()
+            }
+        }
+
         /** Asks the writer to close with [code], then drops the page's bytes until it hangs up or the writer gives up. */
         private fun fail(code: Int) {
             requestClose(code)
@@ -273,8 +299,17 @@ class VoiceDoor(
             }
         }
 
+        /** The writer closes with [code]; if it is stuck on a page that stopped reading, [overdue] ends it instead. */
         private fun requestClose(code: Int) {
-            if (closeCode.compareAndSet(0, code)) wakeWriter()
+            if (!closeCode.compareAndSet(0, code)) return
+            wakeWriter()
+            closeWatch.schedule({ overdue() }, CLOSE_DEADLINE_MS, TimeUnit.MILLISECONDS)
+        }
+
+        private fun overdue() {
+            if (ended.get()) return
+            Log.w(TAG, "voice door: the page did not take the close in time")
+            end()
         }
 
         private fun wakeWriter() {
@@ -291,11 +326,11 @@ class VoiceDoor(
         }
 
         private fun write() {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
-            val out = BufferedOutputStream(output, OUT_BUFFER)
-            val tap = ByteBuffer.allocateDirect(NativeMics.TAP_MESSAGE_MAX)
-            val tapBytes = ByteArray(NativeMics.TAP_MESSAGE_MAX)
             try {
+                raisePriority()
+                val out = BufferedOutputStream(output, OUT_BUFFER)
+                val tap = ByteBuffer.allocateDirect(NativeMics.TAP_MESSAGE_MAX)
+                val tapBytes = ByteArray(NativeMics.TAP_MESSAGE_MAX)
                 while (!ended.get()) {
                     val code = closeCode.get()
                     if (code != 0) return finish(out, code)
@@ -311,6 +346,15 @@ class VoiceDoor(
                 Log.w(TAG, "voice door writer failed: ${e.javaClass.simpleName}")
             } finally {
                 end()
+            }
+        }
+
+        /** Taps reach the page sooner at display priority; without it the writer still works at the default. */
+        private fun raisePriority() {
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "voice door writer keeps its priority: ${e.javaClass.simpleName}")
             }
         }
 
@@ -410,6 +454,9 @@ class VoiceDoor(
         private const val HANDSHAKE_TIMEOUT_MS = 2000L
         private const val HELLO_TIMEOUT_MS = 5000L
         private const val CLOSE_LINGER_NS = 1000 * NANOS_PER_MS
+
+        /** Longer than the reader's 2 s wait for the writer: it only catches a writer stuck on a page not reading. */
+        private const val CLOSE_DEADLINE_MS = 3000L
         private const val TAP_PERIOD_NS = 12 * NANOS_PER_MS
         private const val TEXT_QUEUE_MAX = 512
         private const val TEXT_BATCH = 64
@@ -417,5 +464,12 @@ class VoiceDoor(
 
         /** NativeMics.drainTap has one consumer process-wide; writers of old and new connections and doors overlap. */
         private val drainLock = Any()
+
+        /** Ends connections whose close is overdue; one daemon thread for the process, started on the first close. */
+        private val closeWatch: ScheduledExecutorService by lazy {
+            Executors.newSingleThreadScheduledExecutor { task ->
+                Thread(task, "fs-voice-close").apply { isDaemon = true }
+            }
+        }
     }
 }

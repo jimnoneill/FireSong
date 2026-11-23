@@ -376,11 +376,12 @@ impl Hub {
             slot: wanted,
             name,
         } = hello;
-        let name = name.map(|name| inner.unique_name(name.trim(), &mic_id));
+        let name = name.map(|name| name.trim().to_string());
 
         if let Some(index) = inner.index_of_mic(&mic_id) {
             let slot = slot_number(index);
             let tv = inner.tv.clone();
+            let shown = name.as_deref().map(|name| inner.unique_name(name, &mic_id));
             let Some(entry) = inner.slots[index].as_mut() else {
                 return Err(RtcErrorCode::BadResume);
             };
@@ -405,8 +406,8 @@ impl Hub {
             }
             entry.link = Link::Connected(peer.clone());
             entry.held_offer = None;
-            if name.is_some() {
-                entry.name.clone_from(&name);
+            if shown.is_some() {
+                entry.name = shown;
             }
             let entry = entry.clone();
             if let Some(name) = &name {
@@ -454,12 +455,14 @@ impl Hub {
             }
             inner.party_slot_freed(slot, &evicted);
         }
+        // Named after any eviction, so a slot's old holder never counts as a clash.
+        let shown = name.as_deref().map(|name| inner.unique_name(name, &mic_id));
         let stored = inner.store.get(&mic_id).cloned().unwrap_or_default();
         let entry = Entry {
             mic_id: mic_id.clone(),
             resume_key: new_token(),
             link: Link::Connected(peer),
-            name: name.clone().or(stored.name),
+            name: shown.or(stored.name),
             muted: false,
             muted_by: MuteSource::Mic,
             latency_ms: stored.latency_ms,

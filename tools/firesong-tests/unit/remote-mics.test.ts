@@ -104,7 +104,7 @@ const webBackend = (rack: MicRackPort, createPeer: (init: PeerInit) => PeerPort)
   calibrationOutput: () => {
     throw new Error('no audio output in unit tests');
   },
-  measureMonitor: async () => null,
+  measureMonitor: async () => ({ monitorMs: null, reason: 'not-native' }),
   onLost: () => () => undefined,
   flightSample: () => ({ kind: 'web' }),
   close: () => undefined,

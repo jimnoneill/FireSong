@@ -10,11 +10,35 @@ import { fireSongLaunch } from './firesong-launch';
 import type { FlightFields } from './flight';
 import { connectNativeMicLink } from './native-mic-link';
 import { NativeMicPeer } from './native-mic-peer';
-import type { EngineStats, NativeMicLinkPort, NativeSlotStatus } from './native-mic-protocol';
+import type {
+  AppMessage,
+  EngineStats,
+  NativeMicLinkPort,
+  NativeSlotStatus,
+} from './native-mic-protocol';
 import { nativeVoiceEndpoint } from './native-voice';
 import { TvMicPeer, type PeerInit, type PeerPort } from './remote-mic-peer';
 
 export type MicBackendKind = 'web' | 'native';
+
+/**
+ * Why a monitor beep gave no loop: the app's reason (`busy`, `no-audio`,
+ * `no-tone`, `stopped`), or the page's: no answer in time (`timeout`), the
+ * link was lost (`lost`) or the page closed it (`closed`), the request could
+ * not be sent (`unsent`), or the voices are not the app's (`not-native`).
+ */
+export type MonitorFailure =
+  | Extract<AppMessage, { t: 'monitor-result'; ok: false }>['reason']
+  | 'timeout'
+  | 'lost'
+  | 'closed'
+  | 'unsent'
+  | 'not-native';
+
+/** The app's monitor beep: the singer's own loop in ms, or why there is none. */
+export type MonitorResult = { monitorMs: number } | { monitorMs: null; reason: MonitorFailure };
+
+const monitorFailed = (reason: MonitorFailure): MonitorResult => ({ monitorMs: null, reason });
 
 /**
  * Where the TV receives and plays the phones' voices: in the page (`web`:
@@ -32,15 +56,16 @@ export type MicBackend = {
   createPeer(init: PeerInit): PeerPort;
   /** Where the scoring beep plays: web = engine.output, native = engine.speakers (the song's path). */
   calibrationOutput(): LatencyTestOutput;
-  /** Native: the singer's own loop in ms (monitor beep), null when it fails; web: always null. */
-  measureMonitor(slot: MicSlot): Promise<number | null>;
+  /** Native: the singer's own loop (monitor beep), or why it failed; web: always `not-native`. */
+  measureMonitor(slot: MicSlot): Promise<MonitorResult>;
   /** Native: the engine is gone and the page must fall back to web; web: never fires. */
   onLost(listener: (why: string) => void): () => void;
   /** `kind`, `why`, the song's peak and, for native, the engine's latest statistics. */
   flightSample(): FlightFields;
   /**
    * Native: ends the link, so the app closes every phone's connection and
-   * stops its output, and puts the song back to full level; web: nothing.
+   * stops its output, puts the song back to full level and ends any monitor
+   * beep still waiting (`closed`); web: nothing.
    */
   close(): void;
 };
@@ -73,7 +98,7 @@ export const webMicBackend = async (why: string): Promise<MicBackend> => {
     rack,
     createPeer: (init) => new TvMicPeer(init),
     calibrationOutput: () => ({ context: engine.context, destination: engine.output }),
-    measureMonitor: () => Promise.resolve(null),
+    measureMonitor: () => Promise.resolve(monitorFailed('not-native')),
     onLost: () => () => undefined,
     flightSample: () => ({ kind: 'web', why, songPeak: engine.songPeak() }),
     close: () => undefined,
@@ -120,6 +145,13 @@ const engineSample = (
 const nativeMicBackend = (link: NativeMicLinkPort): MicBackend => {
   const engine = getVoiceEngine();
   const statuses = new Map<MicSlot, NativeSlotStatus>();
+  /** The monitor beeps still waiting, so a lost or closed link ends them at once. */
+  const pendingMonitors = new Set<(result: MonitorResult) => void>();
+  const endMonitors = (reason: MonitorFailure): void => {
+    for (const finish of Array.from(pendingMonitors)) {
+      finish(monitorFailed(reason));
+    }
+  };
   let lastMonitorId = 0;
   link.subscribe((message) => {
     if (message.t === 'status') {
@@ -129,31 +161,34 @@ const nativeMicBackend = (link: NativeMicLinkPort): MicBackend => {
       }
     }
   });
+  // Before any listener of the page's, which closes the link to fall back.
+  link.onLost(() => endMonitors('lost'));
   engine.setSongTrimDb(NATIVE_SONG_TRIM_DB);
 
-  const measureMonitor = (slot: MicSlot): Promise<number | null> =>
+  const measureMonitor = (slot: MicSlot): Promise<MonitorResult> =>
     new Promise((resolve) => {
       lastMonitorId += 1;
       const id = lastMonitorId;
       const cleanups: (() => void)[] = [];
-      const finish = (monitorMs: number | null): void => {
+      const finish = (result: MonitorResult): void => {
+        pendingMonitors.delete(finish);
         for (const cleanup of cleanups.splice(0)) {
           cleanup();
         }
-        resolve(monitorMs);
+        resolve(result);
       };
-      const timer = setTimeout(() => finish(null), MONITOR_TIMEOUT_MS);
+      pendingMonitors.add(finish);
+      const timer = setTimeout(() => finish(monitorFailed('timeout')), MONITOR_TIMEOUT_MS);
       cleanups.push(
         () => clearTimeout(timer),
         link.subscribe((message) => {
           if (message.t === 'monitor-result' && message.id === id) {
-            finish(message.ok ? message.monitorMs : null);
+            finish(message.ok ? { monitorMs: message.monitorMs } : monitorFailed(message.reason));
           }
         }),
-        link.onLost(() => finish(null)),
       );
       if (!link.send({ t: 'measure-monitor', id, slot })) {
-        finish(null);
+        finish(monitorFailed('unsent'));
       }
     });
 
@@ -175,6 +210,7 @@ const nativeMicBackend = (link: NativeMicLinkPort): MicBackend => {
     close: () => {
       link.close();
       engine.setSongTrimDb(0);
+      endMonitors('closed');
     },
   };
 };

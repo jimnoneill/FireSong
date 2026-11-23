@@ -165,7 +165,7 @@ const calibrate = async (kind: 'loopback' | 'silent', delaysMs: number[]) => {
       close: () => undefined,
     }),
     calibrationOutput: () => ({ context: engine.context, destination: engine.output }),
-    measureMonitor: async () => null,
+    measureMonitor: async () => ({ monitorMs: null, reason: 'not-native' }),
     onLost: () => () => undefined,
     flightSample: () => ({ kind: 'web' }),
     close: () => undefined,

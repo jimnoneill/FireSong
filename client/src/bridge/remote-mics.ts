@@ -44,6 +44,7 @@ import {
   webMicBackend,
   type MicBackend,
   type MicBackendKind,
+  type MonitorResult,
 } from './mic-backend';
 import { dispatchMicFrame } from './microphone-samples';
 import type { PeerPort, PeerStats } from './remote-mic-peer';
@@ -303,7 +304,7 @@ export class RemoteMics {
     return this.rack?.status(slot) ?? null;
   }
 
-  /** The voice backend in use and why; null until it is chosen, and while a lost one is replaced. */
+  /** The voice backend in use and why; null until it is chosen, while a lost one is replaced, and when none could be. */
   backendSample(): BackendSample | null {
     return this.backend === null ? null : { kind: this.backend.kind, why: this.backend.why };
   }
@@ -313,9 +314,12 @@ export class RemoteMics {
     return this.backend?.calibrationOutput() ?? null;
   }
 
-  /** The singer's own loop through the TV app, in ms; null on the web backend or when it fails. */
-  measureMonitor(slot: MicSlot): Promise<number | null> {
-    return this.backend?.measureMonitor(slot) ?? Promise.resolve(null);
+  /** The singer's own loop through the TV app, or why there is none (always on the web backend). */
+  measureMonitor(slot: MicSlot): Promise<MonitorResult> {
+    return (
+      this.backend?.measureMonitor(slot) ??
+      Promise.resolve({ monitorMs: null, reason: 'not-native' })
+    );
   }
 
   /** Drops the link to the TV app's voice engine as a failure would; false when the voices are not native. */
@@ -355,16 +359,23 @@ export class RemoteMics {
 
   /**
    * Sends a calibrated mouth-to-speaker latency for the mic's slot, and notes
-   * the voice backend it was measured on.
+   * the voice backend it was measured on: `measuredOn`, the backend the whole
+   * beep test ran on; without it, the one in use now.
    */
-  reportLatency(micId: string, latencyMs: number, method: LatencyMethod): boolean {
+  reportLatency(
+    micId: string,
+    latencyMs: number,
+    method: LatencyMethod,
+    measuredOn?: MicBackendKind,
+  ): boolean {
     const slot = this.roster.find((entry) => entry.micId === micId);
     if (slot === undefined || this.socket === null) {
       return false;
     }
     const sent = this.socket.send({ type: 'latency', slot: slot.slot, latencyMs, method });
-    if (sent && this.backend !== null) {
-      recordCalibrationBackend(micId, this.backend.kind);
+    const kind = measuredOn ?? this.backend?.kind;
+    if (sent && kind !== undefined) {
+      recordCalibrationBackend(micId, kind);
     }
     return sent;
   }
@@ -404,7 +415,8 @@ export class RemoteMics {
    * Once per page load, whatever the reason: closing the native backend tears
    * down the app's connections and gives the song its level back; the web
    * backend then gets every slot's state, and each phone is asked for a
-   * restart, which it answers with a fresh connection.
+   * restart, which it answers with a fresh connection. Taking the seat again
+   * waits for the web backend.
    */
   private fallBack(why: string): void {
     const lost = this.backend;
@@ -420,14 +432,24 @@ export class RemoteMics {
       peer.close();
     }
     this.peers.clear();
-    this.deps
-      .fallback(why)
-      .then((web) => {
-        this.adopt(web);
-        this.restoreSlots();
-        return undefined;
-      })
-      .catch((error: unknown) => this.fail(error));
+    const load = this.deps.fallback(why).then((web) => {
+      this.adopt(web);
+      this.restoreSlots();
+      return undefined;
+    });
+    this.backendLoad = load;
+    load.catch((error: unknown) => this.noBackend(error));
+  }
+
+  /**
+   * No web backend replaces the lost one: the TV gives up its seat for the
+   * rest of the page load, so phones see the TV is gone instead of talking
+   * to a TV that plays nothing, as when the page's rack fails at the start.
+   */
+  private noBackend(error: unknown): void {
+    flight('mic-backend', { kind: 'none', why: errorText(error) });
+    this.releaseSeat();
+    this.fail(error);
   }
 
   /** A new rack gets each slot's mute, latency, mix, monitor and tap; connected phones reconnect. */
@@ -446,6 +468,11 @@ export class RemoteMics {
 
   private shutdown(): void {
     this.stopTimer = null;
+    this.releaseSeat();
+  }
+
+  /** Gives up the TV seat and every slot. */
+  private releaseSeat(): void {
     this.socket?.stop();
     this.socket = null;
     for (const slot of MIC_SLOTS) {

@@ -54,6 +54,7 @@ _Static_assert(4 + FSV_TAP_MAX_BLOCKS * FSV_TAP_BLOCK_BYTES <= 65536, "a tap mes
 #define MARGIN_DECAY_AFTER (20 * FSV_RATE) /* of play without an underrun */
 #define WINDOW_FRAMES 24000    /* 500 ms */
 #define TRIM_MIN 96            /* 2 ms of slack before trimming */
+#define TRIM_WINDOWS 4         /* a trim follows the lowest slack of the last 2 s */
 #define INSERT_MAX 240         /* frames replayed by one insert splice */
 #define QUIET 0.01f            /* -40 dBFS */
 #define FORCE_AFTER (2 * FSV_RATE)
@@ -69,11 +70,12 @@ _Static_assert(4 + FSV_TAP_MAX_BLOCKS * FSV_TAP_BLOCK_BYTES <= 65536, "a tap mes
 #define BEEP_RELEASE (FSV_BEEP_RELEASE_MS * FSV_RATE / 1000)
 #define BEEP_LEAD (FSV_BEEP_LEAD_MS * FSV_RATE / 1000)
 #define BEEP_BASELINE (FSV_BEEP_BASELINE_MS * FSV_RATE / 1000)
-#define MON_HIST 512
+#define MON_HIST 1024 /* the crossing hop, a window to walk back over and the window before it: 640 */
 #define MON_MASK (MON_HIST - 1)
 #define MON_REFINE_STEP 16
 #define TONE_FLOOR 0.0005f /* latency-test.ts threshold floor, with 3 x mean and 1.5 x peak */
 #define LISTEN_AFTER_NS NS_MS(20)
+#define LEVEL_HOLD_NS NS_MS(400) /* after a measurement: the returning beep, its last meter block and a margin */
 
 #define NOTCH_REST_HZ 350.0f      /* BiquadFilterNode default frequency */
 #define NOTCH_SETTLE_DB 0.0017f   /* a 1e-4 relative change of the peaking amplitude */
@@ -133,7 +135,8 @@ typedef struct {
 
   _Atomic uint32_t tap_head; /* P */
   _Atomic uint32_t tap_tail; /* D */
-  _Atomic int zero_pending;
+  _Atomic uint32_t made;     /* P: blocks completed, as push_state.made */
+  _Atomic uint64_t zeros;    /* C: (made when the generation ended << 32) | zero blocks still to send */
   tap_block taps[TAP_QUEUE];
 
   _Atomic int64_t an_w, an_reserve; /* gate output for G, behind a seqlock */
@@ -167,7 +170,7 @@ typedef struct {
   float mon_x[MON_HIST];
   int64_t mon_pos[MON_HIST];
   double base_sum;
-  float base_peak, threshold;
+  float base_mean, base_peak, threshold;
   int base_n;
   float window[FSV_BEEP_WINDOW];
 } push_state;
@@ -176,6 +179,8 @@ typedef struct {
   uint32_t live_seen;
   int active, priming, fade_in;
   int64_t margin, lowest, window, clean;
+  int64_t lows[TRIM_WINDOWS];
+  int lows_n, lows_next;
   int underrun_in_window;
   int64_t pending, pending_age; /* > 0 trim, < 0 insert */
   int insert_next;
@@ -198,6 +203,7 @@ typedef struct {
   fsv_tracker tracker;
   int64_t last;
   double now_ms, ducked_until;
+  int64_t idle_ns, hold_until_ns;
   int first;
 } guard_slot;
 
@@ -341,6 +347,7 @@ static void start_priming(render_slot *rs, int64_t margin) {
   rs->lowest = INT64_MAX;
   rs->window = 0;
   rs->clean = 0;
+  rs->lows_n = 0;
   rs->underrun_in_window = 0;
   rs->pending = 0;
   rs->pending_age = 0;
@@ -394,7 +401,8 @@ static int reset_all(void) {
     atomic_store(&s->marks_head, 0);
     atomic_store(&s->tap_head, 0);
     atomic_store(&s->tap_tail, 0);
-    atomic_store(&s->zero_pending, 0);
+    atomic_store(&s->made, 0);
+    atomic_store(&s->zeros, 0);
     atomic_store(&s->an_w, 0);
     atomic_store(&s->an_reserve, 0);
     for (int k = 0; k < ANALYSIS; k++) atomic_store_explicit(&s->an[k], 0.0f, memory_order_relaxed);
@@ -515,12 +523,14 @@ static int copy_analysis(slot *s, float *x) {
 
 static void publish_boost(slot *s, const guard_slot *gs) { atomic_store(&s->boost_db, gs->level.boost_db); }
 
-/* One guard step for a slot, every 2400 pushed frames (mic-rack.ts guard and levelVoice). */
-static void guard_tick(int index, slot *s, guard_slot *gs) {
+/* One guard step for a slot, every 2400 pushed frames (mic-rack.ts guard and levelVoice). The auto
+   level skips the steps that would hear the engine's own monitor beep: web has no such beep. */
+static void guard_tick(int index, slot *s, guard_slot *gs, int64_t now) {
   gs->now_ms += 1000.0 * FSV_GUARD_FRAMES / FSV_RATE;
   float elapsed = gs->first ? 0.0f : (float)FSV_GUARD_FRAMES / FSV_RATE;
   gs->first = 0;
-  if (fsv_level_step(&gs->level, atomic_load(&s->level_rms), atomic_load(&s->gate_open), elapsed)) {
+  if (now >= gs->hold_until_ns &&
+      fsv_level_step(&gs->level, atomic_load(&s->level_rms), atomic_load(&s->gate_open), elapsed)) {
     publish_boost(s, gs);
   }
   if (gs->ducked_until != 0.0 && gs->now_ms >= gs->ducked_until) reset_duck(s, gs);
@@ -545,28 +555,43 @@ static void guard_tick(int index, slot *s, guard_slot *gs) {
   atomic_store(&s->duck_ms, gs->ducked_until != 0.0 ? (int)(gs->ducked_until - gs->now_ms) : 0);
 }
 
+/* With no audio the guard's clock stops, but a duck still runs out in wall-clock time, as MicRack's
+   guard timer keeps running for a detached strip. */
+static void idle_duck(slot *s, guard_slot *gs, int64_t now) {
+  if (gs->ducked_until != 0.0 && gs->idle_ns != 0) {
+    gs->now_ms += (double)(now - gs->idle_ns) / 1e6;
+    if (gs->now_ms >= gs->ducked_until) reset_duck(s, gs);
+    else atomic_store(&s->duck_ms, (int)(gs->ducked_until - gs->now_ms));
+  }
+  gs->idle_ns = now;
+}
+
 static void guard_slot_step(int index) {
   slot *s = &slots[index];
   guard_slot *gs = &gstate[index];
+  int64_t now = now_ns();
   uint32_t req = atomic_exchange(&s->g_req, 0);
   if (req & REQ_RELEASE) {
     fsv_level_init(&gs->level);
     gs->first = 1;
     publish_boost(s, gs);
+    reset_duck(s, gs);
   }
   if (req & (REQ_RELEASE | REQ_DETACH | REQ_MONITOR_OFF)) fsv_tracker_reset(&gs->tracker);
-  if (req & (REQ_RELEASE | REQ_DETACH)) reset_duck(s, gs);
+  if (mon_measuring(atomic_load(&mon_word), index)) gs->hold_until_ns = now + LEVEL_HOLD_NS;
   int64_t pushed = atomic_load(&s->pushed);
   if (atomic_load(&s->live) == 0) {
     gs->last = pushed;
+    idle_duck(s, gs, now);
     return;
   }
+  gs->idle_ns = 0;
   for (int n = 0; pushed - gs->last >= FSV_GUARD_FRAMES; n++) {
     if (n == 4) {
       gs->last = pushed - (pushed - gs->last) % FSV_GUARD_FRAMES;
       break;
     }
-    guard_tick(index, s, gs);
+    guard_tick(index, s, gs, now);
     gs->last += FSV_GUARD_FRAMES;
   }
 }
@@ -604,11 +629,20 @@ static int next_token(void) {
   return session_token;
 }
 
-static void release_locked(int index) {
-  slot *s = &slots[index];
-  if (atomic_load(&s->want) != 0 && atomic_load(&s->tap)) atomic_store(&s->zero_pending, ZERO_BLOCKS);
+/* Ends the slot's generation. Waiting out a push that is still running makes `made` count every block
+   of it, so the zero blocks sent for a detach follow its audio and precede the next generation's. */
+static void end_generation(slot *s) {
+  int tap_on = atomic_load(&s->want) != 0 && atomic_load(&s->tap);
   atomic_store(&s->want, 0);
   atomic_store(&s->live, 0);
+  if (!tap_on) return;
+  while (atomic_load(&s->busy)) sched_yield();
+  atomic_store(&s->zeros, ((uint64_t)atomic_load(&s->made) << 32) | ZERO_BLOCKS);
+}
+
+static void release_locked(int index) {
+  slot *s = &slots[index];
+  end_generation(s);
   set_controls_default(s);
   atomic_store(&s->in_use, 0);
   atomic_store(&s->level_rms, 0.0f);
@@ -698,9 +732,7 @@ void fsv_detach(int slot_no, int gen) {
   pthread_mutex_lock(&ctl_lock);
   int64_t want = atomic_load(&s->want);
   if (atomic_load(&running) && want != 0 && (uint32_t)want == (uint32_t)gen) {
-    atomic_store(&s->want, 0);
-    atomic_store(&s->live, 0);
-    if (atomic_load(&s->tap)) atomic_store(&s->zero_pending, ZERO_BLOCKS);
+    end_generation(s);
     atomic_fetch_or(&s->g_req, REQ_DETACH);
     mon_fail_slot(slot_no - 1, FSV_MONITOR_STOPPED);
   }
@@ -740,7 +772,7 @@ int fsv_set(int slot_no, int control, float value) {
         break;
       case FSV_TAP:
         atomic_store(&s->tap, value != 0.0f);
-        if (value == 0.0f) atomic_store(&s->zero_pending, 0);
+        if (value == 0.0f) atomic_store(&s->zeros, 0);
         break;
       default:
         result = FSV_ERR_ARG;
@@ -868,13 +900,36 @@ static float goertzel_at(push_state *ps, int64_t end) {
   return fsv_goertzel_amp(ps->window, FSV_BEEP_WINDOW, FS, FSV_BEEP_HZ);
 }
 
-/* The ring position where the tone starts, to 16 samples, within the hop that first crossed the threshold. */
-static int64_t onset_pos(push_state *ps) {
-  int64_t hop_start = ps->mon_n - FSV_BEEP_HOP;
-  for (int64_t end = hop_start + MON_REFINE_STEP; end < ps->mon_n; end += MON_REFINE_STEP) {
-    if (goertzel_at(ps, end) >= ps->threshold) return ps->mon_pos[(end - MON_REFINE_STEP / 2) & MON_MASK];
+/* The ring position where the tone starts. A window's amplitude grows with the tone samples it holds, so
+   it reaches the threshold about window * threshold / amplitude samples into the tone. From the first window
+   end at or above the threshold (to 16 samples, in the hop that crossed), the onset is extrapolated back
+   along the rising edge: step back while the amplitude keeps falling and stays above the baseline's
+   peak, then follow the line through both ends down to the baseline's mean. */
+static int64_t onset_pos(push_state *ps, float amp) {
+  int64_t cross = ps->mon_n;
+  float a_cross = amp;
+  for (int64_t end = ps->mon_n - FSV_BEEP_HOP + MON_REFINE_STEP; end < ps->mon_n; end += MON_REFINE_STEP) {
+    float a = goertzel_at(ps, end);
+    if (a >= ps->threshold) {
+      cross = end;
+      a_cross = a;
+      break;
+    }
   }
-  return ps->mon_pos[(ps->mon_n - MON_REFINE_STEP / 2) & MON_MASK];
+  int64_t edge = cross;
+  float a_edge = a_cross;
+  while (cross - edge < FSV_BEEP_WINDOW) {
+    float a = goertzel_at(ps, edge - MON_REFINE_STEP);
+    if (a <= ps->base_peak || a >= a_edge) break;
+    edge -= MON_REFINE_STEP;
+    a_edge = a;
+  }
+  int64_t back = MON_REFINE_STEP / 2;
+  if (edge != cross) {
+    float x = (a_cross - ps->base_mean) * (float)(cross - edge) / (a_cross - a_edge);
+    back = x < FSV_BEEP_WINDOW ? (int64_t)lroundf(x) : FSV_BEEP_WINDOW;
+  }
+  return ps->mon_pos[(cross - back) & MON_MASK];
 }
 
 /* One hop of the beep detector; returns the state word to continue with (0: stop for this push). */
@@ -886,8 +941,8 @@ static uint32_t mon_hop(push_state *ps, uint32_t word, int64_t t_push) {
     ps->base_n++;
     if (amp > ps->base_peak) ps->base_peak = amp;
     if (ps->mon_n >= BEEP_BASELINE) {
-      float mean = (float)(ps->base_sum / ps->base_n);
-      ps->threshold = fmaxf(TONE_FLOOR, fmaxf(3.0f * mean, 1.5f * ps->base_peak));
+      ps->base_mean = (float)(ps->base_sum / ps->base_n);
+      ps->threshold = fmaxf(TONE_FLOOR, fmaxf(3.0f * ps->base_mean, 1.5f * ps->base_peak));
       uint32_t next = MON_WORD(MON_SERIAL(word), MON_SCHEDULE);
       return atomic_compare_exchange_strong(&mon_word, &word, next) ? next : 0;
     }
@@ -897,8 +952,9 @@ static uint32_t mon_hop(push_state *ps, uint32_t word, int64_t t_push) {
       mon_fail(word, FSV_MONITOR_NO_TONE);
       return 0;
     }
-    if (t_push >= t_b + LISTEN_AFTER_NS && goertzel_at(ps, ps->mon_n) >= ps->threshold) {
-      int64_t pos = onset_pos(ps);
+    float amp = t_push >= t_b + LISTEN_AFTER_NS ? goertzel_at(ps, ps->mon_n) : 0.0f;
+    if (amp >= ps->threshold) {
+      int64_t pos = onset_pos(ps, amp);
       if (pos < 0) {
         mon_fail(word, FSV_MONITOR_STOPPED);
         return 0;
@@ -1005,6 +1061,7 @@ static int push_owned(int index, slot *s, int gen, const int16_t *pcm, int frame
     put_mark(s, ps, w + frames, t);
   }
   atomic_fetch_add_explicit(&s->pushed, frames, memory_order_relaxed);
+  atomic_store_explicit(&s->made, ps->made, memory_order_relaxed);
   uint32_t head = atomic_load_explicit(&s->tap_head, memory_order_relaxed);
   return (int)(head - atomic_load_explicit(&s->tap_tail, memory_order_acquire));
 }
@@ -1062,9 +1119,14 @@ static void end_window(render_slot *rs) {
       rs->clean = 0;
       rs->margin = rs->margin - MARGIN_DECAY < MARGIN_MIN ? MARGIN_MIN : rs->margin - MARGIN_DECAY;
     }
+    rs->lows[rs->lows_next] = rs->lowest;
+    rs->lows_next = (rs->lows_next + 1) % TRIM_WINDOWS;
+    if (rs->lows_n < TRIM_WINDOWS) rs->lows_n++;
+    int64_t low = rs->lows[0];
+    for (int k = 1; k < TRIM_WINDOWS; k++) low = rs->lows[k] < low ? rs->lows[k] : low;
     int64_t next = 0;
-    if (rs->lowest - rs->margin > TRIM_MIN) {
-      next = rs->lowest - rs->margin;
+    if (rs->lows_n == TRIM_WINDOWS && low - rs->margin > TRIM_MIN) {
+      next = low - rs->margin;
     } else if (rs->lowest < rs->margin / 2) {
       next = rs->lowest - rs->margin;
       if (next < -INSERT_MAX) next = -INSERT_MAX;
@@ -1086,6 +1148,7 @@ static void spliced(render_slot *rs) {
   rs->pending_age = 0;
   rs->lowest = INT64_MAX;
   rs->window = 0;
+  rs->lows_n = 0;
 }
 
 static void map_marks(slot *s, render_slot *rs, int64_t frame_index, int64_t base, int64_t end) {
@@ -1431,8 +1494,23 @@ static int drain_owned(uint8_t *out, int capacity) {
     int tap_on = atomic_load_explicit(&s->tap, memory_order_relaxed);
     uint32_t tail = atomic_load_explicit(&s->tap_tail, memory_order_relaxed);
     uint32_t head = atomic_load_explicit(&s->tap_head, memory_order_acquire);
-    while (tail != head && count < max_blocks) {
-      const tap_block *b = &s->taps[tail % TAP_QUEUE];
+    while (count < max_blocks) {
+      uint64_t zeros = atomic_load_explicit(&s->zeros, memory_order_acquire);
+      /* Zero blocks go out once every block made before the detach has gone; reading the queue after
+         the request sees all of those. */
+      if ((uint32_t)zeros != 0) head = atomic_load_explicit(&s->tap_head, memory_order_acquire);
+      const tap_block *b = tail != head ? &s->taps[tail % TAP_QUEUE] : NULL;
+      int zero_next = (uint32_t)zeros != 0 && (b == NULL || (int32_t)(b->made - (uint32_t)(zeros >> 32)) > 0);
+      if (zero_next) {
+        if (!atomic_compare_exchange_weak_explicit(&s->zeros, &zeros, zeros - 1, memory_order_relaxed,
+                                                   memory_order_relaxed)) {
+          continue;
+        }
+        p = put_block(p, i + 1, 1, d->next_seq++, NULL);
+        count++;
+        continue;
+      }
+      if (b == NULL) break;
       uint32_t gap = b->made - d->last_made - 1;
       d->last_made = b->made;
       if (tap_on) {
@@ -1443,16 +1521,6 @@ static int drain_owned(uint8_t *out, int capacity) {
       }
       tail++;
       atomic_store_explicit(&s->tap_tail, tail, memory_order_release);
-    }
-    while (tail == head && count < max_blocks) {
-      int zeros = atomic_load_explicit(&s->zero_pending, memory_order_relaxed);
-      if (zeros <= 0) break;
-      if (!atomic_compare_exchange_weak_explicit(&s->zero_pending, &zeros, zeros - 1, memory_order_relaxed,
-                                                 memory_order_relaxed)) {
-        continue;
-      }
-      p = put_block(p, i + 1, 1, d->next_seq++, NULL);
-      count++;
     }
   }
   d_start = (d_start + 1) % FSV_SLOTS;

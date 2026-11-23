@@ -28,7 +28,13 @@ enum fsv_status_index {
   FSV_STATUS_DUCKED_MS = 7    /* remaining */
 };
 
-/* fsv_engine_stats() layout: engine-wide values, then FSV_STATS_SLOT_STRIDE per slot. */
+/* fsv_engine_stats() layout: engine-wide values, then FSV_STATS_SLOT_STRIDE per slot.
+   Windowed (P50/P95/P99/MAX): the samples since the previous window cut. A call at least 900 ms after the
+   previous cut cuts the next window; an earlier call repeats the last window's figures. MicEngine reads
+   every 1 s, so each window is one engine-stats period, about 1 s.
+   Cumulative since the engine started (fsv_start with no session running; a replacing session keeps
+   counting): XRUNS, RESTARTS, OPEN_ATTEMPTS, TAP_DROPPED, CALLBACKS, TRIMS to CLAMP_HITS, and per slot
+   UNDERRUNS, TRIMMED_FRAMES and PUSHED_FRAMES. Gauges: the rest. */
 enum fsv_stats_index {
   FSV_STATS_OPEN = 0,
   FSV_STATS_OUTPUT_LATENCY_US = 1, /* -1 = unknown */
@@ -48,8 +54,12 @@ enum fsv_stats_index {
   FSV_STATS_CALLBACKS = 15,
   FSV_STATS_TAP_DRAIN_P99_US = 16, /* interval between fsv_drain_tap calls that returned blocks */
   FSV_STATS_TAP_DRAIN_MAX_US = 17,
-  FSV_STATS_OPEN_ATTEMPTS = 18
-  /* 19-23 reserved (0) */
+  FSV_STATS_OPEN_ATTEMPTS = 18,
+  FSV_STATS_TRIMS = 19,            /* trim splices: a quiet span skipped, or forced after 2 s without one */
+  FSV_STATS_JUMPS = 20,            /* ceiling jumps: a fill above margin + 40 ms cut to margin + 5 ms */
+  FSV_STATS_INSERTS = 21,          /* insert splices: a quiet span played twice */
+  FSV_STATS_INSERTED_FRAMES = 22,
+  FSV_STATS_CLAMP_HITS = 23        /* output frames the +-FSV_VOICE_CEILING clamp cut */
 };
 
 /* Slot s (1..4) starts at FSV_STATS_SLOT_BASE + FSV_STATS_SLOT_STRIDE * (s - 1). */
@@ -88,3 +98,4 @@ int  ao_open(fsv_render_fn render);   /* LOW_LATENCY, SHARED, 48 kHz, 2 ch, I16,
 void ao_close(void);                  /* stops and closes; joins fsv-clock and a pending restart; no restart after this returns */
 int  ao_presentation_ns(int64_t frame_index, int64_t *t_ns); /* from the timestamp fsv-clock publishes (seqlock); FSV_ERR_STATE if none yet */
 void ao_stats(int64_t *burst, int64_t *buffer, int64_t *xruns, int64_t *latency_us, int64_t *restarts, int64_t *open);
+int64_t ao_open_attempts(void);       /* opens tried since ao_open, the first included */

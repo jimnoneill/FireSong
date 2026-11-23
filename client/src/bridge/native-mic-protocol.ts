@@ -19,6 +19,31 @@ export const NATIVE_FEATURES = ['mics'] as const;
 export const TAP_FRAMES = 512;
 export const TAP_BLOCK_BYTES = 2056;
 
+/**
+ * Limits of page messages. The app closes the door on a frame or field
+ * outside them (1009 for a frame, 1008 for a field), so nothing outside them
+ * is sent.
+ */
+export const PAGE_FRAME_MAX_BYTES = 65_536;
+export const PEER_ID_MAX = 2 ** 31 - 1;
+export const SDP_MAX_CHARS = 32_768;
+export const SDP_PREFIX = 'v=0';
+export const ICE_SERVERS_MAX = 8;
+export const ICE_URLS_MAX = 8;
+export const ICE_URL_MAX_CHARS = 512;
+export const ICE_URL_SCHEMES = ['stun:', 'turn:', 'turns:'] as const;
+export const ICE_LOGIN_MAX_CHARS = 256;
+export const CANDIDATE_MAX_CHARS = 1024;
+export const MLINE_INDEX_MAX = 65_535;
+export const SLOT_VOLUME_MAX = 1.5;
+export const SLOT_ECHO_MAX = 2;
+export const ECHO_WET_MAX = 1;
+/** The app's echo loop stays stable up to this feedback. */
+export const ECHO_FEEDBACK_MAX = 0.6;
+export const ECHO_LOWPASS_MIN_HZ = 500;
+export const ECHO_LOWPASS_MAX_HZ = 20_000;
+export const REVERB_SEND_MAX = 1;
+
 const TAP_VERSION = 1;
 const TAP_KIND = 1;
 const TAP_HEADER_BYTES = 4;
@@ -91,6 +116,15 @@ const slotStatusSchema = z.object({
   monitorMs: z.number().nullable(),
 });
 
+/**
+ * Every second. The percentile and max fields cover the window since the
+ * previous `engine-stats`; `peak` is the output peak over the same time.
+ * Cumulative since this connection's `hello` started the engine: `xruns`,
+ * `restarts`, `openAttempts`, `tapDropped`, `trims`, `jumps`, `inserts`,
+ * `insertedFrames`, `clampHits` and per slot `underruns` and
+ * `trimmedFrames`; `sinkErrors` since the app started; `ignored` since this
+ * connection opened.
+ */
 const engineStatsSchema = z.object({
   t: z.literal('engine-stats'),
   open: z.boolean(),
@@ -110,6 +144,15 @@ const engineStatsSchema = z.object({
   tapDropped: countSchema,
   tapDrainP99Us: countSchema,
   tapDrainMaxUs: countSchema,
+  /** Trim splices (a quiet span skipped). */
+  trims: countSchema,
+  /** Ceiling jumps (a fill far above the margin cut back). */
+  jumps: countSchema,
+  /** Insert splices (a quiet span played twice). */
+  inserts: countSchema,
+  insertedFrames: countSchema,
+  /** Output frames the voice ceiling clamp cut. */
+  clampHits: countSchema,
   peak: z.number(),
   sinkErrors: countSchema,
   ignored: countSchema,
@@ -220,10 +263,20 @@ export const parseTapMessage = (data: ArrayBuffer): TapBlock[] | null => {
 
 export type NativeMicLinkPort = {
   readonly ready: ReadyOk;
+  /**
+   * False when the message was not sent: the link is lost or closed (its
+   * socket is not open), the frame is over `PAGE_FRAME_MAX_BYTES`, or the app
+   * has stopped reading (the link is then lost as `stalled`, after the
+   * caller's turn).
+   */
   send(message: PageMessage): boolean;
   subscribe(listener: (message: AppMessage) => void): () => void;
   onTap(listener: (block: TapBlock) => void): () => void;
-  /** Called once when the link dies after `ready` (close, error, `fatal`, 5 s of silence, 20 s without audio). */
+  /**
+   * Called once when the link dies after `ready`: the socket closes or
+   * fails, the app sends `fatal`, 5 s of silence, 20 s without audio, or the
+   * app stops reading page messages (`stalled`).
+   */
   onLost(listener: (why: string) => void): () => void;
   latestEngineStats(): EngineStats | null;
   /** Page-side tap message arrival intervals since the last call (report only). */

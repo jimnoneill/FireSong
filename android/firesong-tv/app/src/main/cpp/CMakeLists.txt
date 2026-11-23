@@ -18,5 +18,5 @@ add_library(firesongvoice SHARED
   dsp/level.c
   dsp/goertzel.c)
 target_include_directories(firesongvoice PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(firesongvoice PRIVATE -Wall -Wextra -Werror -O2)
+target_compile_options(firesongvoice PRIVATE -Wall -Wextra -Werror -O2 -fvisibility=hidden)
 target_link_libraries(firesongvoice aaudio log m)

@@ -164,6 +164,8 @@ def native_summary(samples, rows):
         print(f"xruns +{rise(st.get('xruns') for st in stats)}, output restarts +{rise(st.get('restarts') for st in stats)}, "
               f"open attempts {stats[-1].get('openAttempts')}, sink errors +{rise(st.get('sinkErrors') for st in stats)}, "
               f"ignored +{rise(st.get('ignored') for st in stats)}, tap blocks dropped +{rise(st.get('tapDropped') for st in stats)}")
+        print(f"splices: trims +{rise(st.get('trims') for st in stats)}, jumps +{rise(st.get('jumps') for st in stats)},"
+              f" inserts +{rise(st.get('inserts') for st in stats)}; voice frames clamped +{rise(st.get('clampHits') for st in stats)}")
 
         def us(key, pick=median):
             """A microsecond statistic over the samples that have it, in ms."""

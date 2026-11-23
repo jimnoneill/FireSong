@@ -7,23 +7,25 @@ import {
   type MicSlot,
 } from '@/features/remote-mic/protocol';
 
-import type { AppMessage, NativeMicLinkPort, PageMessage } from './native-mic-protocol';
-import type { PeerEvents, PeerInit, PeerPort } from './remote-mic-peer';
+import {
+  CANDIDATE_MAX_CHARS,
+  ICE_LOGIN_MAX_CHARS,
+  ICE_SERVERS_MAX,
+  ICE_URL_MAX_CHARS,
+  ICE_URL_SCHEMES,
+  ICE_URLS_MAX,
+  MLINE_INDEX_MAX,
+  PAGE_FRAME_MAX_BYTES,
+  PEER_ID_MAX,
+  SDP_MAX_CHARS,
+  SDP_PREFIX,
+  type AppMessage,
+  type NativeMicLinkPort,
+  type PageMessage,
+} from './native-mic-protocol';
+import { meanTargetMs, type PeerEvents, type PeerInit, type PeerPort } from './remote-mic-peer';
 
 const ANSWER_TIMEOUT_MS = 6000;
-const PEER_ID_MAX = 2 ** 31 - 1;
-
-/** The app closes the whole door on a field outside these limits, so nothing outside them is sent. */
-const FRAME_MAX_BYTES = 65_536;
-const SDP_MAX_CHARS = 32_768;
-const SDP_PREFIX = 'v=0';
-const ICE_SERVERS_MAX = 8;
-const ICE_URLS_MAX = 8;
-const ICE_URL_MAX_CHARS = 512;
-const ICE_URL_SCHEMES = ['stun:', 'turn:', 'turns:'];
-const ICE_LOGIN_MAX_CHARS = 256;
-const CANDIDATE_MAX_CHARS = 1024;
-const MLINE_INDEX_MAX = 65_535;
 
 type PeerMessage = Extract<AppMessage, { peer: number }>;
 type OfferMessage = Extract<PageMessage, { t: 'offer' }>;
@@ -76,7 +78,7 @@ const isNativeOffer = (offer: OfferMessage): boolean =>
   isValidMicId(offer.micId) &&
   offer.sdp.length <= SDP_MAX_CHARS &&
   offer.sdp.startsWith(SDP_PREFIX) &&
-  encoder.encode(JSON.stringify(offer)).byteLength <= FRAME_MAX_BYTES;
+  encoder.encode(JSON.stringify(offer)).byteLength <= PAGE_FRAME_MAX_BYTES;
 
 const withinCandidate = (value: string | null | undefined): boolean =>
   value === null || value === undefined || value.length <= CANDIDATE_MAX_CHARS;
@@ -93,12 +95,6 @@ const isNativeCandidate = ({
   (sdpMLineIndex === null ||
     sdpMLineIndex === undefined ||
     (Number.isInteger(sdpMLineIndex) && sdpMLineIndex >= 0 && sdpMLineIndex <= MLINE_INDEX_MAX));
-
-/** Mean jitter-buffer target since the stream started, as `TvMicPeer` reports it. */
-const meanTargetMs = (stats: Extract<AppMessage, { t: 'peer-stats' }>): number | null =>
-  stats.jitterBufferEmittedCount > 0
-    ? (stats.jitterBufferTargetDelay / stats.jitterBufferEmittedCount) * 1000
-    : null;
 
 /**
  * The TV end of one phone's connection when the app's voice engine receives
@@ -155,8 +151,12 @@ export class NativeMicPeer implements PeerPort {
     if (!this.link.send(offer)) {
       return Promise.reject(new Error('native mic link refused the offer'));
     }
+    const opened = this.state === 'idle';
     this.seq = seq;
     this.state = 'live';
+    if (opened) {
+      this.events.onNewConnection?.();
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending?.seq === seq) {
@@ -231,7 +231,10 @@ export class NativeMicPeer implements PeerPort {
     };
     this.events.onStats({
       jitterMs: this.counters === null ? null : jitterBufferDelayMs(this.counters, counters),
-      jitterBufferTargetMs: meanTargetMs(stats),
+      jitterBufferTargetMs: meanTargetMs(
+        stats.jitterBufferTargetDelay,
+        stats.jitterBufferEmittedCount,
+      ),
       packetsReceived: stats.packetsReceived,
       packetsLost: stats.packetsLost,
     });

@@ -4,6 +4,7 @@ import { flight } from './flight';
 import {
   appMessageSchema,
   NATIVE_FEATURES,
+  PAGE_FRAME_MAX_BYTES,
   parseTapMessage,
   type AppMessage,
   type EngineStats,
@@ -23,8 +24,6 @@ import type { NativeVoiceEndpoint } from './native-voice';
  */
 
 const NORMAL_CLOSE = 1000;
-/** The door closes the socket on a page frame above this size. */
-const MAX_FRAME_BYTES = 65_536;
 /** Page messages the socket may hold unsent; more means the door has stopped reading. */
 const MAX_BUFFERED_BYTES = 1_048_576;
 const WATCH_MS = 1000;
@@ -57,7 +56,8 @@ type Decoded = { ok: true; message: AppMessage } | { ok: false; type: string | n
 
 /** UTF-8 takes at most 3 bytes per UTF-16 unit, so most frames need no encoding. */
 const fitsFrame = (text: string): boolean =>
-  text.length * 3 <= MAX_FRAME_BYTES || encoder.encode(text).byteLength <= MAX_FRAME_BYTES;
+  text.length * 3 <= PAGE_FRAME_MAX_BYTES ||
+  encoder.encode(text).byteLength <= PAGE_FRAME_MAX_BYTES;
 
 const typeOf = (value: unknown): string | null => {
   if (typeof value !== 'object' || value === null) {

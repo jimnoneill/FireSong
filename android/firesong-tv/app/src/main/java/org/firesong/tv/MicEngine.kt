@@ -14,7 +14,10 @@ import org.webrtc.PeerConnectionFactory
 import org.webrtc.audio.AudioProcessingState
 import org.webrtc.audio.JavaAudioDeviceModule
 
-/** One per process: the fs-mics FIFO executor and the PeerConnectionFactory (created on first hello, never disposed). */
+/**
+ * One per process: the fs-mics FIFO executor and the PeerConnectionFactory (built right after the first `ready`,
+ * never disposed).
+ */
 object MicEngine {
     private const val TAG = "FireSong"
     private const val STATUS_MS = 250L
@@ -70,6 +73,11 @@ object MicEngine {
     private const val STATS_TAP_DRAIN_P99_US = 16
     private const val STATS_TAP_DRAIN_MAX_US = 17
     private const val STATS_OPEN_ATTEMPTS = 18
+    private const val STATS_TRIMS = 19
+    private const val STATS_JUMPS = 20
+    private const val STATS_INSERTS = 21
+    private const val STATS_INSERTED_FRAMES = 22
+    private const val STATS_CLAMP_HITS = 23
     private const val STATS_SLOT_BASE = 24
     private const val STATS_SLOT_STRIDE = 4
 
@@ -82,6 +90,7 @@ object MicEngine {
     // fs-mics only.
     private var initialized = false
     private var factory: PeerConnectionFactory? = null
+    private var factoryFailed = false
     private var apm: String? = null
     private var lastGen = 0
     private var currentToken = 0
@@ -90,9 +99,10 @@ object MicEngine {
     fun session(context: Context, channel: PageChannel): PageHandler =
         Session(context.applicationContext, channel, sessionNumbers.incrementAndGet())
 
-    /** The process's factory, created on first use; null when libwebrtc cannot start. */
+    /** The process's factory, created on first use; null when libwebrtc cannot start, then for the process's life. */
     private fun factory(context: Context): PeerConnectionFactory? {
         factory?.let { return it }
+        if (factoryFailed) return null
         return try {
             if (!initialized) {
                 PeerConnectionFactory.initialize(
@@ -119,6 +129,7 @@ object MicEngine {
             created
         } catch (e: Throwable) {
             Log.e(TAG, "webrtc factory failed: ${e.javaClass.name}")
+            factoryFailed = true
             null
         }
     }
@@ -214,8 +225,13 @@ object MicEngine {
 
         private fun fail(e: Throwable) {
             Log.e(TAG, "mics session $number: ${e.javaClass.name} at ${e.stackTrace.firstOrNull()}")
+            end(FatalReason.INTERNAL)
+        }
+
+        /** Sends `fatal`, closes the connection and tears the session down. */
+        private fun end(reason: FatalReason) {
             if (state == State.CLOSED) return
-            send(AppMessage.Fatal(FatalReason.INTERNAL))
+            send(AppMessage.Fatal(reason))
             channel.close(CLOSE_INTERNAL_ERROR)
             try {
                 teardown()
@@ -233,13 +249,18 @@ object MicEngine {
             }
         }
 
+        /**
+         * `ready` goes out before a first factory is built, because a cold libwebrtc start can outlast the page's
+         * 3 s wait for it. Offers queue behind the build on fs-mics; a failed build ends the session with `fatal
+         * webrtc`, and later sessions are refused with `webrtc`.
+         */
         private fun hello() {
             if (state != State.NEW) {
                 ignored.incrementAndGet()
                 return
             }
             if (!NativeMics.available) return refuse(ReadyFailReason.LIB)
-            factory(context) ?: return refuse(ReadyFailReason.WEBRTC)
+            if (factoryFailed) return refuse(ReadyFailReason.WEBRTC)
             val started = NativeMics.start()
             if (started <= 0) return refuse(ReadyFailReason.LIB)
             token = started
@@ -262,6 +283,7 @@ object MicEngine {
             timers += every(ENGINE_STATS_MS) { sendEngineStats() }
             timers += every(PEER_STATS_MS) { peers.values.toList().forEach { it.requestStats() } }
             Log.i(TAG, "mics session $number ready, token $token, audio ${if (open) "open" else "pending"}")
+            if (factory(context) == null) end(FatalReason.WEBRTC)
         }
 
         private fun refuse(reason: ReadyFailReason) {
@@ -471,6 +493,11 @@ object MicEngine {
                     tapDropped = stats[STATS_TAP_DROPPED],
                     tapDrainP99Us = stats[STATS_TAP_DRAIN_P99_US],
                     tapDrainMaxUs = stats[STATS_TAP_DRAIN_MAX_US],
+                    trims = stats[STATS_TRIMS],
+                    jumps = stats[STATS_JUMPS],
+                    inserts = stats[STATS_INSERTS],
+                    insertedFrames = stats[STATS_INSERTED_FRAMES],
+                    clampHits = stats[STATS_CLAMP_HITS],
                     peak = stats[STATS_PEAK_Q15] / PEAK_FULL_SCALE,
                     sinkErrors = SlotSink.errors.get(),
                     ignored = ignored.get(),

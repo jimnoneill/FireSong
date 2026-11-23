@@ -84,7 +84,7 @@ _Static_assert(4 + FSV_TAP_MAX_BLOCKS * FSV_TAP_BLOCK_BYTES <= 65536, "a tap mes
 /* Statistics: 100 us buckets. */
 #define HIST_BUCKET_US 100
 #define HIST_BUCKETS 2500 /* 0-250 ms; the last bucket holds everything above */
-#define STATS_WINDOW_NS NS_MS(900)
+#define STATS_WINDOW_NS NS_MS(900) /* the shortest window: a read sooner repeats the last one */
 
 enum { REQ_RELEASE = 1, REQ_DETACH = 2, REQ_MONITOR_OFF = 4 };
 
@@ -106,7 +106,7 @@ enum {
 
 typedef struct {
   _Atomic uint32_t seq;
-  _Atomic int64_t pos; /* ring write position after the push */
+  _Atomic int64_t pos; /* ring position of the push's first frame */
   _Atomic int64_t t_ns;
 } push_mark;
 
@@ -195,7 +195,6 @@ typedef struct {
   int64_t fill_sum;
   int fill_n, fill_frames;
   uint32_t marks_tail;
-  int64_t inserted;
 } render_slot;
 
 typedef struct {
@@ -264,6 +263,7 @@ static int64_t mon_started_ns;
 /* Statistics */
 static hist h_callback, h_push, h_present, h_drain;
 static _Atomic int64_t callbacks, tap_dropped, format_errors, format_seen, format_bad;
+static _Atomic int64_t trims, jumps, inserts, inserted_frames, clamp_hits; /* R */
 static _Atomic int peak_q15;
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t snap_callback[HIST_BUCKETS], snap_push[HIST_BUCKETS], snap_present[HIST_BUCKETS],
@@ -272,9 +272,6 @@ static uint32_t delta[HIST_BUCKETS];
 static int64_t window_started_ns;
 static int64_t w_callback_p99, w_callback_max, w_push_p50, w_push_p99, w_push_max, w_present_p50, w_present_p95,
     w_drain_p99, w_drain_max;
-
-/* aaudio_out.c */
-int64_t ao_open_attempts(void);
 
 static int64_t now_ns(void) {
   struct timespec ts;
@@ -466,6 +463,11 @@ static int reset_all(void) {
   atomic_store(&format_seen, 0);
   atomic_store(&format_bad, 0);
   atomic_store(&peak_q15, 0);
+  atomic_store(&trims, 0);
+  atomic_store(&jumps, 0);
+  atomic_store(&inserts, 0);
+  atomic_store(&inserted_frames, 0);
+  atomic_store(&clamp_hits, 0);
   return 1;
 }
 
@@ -1058,7 +1060,7 @@ static int push_owned(int index, slot *s, int gen, const int16_t *pcm, int frame
   atomic_store_explicit(&s->push_frames, frames, memory_order_relaxed);
   if (to_ring) {
     atomic_store_explicit(&s->write, w + frames, memory_order_release);
-    put_mark(s, ps, w + frames, t);
+    put_mark(s, ps, w, t);
   }
   atomic_fetch_add_explicit(&s->pushed, frames, memory_order_relaxed);
   atomic_store_explicit(&s->made, ps->made, memory_order_relaxed);
@@ -1164,10 +1166,10 @@ static void map_marks(slot *s, render_slot *rs, int64_t frame_index, int64_t bas
       rs->marks_tail++;
       continue;
     }
-    if (pos - 1 >= end) break;
+    if (pos >= end) break;
     rs->marks_tail++;
     int64_t present;
-    if (pos - 1 >= base && ao_presentation_ns(frame_index + (pos - 1 - base), &present) == FSV_OK) {
+    if (pos >= base && ao_presentation_ns(frame_index + (pos - base), &present) == FSV_OK) {
       hist_add(&h_present, (present - t) / 1000);
     }
   }
@@ -1244,6 +1246,7 @@ static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int
     from = r;
     to = r + skip;
     atomic_fetch_add_explicit(&s->trimmed, skip, memory_order_relaxed);
+    atomic_fetch_add_explicit(&jumps, 1, memory_order_relaxed);
     spliced(rs);
   } else if (rs->pending != 0) {
     rs->pending_age += n;
@@ -1254,6 +1257,7 @@ static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int
         from = r;
         to = r + k;
         atomic_fetch_add_explicit(&s->trimmed, k, memory_order_relaxed);
+        atomic_fetch_add_explicit(&trims, 1, memory_order_relaxed);
         spliced(rs);
       }
     } else {
@@ -1262,7 +1266,8 @@ static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int
         hold = k;
         rs->insert_next = 1;
         rs->insert_from = r + n;
-        rs->inserted += k;
+        atomic_fetch_add_explicit(&inserts, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&inserted_frames, k, memory_order_relaxed);
         spliced(rs);
       }
     }
@@ -1435,8 +1440,10 @@ static void render_piece(int16_t *out, int n, int64_t frame_index) {
   fsv_compressor_run_stereo(limiter, left, right, n);
 
   float peak = 0.0f;
+  int clamped = 0;
   for (int k = 0; k < n; k++) {
     float l = left[k] * trim_gain, r = right[k] * trim_gain;
+    if (fabsf(l) > FSV_VOICE_CEILING || fabsf(r) > FSV_VOICE_CEILING) clamped++;
     l = l > FSV_VOICE_CEILING ? FSV_VOICE_CEILING : l < -FSV_VOICE_CEILING ? -FSV_VOICE_CEILING : l;
     r = r > FSV_VOICE_CEILING ? FSV_VOICE_CEILING : r < -FSV_VOICE_CEILING ? -FSV_VOICE_CEILING : r;
     out[2 * k] = to_s16(l);
@@ -1444,6 +1451,7 @@ static void render_piece(int16_t *out, int n, int64_t frame_index) {
     float a = fmaxf(fabsf(l), fabsf(r));
     if (a > peak) peak = a;
   }
+  if (clamped > 0) atomic_fetch_add_explicit(&clamp_hits, clamped, memory_order_relaxed);
   int q15 = (int)(peak * 32768.0f + 0.5f);
   int cur = atomic_load_explicit(&peak_q15, memory_order_relaxed);
   while (q15 > cur && !atomic_compare_exchange_weak_explicit(&peak_q15, &cur, q15, memory_order_relaxed,
@@ -1624,6 +1632,11 @@ void fsv_engine_stats(int64_t out[FSV_STATS_LEN]) {
   out[FSV_STATS_TAP_DROPPED] = atomic_load(&tap_dropped);
   out[FSV_STATS_PEAK_Q15] = atomic_exchange(&peak_q15, 0);
   out[FSV_STATS_CALLBACKS] = atomic_load(&callbacks);
+  out[FSV_STATS_TRIMS] = atomic_load(&trims);
+  out[FSV_STATS_JUMPS] = atomic_load(&jumps);
+  out[FSV_STATS_INSERTS] = atomic_load(&inserts);
+  out[FSV_STATS_INSERTED_FRAMES] = atomic_load(&inserted_frames);
+  out[FSV_STATS_CLAMP_HITS] = atomic_load(&clamp_hits);
   for (int i = 0; i < FSV_SLOTS; i++) {
     int64_t *o = &out[FSV_STATS_SLOT_BASE + FSV_STATS_SLOT_STRIDE * i];
     o[FSV_SLOT_UNDERRUNS] = atomic_load(&slots[i].underruns);

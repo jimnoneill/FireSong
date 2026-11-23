@@ -57,8 +57,8 @@ class DoorCodecTest {
         assertEquals(PageMessage.Mix(2, 0.0, 2.0), page("""{"t":"mix","slot":2,"volume":0,"echo":2}"""))
         assertEquals(PageMessage.Tap(1, true), page("""{"t":"tap","slot":1,"on":true}"""))
         assertEquals(
-            PageMessage.EchoMix(0.35, 0.95, 20000.0, 1.0),
-            page("""{"t":"echo-mix","wet":0.35,"feedback":0.95,"lowpassHz":20000,"reverbSend":1}"""),
+            PageMessage.EchoMix(0.35, 0.6, 20000.0, 1.0),
+            page("""{"t":"echo-mix","wet":0.35,"feedback":0.6,"lowpassHz":20000,"reverbSend":1}"""),
         )
         assertEquals(
             PageMessage.EchoMix(0.0, 0.0, 500.0, 0.0),
@@ -158,7 +158,7 @@ class DoorCodecTest {
         fatal("""{"t":"mix","slot":1,"volume":1,"echo":-1}""")
         fatal("""{"t":"mix","slot":1,"volume":"1","echo":1}""")
         fatal("""{"t":"echo-mix","wet":1.1,"feedback":0.5,"lowpassHz":4000,"reverbSend":0.5}""")
-        fatal("""{"t":"echo-mix","wet":0.5,"feedback":0.951,"lowpassHz":4000,"reverbSend":0.5}""")
+        fatal("""{"t":"echo-mix","wet":0.5,"feedback":0.601,"lowpassHz":4000,"reverbSend":0.5}""")
         fatal("""{"t":"echo-mix","wet":0.5,"feedback":0.5,"lowpassHz":499.9,"reverbSend":0.5}""")
         fatal("""{"t":"echo-mix","wet":0.5,"feedback":0.5,"lowpassHz":20000.1,"reverbSend":0.5}""")
         fatal("""{"t":"echo-mix","wet":0.5,"feedback":0.5,"lowpassHz":4000,"reverbSend":-0.5}""")
@@ -694,8 +694,8 @@ class DoorCodecTest {
                 keys(
                     "t", "open", "outputLatencyMs", "burstFrames", "bufferFrames", "xruns", "restarts", "openAttempts",
                     "callbackP99Us", "callbackMaxUs", "pushIntervalP50Us", "pushIntervalP99Us", "pushIntervalMaxUs",
-                    "pushToPresentP50Ms", "pushToPresentP95Ms", "tapDropped", "tapDrainP99Us", "tapDrainMaxUs", "peak",
-                    "sinkErrors", "ignored", "apm", "slots",
+                    "pushToPresentP50Ms", "pushToPresentP95Ms", "tapDropped", "tapDrainP99Us", "tapDrainMaxUs", "trims",
+                    "jumps", "inserts", "insertedFrames", "clampHits", "peak", "sinkErrors", "ignored", "apm", "slots",
                 )
                 val slots = o.getJSONArray("slots")
                 EngineStatsMsg(
@@ -716,6 +716,11 @@ class DoorCodecTest {
                     o.getLong("tapDropped"),
                     o.getLong("tapDrainP99Us"),
                     o.getLong("tapDrainMaxUs"),
+                    o.getLong("trims"),
+                    o.getLong("jumps"),
+                    o.getLong("inserts"),
+                    o.getLong("insertedFrames"),
+                    o.getLong("clampHits"),
                     o.getDouble("peak"),
                     o.getLong("sinkErrors"),
                     o.getLong("ignored"),
@@ -811,6 +816,11 @@ class DoorCodecTest {
             tapDropped = 0,
             tapDrainP99Us = 11800,
             tapDrainMaxUs = 21000,
+            trims = 4,
+            jumps = 1,
+            inserts = 6,
+            insertedFrames = 840,
+            clampHits = 37,
             peak = 0.4987,
             sinkErrors = 0,
             ignored = 5,

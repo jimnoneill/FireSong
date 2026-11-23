@@ -53,11 +53,13 @@ object NativeMics {
     @JvmStatic external fun slotStatus(slot: Int, out: FloatArray)
 
     /**
-     * out[0..18]: open, outputLatencyUs (-1 unknown), burstFrames, bufferFrames, xruns, restarts,
+     * out[0..23]: open, outputLatencyUs (-1 unknown), burstFrames, bufferFrames, xruns, restarts,
      * callbackP99Us, callbackMaxUs, pushIntervalP50Us, pushIntervalP99Us, pushIntervalMaxUs,
      * pushToPresentP50Us, pushToPresentP95Us, tapDropped, peakQ15 (reset on read), callbacks,
-     * tapDrainP99Us, tapDrainMaxUs, openAttempts; 19-23 reserved; then per slot at 24 + 4 * (slot - 1):
-     * underruns, trimmedFrames, marginFrames, pushedFrames.
+     * tapDrainP99Us, tapDrainMaxUs, openAttempts, trims, jumps, inserts, insertedFrames, clampHits; then per
+     * slot at 24 + 4 * (slot - 1): underruns, trimmedFrames, marginFrames, pushedFrames. The percentiles and
+     * maxima cover the window since the previous call at least 900 ms before; the counters are cumulative
+     * since the engine started (fsv_api.h).
      */
     @JvmStatic external fun engineStats(out: LongArray)
 

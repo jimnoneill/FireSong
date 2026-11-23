@@ -23,8 +23,11 @@ paused (a screensaver may hide a paused app, so it counts as busy); exit 2
 otherwise. A Cube that fell asleep keeps its last app on top; the run goes HOME
 after waking it. Song playback is
 turned almost silent for the run; the tone and voices come out of the TV
-quietly. Restores the Cube (URL, HOME, sleep) and the volume. Exit 0 = PASS,
-1 = FAIL, 2 = TV busy (nothing touched), 3 = could not get FireSong onto the TV.
+quietly. Restores the Cube (URL with its flags, --restore-flags or
+FIRESONG_TV_URL_FLAGS; HOME; sleep) and the volume. The TV's flight times are
+moved to the host's clock, so a Cube whose clock is off does not shift them
+against the run. Exit 0 = PASS, 1 = FAIL, 2 = TV busy (nothing touched), 3 =
+could not get FireSong onto the TV.
 """
 from __future__ import annotations
 
@@ -192,20 +195,6 @@ def set_master(config: pathlib.Path, value: float | None, saved: dict) -> None:
     tmp.replace(config)
 
 
-def records(since_ms: int) -> list[dict]:
-    rows = []
-    for path in sorted((data_path() / "firesong/sessions").glob("*.jsonl")):
-        for line in path.read_text().splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            row["t"] = int(row.get("wall", row.get("t", 0)))
-            if row["t"] >= since_ms:
-                rows.append(row)
-    return sorted(rows, key=lambda r: r["t"])
-
-
 def judge(rows: list[dict], prep_secs: float | None, prep_limit: float, run_end: int) -> dict:
     checks: dict[str, dict] = {}
 
@@ -258,8 +247,11 @@ def main() -> int:
     ap.add_argument("--prep-song", required=True, help="file hash of a song that is not prepared")
     ap.add_argument("--prep-limit", type=float, default=120.0)
     ap.add_argument("--tone-gain", type=float, default=0.02)
+    ap.add_argument("--restore-flags", default=None,
+                    help="URL flags FireSong keeps after the run, e.g. '&voice=native' (default: FIRESONG_TV_URL_FLAGS, else none)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    keep_flags = L.restore_flags(args.restore_flags)
 
     serial = L.env_value("FIRESONG_CUBE_SERIAL")
     lan_url = f"https://{L.env_value('FIRESONG_LAN_IP')}:{L.env_value('FIRESONG_TV_PORT') or 64443}/?tv=1&mode=noraebang"
@@ -286,6 +278,13 @@ def main() -> int:
     prep_secs = None
     paused = None
     setup_failed = False
+    clock = L.PageClock()
+    tv = None
+
+    def step(what: str) -> None:
+        clock.sample(lambda: tv.eval("Date.now()"))
+        print(f"step: {what}", flush=True)
+
     try:
         set_master(config, QUIET_MASTER, saved)
         L.cmd("clear_playback_queue")
@@ -304,14 +303,14 @@ def main() -> int:
         phone.call("Input.insertText", {"text": "Gate"})
         phone.tap('document.querySelector("#phone-panel-sing button[type=submit]")')
         L.wait_for("phone on the TV", lambda: tv.eval("fireSongDiag.snapshot().devices.length >= 1"), 40)
-        print("step: lobby with a phone", flush=True)
+        step("lobby with a phone")
         time.sleep(25)
 
-        print(f"step: phone reserves '{ready['title']}'", flush=True)
+        step(f"phone reserves '{ready['title']}'")
         reserve(phone, ready["title"])
         L.wait_for("the lobby starts the song", playing, 60)
         time.sleep(SING_SECS)
-        print("step: Back pauses, OK resumes", flush=True)
+        step("Back pauses, OK resumes")
         cube.sh("input keyevent KEYCODE_BACK")
         time.sleep(3)
         paused = not playing()
@@ -321,7 +320,7 @@ def main() -> int:
         L.cmd("request_playback_command", {"command": "exit"})
         L.wait_for("back in the lobby", lambda: not playing(), 20)
 
-        print(f"step: phone reserves unprepared '{prep['title']}'", flush=True)
+        step(f"phone reserves unprepared '{prep['title']}'")
         t_prep = time.time()
         reserve(phone, prep["title"])
         L.wait_for("song prepared", lambda: prepared(prep), args.prep_limit + 60, every=3)
@@ -332,7 +331,7 @@ def main() -> int:
         L.wait_for("back in the lobby", lambda: not playing(), 20)
         L.cmd("clear_playback_queue")
 
-        print("step: the remote picks a song on the TV", flush=True)
+        step("the remote picks a song on the TV")
         time.sleep(3)
         for key in ("DPAD_CENTER", "DPAD_CENTER"):
             cube.sh(f"input keyevent KEYCODE_{key}")
@@ -342,6 +341,7 @@ def main() -> int:
         time.sleep(20)
         L.cmd("request_playback_command", {"command": "exit"})
         time.sleep(8)
+        clock.sample(lambda: tv.eval("Date.now()"))
     except SetupError as error:
         print(f"could not run: {error}", flush=True)
         setup_failed = True
@@ -363,7 +363,7 @@ def main() -> int:
         subprocess.run([tvctl, "home"], capture_output=True, timeout=30)
         subprocess.run([tvctl, "undevtools", str(L.TV_CDP)], capture_output=True, timeout=30)
         time.sleep(2)
-        subprocess.run([tvctl, "configure", "--url", lan_url, "--token-file", str(token_file)],
+        subprocess.run([tvctl, "configure", "--url", lan_url + keep_flags, "--token-file", str(token_file)],
                        capture_output=True, timeout=60)
         time.sleep(3)
         subprocess.run([tvctl, "home"], capture_output=True, timeout=30)
@@ -380,10 +380,12 @@ def main() -> int:
         print("RESULT COULD NOT RUN (the Cube is restored)")
         return 3
     time.sleep(6)  # the TV page's last flight batch
-    checks = judge(records(since), prep_secs, args.prep_limit, run_end)
+    offset = round(clock.offset())
+    checks = judge(L.flight_rows(since, int(time.time() * 1000), offset), prep_secs, args.prep_limit, run_end)
     checks["Back pauses"] = {"ok": paused is True}
     passed = all(c["ok"] for c in checks.values())
-    report = {"passed": passed, "checks": checks, "since_ms": since, "cube_after": cube.wakefulness()}
+    report = {"passed": passed, "checks": checks, "since_ms": since, "tv_clock_offset_ms": offset,
+              "restore_flags": keep_flags, "cube_after": cube.wakefulness()}
     (out / "report.json").write_text(json.dumps(report, indent=1))
     for name, c in checks.items():
         print(("PASS " if c["ok"] else "FAIL ") + name + " " + json.dumps({k: v for k, v in c.items() if k != "ok"}))

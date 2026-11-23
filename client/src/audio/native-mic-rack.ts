@@ -1,5 +1,12 @@
 import {
+  ECHO_FEEDBACK_MAX,
+  ECHO_LOWPASS_MAX_HZ,
+  ECHO_LOWPASS_MIN_HZ,
+  ECHO_WET_MAX,
   NATIVE_RATE,
+  REVERB_SEND_MAX,
+  SLOT_ECHO_MAX,
+  SLOT_VOLUME_MAX,
   type AppMessage,
   type NativeMicLinkPort,
   type NativeSlotStatus,
@@ -10,15 +17,6 @@ import type { MicSlot } from '@/features/remote-mic/protocol';
 
 import type { MicRackPort, RackSlotStatus, TapListener } from './mic-rack';
 import type { EchoMix, SlotMix } from './voice-params';
-
-/** The app closes the whole door on a value outside these ranges, so nothing outside them is sent. */
-const SLOT_VOLUME_MAX = 1.5;
-const SLOT_ECHO_MAX = 2;
-const ECHO_WET_MAX = 1;
-const ECHO_FEEDBACK_MAX = 0.95;
-const ECHO_LOWPASS_MIN_HZ = 500;
-const ECHO_LOWPASS_MAX_HZ = 20_000;
-const REVERB_SEND_MAX = 1;
 
 /** `value` held to `[min, max]`; null when it is not a finite number. */
 const bounded = (value: number, min: number, max: number): number | null =>

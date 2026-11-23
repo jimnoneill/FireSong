@@ -3,7 +3,8 @@
 #pragma once
 #include <stdint.h>
 
-/* biquad.c: Web Audio biquads (transposed direct form II) and the setTargetAtTime one-pole. */
+/* biquad.c: Web Audio biquads (transposed direct form II) and the setTargetAtTime one-pole.
+   The coefficient setters keep z1 and z2, so a filter can be retuned mid-stream; fsv_biquad_reset clears them. */
 typedef struct { float b0, b1, b2, a1, a2, z1, z2; } fsv_biquad;
 void  fsv_biquad_highpass(fsv_biquad *f, float fs, float hz, float q_db);
 void  fsv_biquad_lowpass(fsv_biquad *f, float fs, float hz, float q_db);
@@ -16,7 +17,7 @@ void  fsv_ramp_init(fsv_ramp *r, float fs, float tau_s, float value);
 float fsv_ramp_next(fsv_ramp *r);
 
 /* gate.c */
-typedef struct { float env, gain, threshold, env_att, env_rel, gain_att, gain_rel; int hold, hold_samples, meter_samples, meter_count; double meter_sum; } fsv_gate;
+typedef struct { double env, gain; float threshold, env_att, env_rel, gain_att, gain_rel; int hold, hold_samples, meter_samples, meter_count; double meter_sum; } fsv_gate;
 void  fsv_gate_init(fsv_gate *g, float fs, float threshold_rms);   /* linear RMS (FSV_GATE_THRESHOLD), not dB */
 /* returns the gated sample; when *meter_ready is set, *meter_rms / *meter_open hold the last 50 ms block */
 float fsv_gate_run(fsv_gate *g, float x, int *meter_ready, float *meter_rms, int *meter_open);
@@ -34,7 +35,9 @@ float fsv_compressor_static_db(const fsv_compressor *c, float in_db);   /* accep
 typedef struct fsv_echo fsv_echo;               /* opaque; owns a 48000-float line */
 int   fsv_echo_size(void);
 void  fsv_echo_init(fsv_echo *e, float fs);
-void  fsv_echo_set(fsv_echo *e, float feedback, float lowpass_hz);   /* ramped tau 20 ms; delay 120 ms and HP 300 Hz fixed */
+/* ramped tau 20 ms; feedback clamped to 0..0.6 (the loop's gain stays below 1) and lowpass_hz to 0..fs/2,
+   NaN to 0; delay 120 ms and HP 300 Hz fixed */
+void  fsv_echo_set(fsv_echo *e, float feedback, float lowpass_hz);
 float fsv_echo_run(fsv_echo *e, float send);
 void  fsv_echo_reset(fsv_echo *e);
 

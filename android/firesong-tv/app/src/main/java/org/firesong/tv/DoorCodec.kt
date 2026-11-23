@@ -143,7 +143,7 @@ object DoorCodec {
         "tap" -> PageMessage.Tap(f.slot(), f.bool("on"))
         "echo-mix" -> PageMessage.EchoMix(
             wet = f.double("wet", 0.0, 1.0),
-            feedback = f.double("feedback", 0.0, 0.95),
+            feedback = f.double("feedback", 0.0, 0.6),
             lowpassHz = f.double("lowpassHz", 500.0, 20000.0),
             reverbSend = f.double("reverbSend", 0.0, 1.0),
         )
@@ -227,6 +227,11 @@ object DoorCodec {
         put("tapDropped", s.tapDropped)
         put("tapDrainP99Us", s.tapDrainP99Us)
         put("tapDrainMaxUs", s.tapDrainMaxUs)
+        put("trims", s.trims)
+        put("jumps", s.jumps)
+        put("inserts", s.inserts)
+        put("insertedFrames", s.insertedFrames)
+        put("clampHits", s.clampHits)
         put("peak", s.peak)
         put("sinkErrors", s.sinkErrors)
         put("ignored", s.ignored)

@@ -29,6 +29,8 @@ export type PeerEvents = {
   onRestartNeeded(): void;
   onStats(stats: PeerStats): void;
   onError(error: unknown): void;
+  /** An offer went out on a new connection, whose jitter buffer starts afresh. */
+  onNewConnection?(): void;
 };
 
 export type PeerInit = {
@@ -65,11 +67,9 @@ const inboundAudio = (report: RTCStatsReport): Record<string, unknown> | null =>
   return null;
 };
 
-const meanTargetMs = (inbound: Record<string, unknown>): number | null => {
-  const target = numberField(inbound, 'jitterBufferTargetDelay');
-  const emitted = numberField(inbound, 'jitterBufferEmittedCount');
-  return target === null || emitted === null || emitted === 0 ? null : (target / emitted) * 1000;
-};
+/** Mean jitter-buffer target since the stream started, from the cumulative `inbound-rtp` counters. */
+export const meanTargetMs = (target: number | null, emitted: number | null): number | null =>
+  target === null || emitted === null || emitted <= 0 ? null : (target / emitted) * 1000;
 
 const gatheringComplete = (pc: RTCPeerConnection, timeoutMs: number): Promise<void> =>
   new Promise((resolve) => {
@@ -212,7 +212,10 @@ export class TvMicPeer implements PeerPort {
     };
     this.events.onStats({
       jitterMs: this.counters === null ? null : jitterBufferDelayMs(this.counters, counters),
-      jitterBufferTargetMs: meanTargetMs(inbound),
+      jitterBufferTargetMs: meanTargetMs(
+        numberField(inbound, 'jitterBufferTargetDelay'),
+        numberField(inbound, 'jitterBufferEmittedCount'),
+      ),
       packetsReceived: numberField(inbound, 'packetsReceived') ?? 0,
       packetsLost: numberField(inbound, 'packetsLost') ?? 0,
     });

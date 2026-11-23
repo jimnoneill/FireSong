@@ -88,8 +88,6 @@ PITCH_TOL_HZ = 3.0
 PITCH_PASS_SHARE = 0.9
 HEARD_OUT_DB = -45.0
 RECOVERY_LIMIT_S = {"drop": 12.0, "reload": 10.0}
-# A one-second trim this large is a ceiling jump, not drift (engine-stats has no jump counter).
-JUMP_MS = 30.0
 TAP_HIST_CAP_MS = 200
 # Phone capture and Opus encode, and the TV's own processing: the hops the rig cannot see.
 UNSEEN_MS = 32 + 20
@@ -839,6 +837,10 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
         "sink_errors": increase(m.get("sinkErrors") for _, m in eng),
         "ignored": eng[-1][1].get("ignored"), "ignored_rise": increase(m.get("ignored") for _, m in eng),
         "tap_dropped": increase(m.get("tapDropped") for _, m in eng),
+        "trims": increase(m.get("trims") for _, m in eng), "jumps": increase(m.get("jumps") for _, m in eng),
+        "inserts": increase(m.get("inserts") for _, m in eng),
+        "inserted_ms": rnd(increase(m.get("insertedFrames") for _, m in eng) / 48, 1),
+        "clamp_hits": increase(m.get("clampHits") for _, m in eng),
     }
 
     # M1: p50 is a typical value, the per-second median is enough; p99 is a tail (tail_check).
@@ -867,7 +869,8 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
           f"{tail_text('p99', d2, 2, 0.99)}; max {out['M2']['max_ms']} ms (<= 5)")
 
     # M3: an underrun counts when the whole second it was reported in lies UNDERRUN_GRACE_MS after the
-    # slot's latest (re)attach; a jump when it lies JUMP_GRACE_MS after.
+    # slot's latest (re)attach. Jumps and splices are engine-wide counters: a jump counts when its second
+    # lies JUMP_GRACE_MS after the latest (re)attach of any slot.
     anchors = attach_anchors(events, slot_of, by_peer)
     slots3: dict = {}
     present: dict = {}
@@ -880,7 +883,7 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
             seen.add(slot)
             present.setdefault(slot, t)
             acc = slots3.setdefault(slot, {"underruns": 0, "underruns_in_grace": 0, "trim_seconds": 0, "trimmed_ms": 0.0,
-                                           "largest_trim_ms": 0.0, "jumps": 0, "margins": [], "attaches": 0})
+                                           "largest_trim_ms": 0.0, "margins": [], "attaches": 0})
             before = prev.get(slot)
             if before is not None and win(t):
                 xs = anchors.get(slot, [])
@@ -895,8 +898,6 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
                     acc["trim_seconds"] += 1
                     acc["trimmed_ms"] += ms
                     acc["largest_trim_ms"] = max(acc["largest_trim_ms"], ms)
-                    if ms >= JUMP_MS and settled >= JUMP_GRACE_MS:
-                        acc["jumps"] += 1
             if win(t):
                 acc["margins"].append(s.get("marginMs"))
             prev[slot] = s
@@ -911,18 +912,35 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
                          "attaches": sum(1 for a in anchors.get(slot, []) if win(a)),
                          "trims_per_min": round(acc["trim_seconds"] / minutes, 2),
                          "trimmed_ms_per_min": round(acc["trimmed_ms"] / minutes, 1),
-                         "largest_trim_ms": round(acc["largest_trim_ms"], 1), "jumps": acc["jumps"],
+                         "largest_trim_ms": round(acc["largest_trim_ms"], 1),
                          "margin_ms_median": rnd(median(acc["margins"])), "margin_ms_max": rnd(top_value(acc["margins"]))}
-    out["M3"] = {"slots": m3, "xruns": out["engine"]["xruns"]}
+    all_anchors = sorted(a for xs in anchors.values() for a in xs)
+    jumps = jumps_in_grace = 0.0
+    for (t0, m0), (t1, m1) in zip(eng_all, eng_all[1:]):
+        grew = rise(counter(m0, "jumps"), counter(m1, "jumps"))
+        if not grew or not win(t1):
+            continue
+        i = bisect.bisect_right(all_anchors, t1)
+        start = max(all_anchors[i - 1], eng_all[0][0]) if i else eng_all[0][0]
+        if t0 - start >= JUMP_GRACE_MS:
+            jumps += grew
+        else:
+            jumps_in_grace += grew
+    splices = out["engine"]["trims"] + out["engine"]["inserts"]
+    splices_per_slot_min = round(splices / minutes / max(len(m3), 1), 2)
+    out["M3"] = {"slots": m3, "xruns": out["engine"]["xruns"], "jumps": jumps, "jumps_in_grace": jumps_in_grace,
+                 "splices_per_slot_min": splices_per_slot_min}
     check(checks, "M3 underruns/xruns/trims", None if not m3 else not any(v["underruns"] for v in m3.values())
-          and out["engine"]["xruns"] == 0 and all(v["trims_per_min"] <= 5 and v["jumps"] == 0 for v in m3.values()),
+          and out["engine"]["xruns"] == 0 and all(v["trims_per_min"] <= 5 for v in m3.values())
+          and splices_per_slot_min <= 5 and jumps == 0,
           "underruns " + ", ".join(f"slot {k}: {v['underruns']}" for k, v in m3.items())
           + f" ({UNDERRUN_GRACE_MS // 1000} s after each attach; in grace "
           + ", ".join(f"{k}: {v['underruns_in_grace']}" for k, v in m3.items())
-          + f"); xruns {out['engine']['xruns']:.0f}; trims/min "
-          + ", ".join(f"{k}: {v['trims_per_min']}" for k, v in m3.items()) + " (<= 5); jumps "
-          + ", ".join(f"{k}: {v['jumps']}" for k, v in m3.items())
-          + f" (one-second trims >= {JUMP_MS:.0f} ms, {JUMP_GRACE_MS // 1000} s after each attach)")
+          + f"); xruns {out['engine']['xruns']:.0f}; seconds with a trim per min "
+          + ", ".join(f"{k}: {v['trims_per_min']}" for k, v in m3.items())
+          + f" (<= 5); splices {splices:.0f} (trims {out['engine']['trims']:.0f}, inserts"
+          + f" {out['engine']['inserts']:.0f}), {splices_per_slot_min} per slot per min (<= 5); jumps {jumps:.0f}"
+          + f" ({JUMP_GRACE_MS // 1000} s after any attach; in grace {jumps_in_grace:.0f})")
 
     latency = [m["outputLatencyMs"] for m in opened if number(m.get("outputLatencyMs"))]
     out["M5"] = {"p50_ms": rnd(median(latency)), "max_ms": rnd(top_value(latency))}
@@ -1061,9 +1079,11 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
 
     voice_peak = top_value(m.get("peak") for _, m in eng)
     song_peak = top_value(v for t, v in song_peaks if win(t))
-    out["H1"] = {"voice_peak_max": rnd(voice_peak, 3), "song_peak_max": rnd(song_peak, 3)}
+    out["H1"] = {"voice_peak_max": rnd(voice_peak, 3), "song_peak_max": rnd(song_peak, 3),
+                 "voice_clamp_hits": out["engine"]["clamp_hits"]}
     check(checks, "H1 headroom", None if voice_peak is None or song_peak is None else voice_peak <= 0.5 and song_peak <= 0.5,
-          f"voice peak {out['H1']['voice_peak_max']} (<= 0.5), song peak {out['H1']['song_peak_max']} (<= 0.5)")
+          f"voice peak {out['H1']['voice_peak_max']} (<= 0.5), song peak {out['H1']['song_peak_max']} (<= 0.5);"
+          f" voice frames clamped {out['H1']['voice_clamp_hits']:.0f} (report only)")
 
     out["monitor"] = [m for t, m in door_messages(events, "monitor-result") if win(t)]
     smoke = {"ready_ok": bool(ready_ok), "audio": (ready_ok or {}).get("audio"),
@@ -1093,6 +1113,8 @@ def format_native(rep: dict) -> str:
                  f" buffer {e['buffer_frames']}, xruns {e['xruns']:.0f}, restarts {e['restarts']:.0f},"
                  f" open attempts {e['open_attempts']}, sink errors {e['sink_errors']:.0f}, ignored {e['ignored']},"
                  f" apm {e['apm']}")
+    lines.append(f"splices: trims {e['trims']:.0f}, jumps {e['jumps']:.0f}, inserts {e['inserts']:.0f}"
+                 f" ({e['inserted_ms']} ms); voice frames clamped {e['clamp_hits']:.0f}")
     lines.append("Cube-side electrical latency per slot (ms; NetEQ after warm-up)")
     lines.append("  slot      RTT/2   NetEQ mean (target)   push->present p50   Σ p50   Σ p95   mouth->speaker   n")
     for key, s in rep["sigma"].items():

@@ -273,6 +273,8 @@ Rules it enforces, because the Cube is the family TV and its owner is away:
 - Mutating commands take a lock (`$XDG_RUNTIME_DIR/firesong-cube.lock`), so two sessions do not drive the TV at once.
 - When you are done: `cube.sh home` and `cube.sh unreverse`.
 
+The test rigs (`party-gate.py`, `party-rig.py --tv cube`, `cube-load-test.py`) set the TV's URL for their run and put it back afterwards with the flags in `FIRESONG_TV_URL_FLAGS` (`&name=value` pairs, such as `&voice=native`; none when unset), or with `--restore-flags`. Keep that setting in step with the URL the TV normally runs, or a run quietly switches the TV back to the default voice path. They also move the TV's flight times onto the server machine's clock, so a Cube clock that is off does not shift them.
+
 ## 5. Party checklist
 
 Before:

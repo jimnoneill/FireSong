@@ -75,7 +75,7 @@ sealed class PageMessage(val t: String) {
 
     data class Tap(val slot: Int, val on: Boolean) : PageMessage("tap")
 
-    /** `wet` 0..1, `feedback` 0..0.95, `lowpassHz` 500..20000, `reverbSend` 0..1. */
+    /** `wet` 0..1, `feedback` 0..0.6 (the echo loop's stable range), `lowpassHz` 500..20000, `reverbSend` 0..1. */
     data class EchoMix(val wet: Double, val feedback: Double, val lowpassHz: Double, val reverbSend: Double) :
         PageMessage("echo-mix")
 
@@ -92,7 +92,10 @@ sealed class AppMessage(val t: String) {
         val outputLatencyMs: Double?,
     ) : AppMessage("ready")
 
-    /** On the wire with `v` and `ok: false`. */
+    /**
+     * On the wire with `v` and `ok: false`. `webrtc`: libwebrtc already failed to start in this process; a first
+     * failure comes after `ready`, as [Fatal] `webrtc`.
+     */
     data class ReadyFailed(val reason: ReadyFailReason) : AppMessage("ready")
 
     /** The raw local description, candidates included. */
@@ -167,8 +170,14 @@ data class SlotStatusMsg(
 data class EngineSlotStatsMsg(val slot: Int, val underruns: Long, val trimmedFrames: Long, val marginMs: Double)
 
 /**
- * `openAttempts` counts the session's AAudio open attempts (NativeMics.engineStats out[18]). `apm` is null
- * until known, then "none" or the effective components, e.g. "ec:SOFTWARE,ns:SOFTWARE".
+ * Every second. The `P50`/`P95`/`P99`/`Max` fields cover one window, the samples since the previous engine-stats
+ * (the engine starts a new window at most once per 900 ms, so each is about 1 s). Cumulative since this
+ * connection's `hello` started the engine: `xruns`, `restarts`, `openAttempts` (AAudio open attempts),
+ * `tapDropped`, `trims` (trim splices), `jumps` (ceiling jumps), `inserts` (insert splices), `insertedFrames`,
+ * `clampHits` (output frames the voice ceiling clamp cut), and per slot `underruns` and `trimmedFrames` (trims and
+ * jumps). `sinkErrors` counts since the app started, `ignored` since this connection opened. `peak` is the output
+ * peak since the previous engine-stats. `apm` is null until known, then "none" or the effective components, e.g.
+ * "ec:SOFTWARE,ns:SOFTWARE".
  */
 data class EngineStatsMsg(
     val open: Boolean,
@@ -188,6 +197,11 @@ data class EngineStatsMsg(
     val tapDropped: Long,
     val tapDrainP99Us: Long,
     val tapDrainMaxUs: Long,
+    val trims: Long,
+    val jumps: Long,
+    val inserts: Long,
+    val insertedFrames: Long,
+    val clampHits: Long,
     val peak: Double,
     val sinkErrors: Long,
     val ignored: Long,
@@ -199,13 +213,20 @@ data class EngineStatsMsg(
 interface PageChannel {
     fun send(message: AppMessage)
 
-    /** Tap blocks are waiting in the engine: drain them now. */
+    /**
+     * Tap blocks are waiting in the engine: drain them now. Never blocks or allocates, because the sinks call it on
+     * libwebrtc's audio thread.
+     */
     fun wakeTap()
 
     fun close(code: Int)
 }
 
-/** The app's side of one page connection. */
+/**
+ * The app's side of one page connection. No [onMessage] or [onIgnored] follows [onClosed]. Callbacks must not
+ * block or call into the door: the door may wait for a callback in progress to return (on a replacement or
+ * `VoiceDoor.close()`).
+ */
 interface PageHandler {
     fun onMessage(message: PageMessage)
 

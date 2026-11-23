@@ -20,16 +20,23 @@ transit (RTT/2) + jitter buffer (after a 60 s warm-up, with its target) +
 push-to-present, as well as push intervals, callback times, underruns, xruns,
 trims, headroom and tap steadiness, each against its pass limit.
 
---ab plays the same song with the same phones on web and then on native and
+--ab plays the same song with the same phones on web and then on native (or
+native first with --native-first), each in a freshly started app process, and
 compares per-process CPU medians, Native Heap and .so mmap PSS at matched song
-positions, the MemAvailable minimum, trim-memory warnings, low-memory kills and
-the crash log. --fallback drops the native link (fireSongDiag.dropNativeLink)
-or reloads the TV page mid-song and times how long until every phone is heard
-again with its pitch reaching the scorer.
+positions, and the MemAvailable minimum. Every phase also checks that the app
+process survived, and its trim-memory warnings, low-memory kills and crash log
+lines. --fallback drops the native link (fireSongDiag.dropNativeLink) or reloads
+the TV page mid-song and times how long until every phone is heard again with
+its pitch reaching the scorer.
+
+Tail limits (a p99 or p95 at most so much) are judged from the app's per-second
+quantiles: PASS when the whole run provably keeps the limit, FAIL when it
+provably does not or the median second breaks it, INCONCLUSIVE in between
+(the last line then lists those checks as well as the failures).
 
     cube-load-test.py --song <file hash> [--phones 4] [--seconds 90] [--gain 0.05]
-                      [--voice web|native | --ab] [--fallback drop|reload [--fallback-at SECS]]
-                      [--warmup 60] [--out DIR]
+                      [--voice web|native | --ab [--native-first]] [--fallback drop|reload [--fallback-at SECS]]
+                      [--warmup 60] [--restore-flags '&voice=native'] [--out DIR]
     cube-load-test.py --analyze <report.json> [--warmup 60]
 
 Needs: firesong.service with the phone door on 127.0.0.1:64449, the Cube's
@@ -37,7 +44,10 @@ serial in FIRESONG_CUBE_SERIAL (or ~/.config/firesong/firesong.env), Google
 Chrome, the websocket-client package, and the TV idle (launcher or asleep, with
 nothing playing). The tones and the song come out of the TV speakers at the
 normal volume (the headroom check needs the song's real level).
-Restores the Cube: the app's URL, HOME, and sleep if it was asleep.
+Restores the Cube: the app's URL (with the flags of --restore-flags or
+FIRESONG_TV_URL_FLAGS, so a TV on the native voices stays on them), HOME, and
+sleep if it was asleep. Times recorded on the TV page are moved to the host's
+clock, so a Cube whose clock is off does not shift them against the song.
 """
 from __future__ import annotations
 
@@ -83,6 +93,14 @@ JUMP_MS = 30.0
 TAP_HIST_CAP_MS = 200
 # Phone capture and Opus encode, and the TV's own processing: the hops the rig cannot see.
 UNSEEN_MS = 32 + 20
+# Underruns while a newly attached slot primes, and trims while its buffer settles, are expected.
+UNDERRUN_GRACE_MS = 2000
+JUMP_GRACE_MS = 10_000
+# A slot unseen in the record for this long may have detached and attached again in between.
+GAP_MS = 3000
+# A check whose data can neither prove nor rule out its limit (see tail_check).
+INCONCLUSIVE = "inconclusive"
+URL_FLAGS = r"(&[A-Za-z0-9_]+=[A-Za-z0-9_.-]*)*"
 
 FAKE_MIC = r"""
 (() => {
@@ -106,21 +124,25 @@ LOAD_MIC = FAKE_MIC.replace("osc.frequency.value =", "osc.type = 'sawtooth'; osc
 # Installed on the TV page before its scripts run. It records the voice door
 # (the loopback WebSocket to the TV app): every app message except ICE and the
 # SDP, the page's own messages without SDP, candidates, ICE servers or mic ids,
-# the slot status at 1 Hz, and the binary tap messages' arrival intervals and
-# per-slot sequence gaps. It also counts the renderer's long tasks.
+# the slot status at 1 Hz (and at once when a slot attaches or detaches), and
+# the binary tap messages' arrival intervals and per-slot sequence gaps. Every
+# event names its socket, unique per page load (the page numbers its peers per
+# load, so a reload reuses peer ids). It also counts the renderer's long tasks.
 DOOR_JS = r"""
 (() => {
   if (window.__door) return;
   const freshTap = () => ({ msgs: 0, blocks: 0, zero: 0, bad: 0, missing: {}, resets: {}, perSlot: {}, iv: [] });
+  const load = Math.round(performance.timeOrigin || Date.now()).toString(36) + Math.random().toString(36).slice(2, 6);
   const door = window.__door = {
-    events: [], sockets: 0, state: 'none', last: {}, tap: freshTap(), long: { n: 0, ms: 0, max: 0 }, ice: 0,
+    events: [], sockets: 0, state: 'none', last: {}, tap: freshTap(), long: { n: 0, ms: 0, max: 0 }, ice: 0, load,
   };
   const seqs = {};
   const tapping = new Set();
   let lastArrival = null;
   let lastStatus = 0;
-  const keep = (dir, m) => {
-    door.events.push({ t: Date.now(), dir, m });
+  let lastAttached = '';
+  const keep = (sock, dir, m) => {
+    door.events.push({ t: Date.now(), dir, sock, m });
     if (door.events.length > 20000) door.events.splice(0, 5000);
   };
   const HIDDEN = new Set(['sdp', 'candidate', 'iceServers', 'micId']);
@@ -129,14 +151,15 @@ DOOR_JS = r"""
     for (const [k, v] of Object.entries(m)) if (!HIDDEN.has(k)) out[k] = v;
     return out;
   };
-  const onText = (dir, data) => {
+  const onText = (sock, dir, data) => {
     let m;
-    try { m = JSON.parse(data); } catch (e) { keep(dir, { t: '?', bytes: String(data).length }); return; }
+    try { m = JSON.parse(data); } catch (e) { keep(sock, dir, { t: '?', bytes: String(data).length }); return; }
     if (!m || typeof m !== 'object') return;
     if (m.t === 'ice') { door.ice += 1; return; }
-    if (dir === 'out' && m.t === 'tap') {
+    // Arrivals are timed only while some slot is tapped; a release ends a slot's tap as tap off does.
+    if (dir === 'out' && (m.t === 'tap' || m.t === 'release')) {
       const before = tapping.size;
-      if (m.on) tapping.add(m.slot); else tapping.delete(m.slot);
+      if (m.t === 'tap' && m.on) tapping.add(m.slot); else tapping.delete(m.slot);
       if (tapping.size === 0 || before === 0) lastArrival = null;
     }
     if (dir === 'in') {
@@ -144,11 +167,14 @@ DOOR_JS = r"""
       if (m.t === 'status') {
         const now = Date.now();
         door.last.status = { t: now, slots: m.slots };
-        if (now - lastStatus < 950) return;
+        const attached = (Array.isArray(m.slots) ? m.slots : [])
+          .map((x) => `${x && x.slot}:${x && x.attached ? 1 : 0}`).join(',');
+        if (now - lastStatus < 950 && attached === lastAttached) return;
         lastStatus = now;
+        lastAttached = attached;
       }
     }
-    keep(dir, slim(m));
+    keep(sock, dir, slim(m));
   };
   const onBinary = (data) => {
     const tap = door.tap;
@@ -184,24 +210,27 @@ DOOR_JS = r"""
       if (!url || url.hostname !== '127.0.0.1' || url.pathname !== '/voice') return;
       door.sockets += 1;
       const id = door.sockets;
-      this.__rigDoor = id;
+      const sock = `${load}.${id}`;
+      this.__rigDoor = sock;
       door.state = 'connecting';
-      keep('sock', { ev: 'connect', id });
-      this.addEventListener('open', () => { door.state = 'open'; keep('sock', { ev: 'open', id }); });
-      this.addEventListener('error', () => keep('sock', { ev: 'error', id }));
+      lastStatus = 0;
+      lastAttached = '';
+      keep(sock, 'sock', { ev: 'connect', id });
+      this.addEventListener('open', () => { door.state = 'open'; keep(sock, 'sock', { ev: 'open', id }); });
+      this.addEventListener('error', () => keep(sock, 'sock', { ev: 'error', id }));
       this.addEventListener('close', (e) => {
         if (door.sockets === id) door.state = 'closed';
         lastArrival = null;
         tapping.clear();
-        keep('sock', { ev: 'close', id, code: e.code, clean: e.wasClean });
+        keep(sock, 'sock', { ev: 'close', id, code: e.code, clean: e.wasClean });
       });
       this.addEventListener('message', (e) => {
-        if (typeof e.data === 'string') onText('in', e.data);
+        if (typeof e.data === 'string') onText(sock, 'in', e.data);
         else if (e.data instanceof ArrayBuffer) onBinary(e.data);
       });
     }
     send(data) {
-      if (this.__rigDoor && typeof data === 'string') onText('out', data);
+      if (this.__rigDoor && typeof data === 'string') onText(this.__rigDoor, 'out', data);
       return super.send(data);
     }
   }
@@ -225,36 +254,43 @@ DOOR_JS = r"""
 })();
 """
 
-# One sample of the TV page: drains the door recorder and reads the diagnostics
-# (pitch of each watched capture, rack status, backend, stage). Called with the
-# capture ids to watch; watching is idempotent and survives a page reload.
+# One sample of the TV page: reads the diagnostics (pitch of each watched
+# capture, rack status, backend, stage), each call guarded so one failing
+# reader costs only its own field, then drains the door recorder last, so
+# nothing drained is lost to an exception. Called with the capture ids to
+# watch; watching is idempotent and survives a page reload.
 TICK_JS = r"""
 ((ids) => {
   const d = window.fireSongDiag;
   if (!d) return null;
+  const errors = [];
+  const read = (name, f, fallback) => {
+    try { const v = f(); return v === undefined ? fallback : v; }
+    catch (e) { errors.push(`${name}: ${String(e).slice(0, 120)}`); return fallback; }
+  };
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10000) / 10000 : null);
   const pitch = {};
   for (const id of ids) {
-    d.watchPitch(id);
-    const p = d.pitches(id);
-    if (p) pitch[id] = { frames: p.frames, voiced: p.voiced, tail: p.pitches.slice(-120) };
+    const p = read('pitches', () => { d.watchPitch(id); return d.pitches(id); }, null);
+    if (p) pitch[id] = { frames: p.frames, voiced: p.voiced, tail: Array.isArray(p.pitches) ? p.pitches.slice(-120) : [] };
   }
-  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10000) / 10000 : null);
   const slots = [1, 2, 3, 4].map((s) => {
-    const x = d.slotStatus(s);
+    const x = read('slotStatus', () => d.slotStatus(s), null);
     return x ? { slot: s, attached: !!x.attached, monitored: !!x.monitored, muted: !!x.muted,
                  gateOpen: !!x.gateOpen, levelRms: num(x.levelRms) } : null;
   });
-  let backend = null;
-  try { backend = typeof d.voiceBackend === 'function' ? d.voiceBackend() : null; }
-  catch (e) { backend = { error: String(e) }; }
+  const backend = read('voiceBackend', () => (typeof d.voiceBackend === 'function' ? d.voiceBackend() : null), null);
+  const stage = read('stage', () => d.stage(), null);
+  const snap = read('snapshot', () => d.snapshot(), null);
+  const engine = read('engine', () => d.engine(), null);
+  const video = read('video', () => [...document.querySelectorAll('video')].filter((v) => !v.paused).map((v) => {
+    const q = v.getVideoPlaybackQuality();
+    return { decoded: q.totalVideoFrames, dropped: q.droppedVideoFrames };
+  }), []);
   const door = window.__door;
   return {
-    door: door ? { ...door.take(), state: door.state, last: door.last } : null,
-    pitch, slots, backend, stage: d.stage(), connected: d.snapshot().connected, engine: d.engine().state,
-    video: [...document.querySelectorAll('video')].filter((v) => !v.paused).map((v) => {
-      const q = v.getVideoPlaybackQuality();
-      return { decoded: q.totalVideoFrames, dropped: q.droppedVideoFrames };
-    }),
+    pitch, slots, backend, stage, connected: snap ? !!snap.connected : null, engine: engine ? engine.state : null,
+    video, errors, door: door ? { ...door.take(), state: door.state, last: door.last, load: door.load } : null,
   };
 })
 """
@@ -274,6 +310,18 @@ def env_value(name: str) -> str | None:
 
 def data_path() -> pathlib.Path:
     return pathlib.Path(env_value("NIGHTINGALE_DATA_PATH") or "/mnt/fast/firesong/data")
+
+
+def restore_flags(given: str | None = None) -> str:
+    """The URL flags FireSong on the Cube runs with outside the rig, put back on restore.
+
+    From --restore-flags, else FIRESONG_TV_URL_FLAGS (environment or firesong.env), e.g.
+    `&voice=native` once the native voices are rolled out; none by default.
+    """
+    flags = given if given is not None else (env_value("FIRESONG_TV_URL_FLAGS") or "")
+    if not re.fullmatch(URL_FLAGS, flags):
+        raise SystemExit(f"URL flags must be &name=value pairs, not {flags!r}")
+    return flags
 
 
 class Cdp:
@@ -419,8 +467,12 @@ def wait_for(what: str, fn, timeout: float, every: float = 1.0):
     raise RuntimeError(f"timed out waiting for {what}")
 
 
-def flight_rows(since_ms: int, until_ms: int) -> list[dict]:
-    """Flight records between two times (the TV's own clock where it has one)."""
+def flight_rows(since_ms: int, until_ms: int, tv_offset_ms: float = 0.0) -> list[dict]:
+    """Flight records between two host times.
+
+    A TV row is placed by its own clock (`wall`, which stays right for rows the TV sent late),
+    moved to the host's by `tv_offset_ms` (host minus TV, from PageClock).
+    """
     rows = []
     for path in sorted((data_path() / "firesong/sessions").glob("*.jsonl")):
         for line in path.read_text().splitlines():
@@ -428,7 +480,7 @@ def flight_rows(since_ms: int, until_ms: int) -> list[dict]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            row["t"] = int(row.get("wall", row.get("t", 0)))
+            row["t"] = int(round(row["wall"] + tv_offset_ms)) if number(row.get("wall")) else int(row.get("t", 0))
             if since_ms <= row["t"] <= until_ms:
                 rows.append(row)
     return sorted(rows, key=lambda r: r["t"])
@@ -479,6 +531,102 @@ def top_value(values) -> float | None:
 
 def rnd(v, digits: int = 1):
     return None if v is None else round(v, digits)
+
+
+class PageClock:
+    """Host clock minus the TV page's clock (ms), to read the page's Date.now() stamps on the host's clock.
+
+    Each sample reads the page's Date.now() over DevTools; the host time halfway through the round
+    trip is the same instant to within half the round trip, so the shortest recent round trip wins.
+    """
+
+    def __init__(self) -> None:
+        self.recent: list[tuple[float, float]] = []
+
+    def sample(self, read_page_now) -> None:
+        before = time.time() * 1000
+        try:
+            page = read_page_now()
+        except (RuntimeError, OSError, websocket.WebSocketException):
+            return
+        after = time.time() * 1000
+        if number(page):
+            self.recent = (self.recent + [(after - before, (before + after) / 2 - page)])[-30:]
+
+    def offset(self) -> float:
+        return min(self.recent)[1] if self.recent else 0.0
+
+
+def on_host_clock(events, offset: float) -> list[dict]:
+    """The door recorder's events with their page-clock times moved to the host clock."""
+    if not offset:
+        return list(events)
+    return [{**e, "t": int(round(e["t"] + offset))} if number(e.get("t")) else e for e in events]
+
+
+def verdict_label(v) -> str:
+    if v is True:
+        return "PASS"
+    if v is False:
+        return "FAIL"
+    return "n/a " if v is None else "INCONCLUSIVE"
+
+
+def all_of(*verdicts):
+    """One verdict over several limits: any FAIL fails; else an inconclusive or unjudged part leaves it so."""
+    if any(v is False for v in verdicts):
+        return False
+    if any(v == INCONCLUSIVE for v in verdicts):
+        return INCONCLUSIVE
+    return None if any(v is None for v in verdicts) else True
+
+
+def tail_check(windows: list[dict], limit: float, q: float) -> tuple:
+    """Whether the whole run's q-quantile is within `limit`, from per-second quantiles.
+
+    Each window is one engine-stats second, {quantile level: value} with 1.0 for its max; the app
+    reports upper edges of 0.1 ms buckets. In a second whose q-quantile is within the limit at most
+    1 - q of its samples exceed it (none when its max is within); in one whose q-quantile is above
+    the limit about 1 - q or more do. Averaged over the seconds (about the same number of samples
+    each) that bounds the run's share above the limit: PASS when even the upper bound is within
+    1 - q, FAIL when the lower bound is above it or the median second's q-quantile is over the
+    limit, inconclusive otherwise (a median of per-second tails alone would hide up to half the
+    seconds breaching).
+    """
+    lo = hi = 0.0
+    seen = over = 0
+    for w in windows:
+        known = {level: v for level, v in w.items() if number(v)}
+        if not known:
+            continue
+        seen += 1
+        above = [level for level, v in known.items() if v > limit]
+        # Quantiles rise with their level; a level counts as within only below every level over it.
+        within = [level for level, v in known.items() if v <= limit and all(level < a for a in above)]
+        hi += 1 - max(within) if within else 1.0
+        lo += 1 - min(above) if above else 0.0
+        over += 1 if number(w.get(q)) and w[q] > limit else 0
+    detail: dict = {"seconds": seen, "seconds_over": over}
+    if not seen:
+        return None, detail
+    lo, hi = lo / seen, hi / seen
+    typical = median(w.get(q) for w in windows)
+    detail.update({"median_second": rnd(typical, 2), "worst_second": rnd(top_value(w.get(q) for w in windows), 2),
+                   "share_over_pct": [rnd(lo * 100, 2), rnd(hi * 100, 2)]})
+    allowed = 1 - q + 1e-9
+    if hi <= allowed:
+        return True, detail
+    if lo > allowed or (typical is not None and typical > limit):
+        return False, detail
+    return INCONCLUSIVE, detail
+
+
+def tail_text(label: str, d: dict, limit: float, q: float, unit: str = "ms") -> str:
+    if not d.get("seconds"):
+        return f"{label} no data"
+    lo, hi = d["share_over_pct"]
+    return (f"{label} median second {d['median_second']} {unit}, worst {d['worst_second']}, {d['seconds_over']} of"
+            f" {d['seconds']} s over {limit}; {lo}-{hi} % of the run over {limit} (<= {rnd((1 - q) * 100, 2)} %)")
 
 
 def rise(before: float, after: float) -> float:
@@ -575,13 +723,62 @@ def check(checks: list, ident: str, ok: bool | None, value: str) -> None:
     checks.append({"id": ident, "pass": ok, "value": value})
 
 
+def connections(events) -> list:
+    """Each event's door connection: the socket the recorder named, else (a recording without
+    socket names) the latest connect before it."""
+    out, current, count = [], None, 0
+    for e in events:
+        sock = e.get("sock")
+        if sock is None:
+            m = e.get("m") or {}
+            if e.get("dir") == "sock" and m.get("ev") == "connect":
+                count += 1
+                current = f"#{count}"
+            sock = current
+        out.append(sock)
+    return out
+
+
+def attach_anchors(events, slot_of: dict, by_peer: dict) -> dict:
+    """Per slot, the times it (re)attached: its status turning attached (or reappearing attached
+    after a gap), or a new peer's audio starting on it with no such status within GAP_MS before."""
+    anchors: dict = {}
+    last: dict = {}
+    for t, m in door_messages(events, "status"):
+        listed = set()
+        for s in m.get("slots") or []:
+            if not isinstance(s, dict):
+                continue
+            slot = s.get("slot")
+            listed.add(slot)
+            prev = last.get(slot)
+            if s.get("attached") and (prev is None or not prev[1] or t - prev[0] > GAP_MS):
+                anchors.setdefault(slot, []).append(t)
+            last[slot] = (t, bool(s.get("attached")))
+        for slot in set(last) - listed:
+            last[slot] = (t, False)
+    for key, rows in by_peer.items():
+        slot = slot_of.get(key)
+        started = next((t for t, m in rows if (m.get("jitterBufferEmittedCount") or 0) > 0), None)
+        if slot is None or started is None:
+            continue
+        if not any(started - GAP_MS <= a <= started for a in anchors.get(slot, [])):
+            anchors.setdefault(slot, []).append(started)
+    return {slot: sorted(ts) for slot, ts in anchors.items()}
+
+
+def us_ms(v) -> float | None:
+    return v / 1000 if number(v) else None
+
+
 def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=None, end_ms=None,
                   warmup_s: float = WARMUP_S) -> dict:
-    """The native voice path's figures and pass checks from recorded door traffic.
+    """The native voice path's figures and pass checks from recorded door traffic (host clock).
 
-    Engine figures come per second from engine-stats; NetEQ, RTT and the electrical
-    sum come per peer-stats interval (2 s), read once a peer has had `warmup_s` of
-    audio. `song_peaks` is [(t, peak)] from the flight record's song peak meter.
+    Engine figures come per second from engine-stats; NetEQ, RTT and the electrical sum come per
+    peer-stats interval (2 s), read once a peer has had `warmup_s` of audio. A peer is its page
+    load's door socket plus its id (ids restart on a reload). `song_peaks` is [(t, peak)] from the
+    flight record's song peak meter.
     """
     events = sorted((e for e in events if number(e.get("t"))), key=lambda e: e["t"])
 
@@ -611,6 +808,26 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
         check(checks, "door", False, "no engine-stats from the app (native path not running)")
         return out
 
+    conns = connections(events)
+    conn_no: dict = {}
+    for c in conns:
+        if c is not None and c not in conn_no:
+            conn_no[c] = len(conn_no) + 1
+    slot_of: dict = {}
+    by_peer: dict = {}
+    for e, c in zip(events, conns):
+        m = e.get("m")
+        if not isinstance(m, dict):
+            continue
+        key = (conn_no.get(c), m.get("peer"))
+        if e.get("dir") == "out" and m.get("t") == "offer" and number(m.get("peer")) and number(m.get("slot")):
+            slot_of[key] = m["slot"]
+        elif e.get("dir") == "in" and m.get("t") == "peer-stats":
+            by_peer.setdefault(key, []).append((e["t"], m))
+
+    def peer_label(key) -> str:
+        return f"c{key[0]}/p{key[1]}" if key[0] is not None else f"p{key[1]}"
+
     opened = [m for _, m in eng if m.get("open")]
     minutes = max((eng[-1][0] - eng[0][0]) / 60000, 1 / 60)
     out["engine"] = {
@@ -624,57 +841,75 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
         "tap_dropped": increase(m.get("tapDropped") for _, m in eng),
     }
 
+    # M1: p50 is a typical value, the per-second median is enough; p99 is a tail (tail_check).
     pushes = [m for _, m in eng if (m.get("pushIntervalP50Us") or 0) > 0]
-    p50 = [m["pushIntervalP50Us"] / 1000 for m in pushes]
-    p99 = [m.get("pushIntervalP99Us", 0) / 1000 for m in pushes]
-    m1 = {"seconds": len(pushes), "p50_ms": rnd(median(p50), 2), "p99_ms": rnd(median(p99), 2),
-          "p99_worst_ms": rnd(top_value(p99), 2), "seconds_p99_over_20ms": sum(1 for v in p99 if v > 20),
-          "max_ms": rnd(top_value(m.get("pushIntervalMaxUs", 0) / 1000 for m in pushes), 2)}
+    w1 = [{0.5: us_ms(m["pushIntervalP50Us"]), 0.99: us_ms(m.get("pushIntervalP99Us")),
+           1.0: us_ms(m.get("pushIntervalMaxUs"))} for m in pushes]
+    v99, d99 = tail_check(w1, 20, 0.99)
+    p50 = median(w[0.5] for w in w1)
+    max1 = top_value(w[1.0] for w in w1)
+    m1 = {"seconds": len(pushes), "p50_ms": rnd(p50, 2), "p99_ms": d99.get("median_second"),
+          "p99_worst_ms": d99.get("worst_second"), "seconds_p99_over_20ms": d99["seconds_over"],
+          "p99_share_over_20ms_pct": d99.get("share_over_pct"), "max_ms": rnd(max1, 2)}
     out["M1"] = m1
     check(checks, "M1 push interval", None if not pushes else
-          (8 <= m1["p50_ms"] <= 12 and m1["p99_ms"] <= 20 and m1["max_ms"] <= 40),
-          f"p50 {m1['p50_ms']} ms (about 10), p99 {m1['p99_ms']} ms (<= 20; worst second {m1['p99_worst_ms']}),"
-          f" max {m1['max_ms']} ms (<= 40)")
+          all_of(8 <= p50 <= 12, v99, max1 is not None and max1 <= 40),
+          f"p50 {m1['p50_ms']} ms (about 10); {tail_text('p99', d99, 20, 0.99)}; max {m1['max_ms']} ms (<= 40)")
 
-    cb99 = [m.get("callbackP99Us", 0) / 1000 for m in opened if (m.get("callbackP99Us") or 0) > 0]
-    cbmax = top_value(m.get("callbackMaxUs", 0) / 1000 for m in opened)
-    out["M2"] = {"p99_ms": rnd(median(cb99), 3), "p99_worst_ms": rnd(top_value(cb99), 3), "max_ms": rnd(cbmax, 3)}
-    check(checks, "M2 callback", None if not cb99 else (median(cb99) <= 2 and (cbmax or 0) <= 5),
-          f"p99 {out['M2']['p99_ms']} ms (<= 2), max {out['M2']['max_ms']} ms (<= 5)")
+    w2 = [{0.99: us_ms(m.get("callbackP99Us")), 1.0: us_ms(m.get("callbackMaxUs"))}
+          for m in opened if (m.get("callbackP99Us") or 0) > 0]
+    v2, d2 = tail_check(w2, 2, 0.99)
+    cbmax = top_value(w[1.0] for w in w2)
+    out["M2"] = {"p99_ms": d2.get("median_second"), "p99_worst_ms": d2.get("worst_second"),
+                 "seconds_p99_over_2ms": d2["seconds_over"], "p99_share_over_2ms_pct": d2.get("share_over_pct"),
+                 "max_ms": rnd(cbmax, 3)}
+    check(checks, "M2 callback", None if not w2 else all_of(v2, cbmax is not None and cbmax <= 5),
+          f"{tail_text('p99', d2, 2, 0.99)}; max {out['M2']['max_ms']} ms (<= 5)")
 
+    # M3: an underrun counts when the whole second it was reported in lies UNDERRUN_GRACE_MS after the
+    # slot's latest (re)attach; a jump when it lies JUMP_GRACE_MS after.
+    anchors = attach_anchors(events, slot_of, by_peer)
     slots3: dict = {}
     present: dict = {}
     prev: dict = {}
+    prev_t: dict = {}
     for t, m in eng_all:
         seen = set()
         for s in m.get("slots") or []:
             slot = s.get("slot")
             seen.add(slot)
             present.setdefault(slot, t)
-            acc = slots3.setdefault(slot, {"underruns": 0, "trim_seconds": 0, "trimmed_ms": 0.0,
-                                           "largest_trim_ms": 0.0, "jumps": 0, "margins": []})
+            acc = slots3.setdefault(slot, {"underruns": 0, "underruns_in_grace": 0, "trim_seconds": 0, "trimmed_ms": 0.0,
+                                           "largest_trim_ms": 0.0, "jumps": 0, "margins": [], "attaches": 0})
             before = prev.get(slot)
             if before is not None and win(t):
-                if t - present[slot] >= 2000:
-                    acc["underruns"] += rise(before.get("underruns", 0), s.get("underruns", 0))
+                xs = anchors.get(slot, [])
+                i = bisect.bisect_right(xs, t)
+                start = max(xs[i - 1], present[slot]) if i else present[slot]
+                settled = prev_t[slot] - start
+                grew = rise(before.get("underruns", 0), s.get("underruns", 0))
+                acc["underruns" if settled >= UNDERRUN_GRACE_MS else "underruns_in_grace"] += grew
                 trimmed = rise(before.get("trimmedFrames", 0), s.get("trimmedFrames", 0))
                 if trimmed > 0:
                     ms = trimmed / 48
                     acc["trim_seconds"] += 1
                     acc["trimmed_ms"] += ms
                     acc["largest_trim_ms"] = max(acc["largest_trim_ms"], ms)
-                    if ms >= JUMP_MS and t - present[slot] >= 10000:
+                    if ms >= JUMP_MS and settled >= JUMP_GRACE_MS:
                         acc["jumps"] += 1
             if win(t):
                 acc["margins"].append(s.get("marginMs"))
             prev[slot] = s
+            prev_t[slot] = t
         for slot in list(present):
             if slot not in seen:
                 present.pop(slot)
                 prev.pop(slot, None)
     m3 = {}
     for slot, acc in sorted(slots3.items(), key=lambda kv: str(kv[0])):
-        m3[str(slot)] = {"underruns": acc["underruns"], "trims_per_min": round(acc["trim_seconds"] / minutes, 2),
+        m3[str(slot)] = {"underruns": acc["underruns"], "underruns_in_grace": acc["underruns_in_grace"],
+                         "attaches": sum(1 for a in anchors.get(slot, []) if win(a)),
+                         "trims_per_min": round(acc["trim_seconds"] / minutes, 2),
                          "trimmed_ms_per_min": round(acc["trimmed_ms"] / minutes, 1),
                          "largest_trim_ms": round(acc["largest_trim_ms"], 1), "jumps": acc["jumps"],
                          "margin_ms_median": rnd(median(acc["margins"])), "margin_ms_max": rnd(top_value(acc["margins"]))}
@@ -682,9 +917,12 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
     check(checks, "M3 underruns/xruns/trims", None if not m3 else not any(v["underruns"] for v in m3.values())
           and out["engine"]["xruns"] == 0 and all(v["trims_per_min"] <= 5 and v["jumps"] == 0 for v in m3.values()),
           "underruns " + ", ".join(f"slot {k}: {v['underruns']}" for k, v in m3.items())
-          + f"; xruns {out['engine']['xruns']:.0f}; trims/min "
+          + f" ({UNDERRUN_GRACE_MS // 1000} s after each attach; in grace "
+          + ", ".join(f"{k}: {v['underruns_in_grace']}" for k, v in m3.items())
+          + f"); xruns {out['engine']['xruns']:.0f}; trims/min "
           + ", ".join(f"{k}: {v['trims_per_min']}" for k, v in m3.items()) + " (<= 5); jumps "
-          + ", ".join(f"{k}: {v['jumps']}" for k, v in m3.items()) + " (one-second trims >= 30 ms)")
+          + ", ".join(f"{k}: {v['jumps']}" for k, v in m3.items())
+          + f" (one-second trims >= {JUMP_MS:.0f} ms, {JUMP_GRACE_MS // 1000} s after each attach)")
 
     latency = [m["outputLatencyMs"] for m in opened if number(m.get("outputLatencyMs"))]
     out["M5"] = {"p50_ms": rnd(median(latency)), "max_ms": rnd(top_value(latency))}
@@ -692,11 +930,14 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
           f"p50 {out['M5']['p50_ms']} ms (<= 35)")
 
     present_rows = [(t, m) for t, m in eng if m.get("open") and (m.get("pushToPresentP50Ms") or 0) > 0]
-    pp50 = [m["pushToPresentP50Ms"] for _, m in present_rows]
-    pp95 = [m.get("pushToPresentP95Ms", 0) for _, m in present_rows]
-    out["M6"] = {"p50_ms": rnd(median(pp50)), "p95_ms": rnd(median(pp95)), "p95_worst_ms": rnd(top_value(pp95))}
-    check(checks, "M6 push to present", None if not pp50 else median(pp50) <= 50 and median(pp95) <= 60,
-          f"p50 {out['M6']['p50_ms']} ms (<= 50), p95 {out['M6']['p95_ms']} ms (<= 60)")
+    w6 = [{0.5: m["pushToPresentP50Ms"], 0.95: m.get("pushToPresentP95Ms")} for _, m in present_rows]
+    v6a, d6a = tail_check(w6, 50, 0.5)
+    v6b, d6b = tail_check(w6, 60, 0.95)
+    out["M6"] = {"p50_ms": d6a.get("median_second"), "p95_ms": d6b.get("median_second"),
+                 "p95_worst_ms": d6b.get("worst_second"), "seconds_p95_over_60ms": d6b["seconds_over"],
+                 "p95_share_over_60ms_pct": d6b.get("share_over_pct")}
+    check(checks, "M6 push to present", None if not w6 else all_of(v6a, v6b),
+          f"{tail_text('p50', d6a, 50, 0.5)}; {tail_text('p95', d6b, 60, 0.95)}")
     present_t = [t for t, _ in present_rows]
 
     def present_at(t: int) -> tuple[float, float] | None:
@@ -707,25 +948,20 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
         m = present_rows[min(near, key=lambda j: abs(present_rows[j][0] - t))][1]
         return m["pushToPresentP50Ms"], m.get("pushToPresentP95Ms", m["pushToPresentP50Ms"])
 
-    slot_of = {m["peer"]: m["slot"] for _, m in door_messages(events, "offer", "out")
-               if number(m.get("peer")) and number(m.get("slot"))}
-    by_peer: dict = {}
-    for t, m in door_messages(events, "peer-stats"):
-        by_peer.setdefault(m.get("peer"), []).append((t, m))
     per_slot: dict = {}
-    for peer, rows in by_peer.items():
+    for key, rows in by_peer.items():
         started = next((t for t, m in rows if (m.get("jitterBufferEmittedCount") or 0) > 0), None)
         if started is None:
             continue
         read = [(t, m) for t, m in rows if t >= started + warmup_s * 1000 and win(t)]
-        key = str(slot_of.get(peer, f"peer {peer}"))
-        acc = per_slot.setdefault(key, {"peers": [], "emitted": 0.0, "delay": 0.0, "target": 0.0, "concealed": 0.0,
-                                        "accel": 0.0, "decel": 0.0, "received": 0.0, "lost": 0.0, "intervals": [],
-                                        "half_rtt": [], "jitter": [], "candidate": None})
-        acc["peers"].append(peer)
+        slot_key = str(slot_of.get(key, f"peer {peer_label(key)}"))
+        acc = per_slot.setdefault(slot_key, {"peers": [], "emitted": 0.0, "delay": 0.0, "target": 0.0, "concealed": 0.0,
+                                             "accel": 0.0, "decel": 0.0, "received": 0.0, "lost": 0.0, "intervals": [],
+                                             "half_rtt": [], "jitter": [], "candidate": None})
+        acc["peers"].append(peer_label(key))
         for (_, a), (t1, b) in zip(read, read[1:]):
-            def grew(key: str) -> float:
-                return counter(b, key) - counter(a, key)
+            def grew(name: str) -> float:
+                return counter(b, name) - counter(a, name)
 
             emitted = grew("jitterBufferEmittedCount")
             if emitted <= 0:
@@ -776,8 +1012,10 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
                 half = 0.0
             sums.append(half + neteq + present[0])
             sums_hi.append(half + neteq + present[1])
-        sigma[key] = {"n": len(sums), "p50_ms": rnd(median(sums)), "p95_ms": rnd(quantile(sums, 0.95)),
-                      "p95_with_m6_p95_ms": rnd(quantile(sums_hi, 0.95))}
+        p50s = median(sums)
+        sigma[key] = {"n": len(sums), "p50_ms": rnd(p50s), "p95_ms": rnd(quantile(sums, 0.95)),
+                      "p95_with_m6_p95_ms": rnd(quantile(sums_hi, 0.95)),
+                      "mouth_to_speaker_p50_ms": rnd(p50s + UNSEEN_MS) if p50s is not None else None}
         pooled.extend(sums)
         pooled_hi.extend(sums_hi)
     out["M4"] = m4
@@ -791,21 +1029,31 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
                     "p95_with_m6_p95_ms": rnd(quantile(pooled_hi, 0.95)), "rtt_missing": rtt_missing,
                     "mouth_to_speaker_p50_ms": rnd(all_p50 + UNSEEN_MS) if all_p50 is not None else None}
     out["sigma"] = sigma
-    check(checks, "Σ electrical (RTT/2 + NetEQ + push-to-present)", None if not pooled else all_p50 <= 98 and all_p95 <= 168,
-          f"p50 {rnd(all_p50)} ms (<= 98), p95 {rnd(all_p95)} ms (<= 168), estimated mouth-to-speaker p50"
-          f" {sigma['all']['mouth_to_speaker_p50_ms']} ms (<= 150)" + (f"; RTT missing in {rtt_missing}" if rtt_missing else ""))
+    # Σ is judged per slot (one slow slot must not hide in the pool) and pooled.
+    judged = {k: v for k, v in sigma.items() if v["n"]}
+    unjudged = [k for k, v in sigma.items() if k != "all" and not v["n"]]
+    check(checks, "Σ electrical (RTT/2 + NetEQ + push-to-present)",
+          None if not pooled else all(v["p50_ms"] <= 98 and v["p95_ms"] <= 168 for v in judged.values()),
+          "; ".join(f"{'all slots' if k == 'all' else 'slot ' + k} p50 {v['p50_ms']} / p95 {v['p95_ms']} ms"
+                    f" (mouth-to-speaker p50 {v['mouth_to_speaker_p50_ms']})" for k, v in judged.items())
+          + " (p50 <= 98, p95 <= 168; mouth-to-speaker <= 150)"
+          + (f"; no figures for slot {', '.join(unjudged)}" if unjudged else "")
+          + (f"; RTT missing in {rtt_missing}" if rtt_missing else ""))
 
-    drain = [m.get("tapDrainP99Us", 0) / 1000 for _, m in eng if (m.get("tapDrainP99Us") or 0) > 0]
+    w7 = [{0.99: us_ms(m.get("tapDrainP99Us")), 1.0: us_ms(m.get("tapDrainMaxUs"))}
+          for _, m in eng if (m.get("tapDrainP99Us") or 0) > 0]
+    vt, dt = tail_check(w7, 25, 0.99)
     taps = merge_taps(r for r in tap_rows if win(r.get("t", 0)))
     longs = [r for r in long_rows if win(r.get("t", 0))]
-    out["T1"] = {"app_p99_ms": rnd(median(drain), 2), "app_p99_worst_ms": rnd(top_value(drain), 2),
-                 "app_max_ms": rnd(top_value(m.get("tapDrainMaxUs", 0) / 1000 for _, m in eng), 2),
+    out["T1"] = {"app_p99_ms": dt.get("median_second"), "app_p99_worst_ms": dt.get("worst_second"),
+                 "app_seconds_p99_over_25ms": dt["seconds_over"], "app_p99_share_over_25ms_pct": dt.get("share_over_pct"),
+                 "app_max_ms": rnd(top_value(w[1.0] for w in w7), 2),
                  "page_p99_ms": hist_quantile(taps["hist"], 0.99), "page_max_ms": taps["iv_max"],
                  "page_messages": taps["msgs"], "long_tasks": sum(r.get("n", 0) for r in longs),
                  "long_task_ms": round(sum(r.get("ms", 0) for r in longs)),
                  "long_task_max_ms": rnd(top_value(r.get("max") for r in longs))}
-    check(checks, "T1 tap drain", None if not drain else median(drain) <= 25,
-          f"app p99 {out['T1']['app_p99_ms']} ms (<= 25); page arrival p99 {out['T1']['page_p99_ms']} ms,"
+    check(checks, "T1 tap drain", vt,
+          f"app {tail_text('p99', dt, 25, 0.99)}; page arrival p99 {out['T1']['page_p99_ms']} ms,"
           f" max {out['T1']['page_max_ms']} ms (report only), long tasks {out['T1']['long_tasks']}")
     out["tap"] = {"blocks_per_slot": taps["per_slot"], "missing_per_slot": taps["missing"],
                   "seq_resets": taps["resets"], "zero_blocks": taps["zero"], "bad_messages": taps["bad"],
@@ -818,10 +1066,20 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
           f"voice peak {out['H1']['voice_peak_max']} (<= 0.5), song peak {out['H1']['song_peak_max']} (<= 0.5)")
 
     out["monitor"] = [m for t, m in door_messages(events, "monitor-result") if win(t)]
-    out["smoke"] = {"ready_ok": bool(ready_ok), "audio": (ready_ok or {}).get("audio"),
-                    "burst_frames": out["engine"]["burst_frames"], "output_latency_ms": out["M5"]["p50_ms"],
-                    "open_share": out["engine"]["open_share"], "apm": out["engine"]["apm"]}
+    smoke = {"ready_ok": bool(ready_ok), "audio": (ready_ok or {}).get("audio"),
+             "burst_frames": out["engine"]["burst_frames"], "output_latency_ms": out["M5"]["p50_ms"],
+             "open_share": out["engine"]["open_share"], "apm": out["engine"]["apm"]}
+    out["smoke"] = smoke
+    lat = smoke["output_latency_ms"]
+    check(checks, "V1 smoke", all_of(smoke["ready_ok"], smoke["audio"] == "open", bool(opened), smoke["burst_frames"] == 384,
+                                     None if lat is None else 25 <= lat <= 40, smoke["apm"] is not None),
+          f"ready ok {smoke['ready_ok']}, audio {smoke['audio']} (open), output open {smoke['open_share'] * 100:.0f}% of"
+          f" seconds, burst {smoke['burst_frames']} (384), output latency p50 {lat} ms (25-40), apm {smoke['apm']} (present)")
     return out
+
+
+def format_checks(checks: list[dict]) -> str:
+    return "\n".join(f"  {verdict_label(c['pass'])} {c['id']}: {c['value']}" for c in checks)
 
 
 def format_native(rep: dict) -> str:
@@ -829,26 +1087,25 @@ def format_native(rep: dict) -> str:
     lines = [f"door: connected {door.get('connected')}, connections {door.get('connections')}, closes {door.get('closes')},"
              f" restart-needed {door.get('restart_needed')}, peer errors {door.get('peer_errors')}, fatal {door.get('fatal')}"]
     if "engine" not in rep:
-        return "\n".join(lines + [f"  {c['id']}: {c['value']}" for c in rep.get("checks", [])])
+        return "\n".join(lines + [format_checks(rep.get("checks", []))])
     e = rep["engine"]
     lines.append(f"engine: open {e['open_share'] * 100:.0f}% of {e['seconds']} s, burst {e['burst_frames']},"
                  f" buffer {e['buffer_frames']}, xruns {e['xruns']:.0f}, restarts {e['restarts']:.0f},"
                  f" open attempts {e['open_attempts']}, sink errors {e['sink_errors']:.0f}, ignored {e['ignored']},"
                  f" apm {e['apm']}")
     lines.append("Cube-side electrical latency per slot (ms; NetEQ after warm-up)")
-    lines.append("  slot      RTT/2   NetEQ mean (target)   push->present p50   Σ p50   Σ p95   n")
+    lines.append("  slot      RTT/2   NetEQ mean (target)   push->present p50   Σ p50   Σ p95   mouth->speaker   n")
     for key, s in rep["sigma"].items():
         if key == "all":
             continue
         m4, m7 = rep["M4"].get(key, {}), rep["M7"].get(key, {})
         lines.append(f"  {key:<8} {m7.get('rtt_half_ms')!s:>6}   {m4.get('mean_ms')!s:>6} ({m4.get('target_ms')})"
-                     f"          {rep['M6']['p50_ms']!s:>6}      {s['p50_ms']!s:>6}  {s['p95_ms']!s:>6}  {s['n']}")
+                     f"          {rep['M6']['p50_ms']!s:>6}      {s['p50_ms']!s:>6}  {s['p95_ms']!s:>6}"
+                     f"  {s.get('mouth_to_speaker_p50_ms')!s:>10}       {s['n']}")
     a = rep["sigma"]["all"]
     lines.append(f"  all slots Σ p50 {a['p50_ms']} / p95 {a['p95_ms']} ms (p95 with push->present p95:"
                  f" {a['p95_with_m6_p95_ms']}); estimated mouth-to-speaker p50 {a['mouth_to_speaker_p50_ms']} ms")
-    for c in rep["checks"]:
-        verdict = {True: "PASS", False: "FAIL", None: "n/a "}[c["pass"]]
-        lines.append(f"  {verdict} {c['id']}: {c['value']}")
+    lines.append(format_checks(rep["checks"]))
     lines.append(f"tap: {rep['tap']}")
     if rep.get("monitor"):
         lines.append(f"monitor beep: {rep['monitor']}")
@@ -867,8 +1124,12 @@ def pitch_summary(values: dict, singers: list[dict], frames: dict) -> dict:
 
 
 def scan_logs(main: str, crash: str, app_pids: set[str]) -> dict:
-    """Trim-memory levels, low-memory kills, crashes and GC pauses of the app; its own log lines."""
-    trims, kills, app_lines, pauses = [], [], [], []
+    """Trim-memory levels, low-memory kills, deaths, crashes and GC pauses of the app; its own log lines.
+
+    The crash buffer is the whole device's: a line counts for the app when one of its processes
+    wrote it or it names the app (a native crash's tombstone header does, `>>> org.firesong.tv <<<`).
+    """
+    trims, kills, deaths, app_lines, pauses = [], [], [], [], []
     for line in main.splitlines():
         parts = line.split(None, 5)
         pid = parts[2] if len(parts) > 2 else ""
@@ -877,6 +1138,8 @@ def scan_logs(main: str, crash: str, app_pids: set[str]) -> dict:
             trims.append(int(level.group(1)))
         if APP in line and re.search(r"am_kill|lowmemorykiller|lmkd|Kill(?:ing)? '", line):
             kills.append(line.strip()[:300])
+        if re.search(rf"Process {re.escape(APP)} \(pid \d+\) has died", line):
+            deaths.append(line.strip()[:300])
         if pid in app_pids:
             if "GC freed" in line:
                 paused = re.search(r"paused ((?:[\d.]+(?:ms|us|s),?)+)", line)
@@ -887,9 +1150,18 @@ def scan_logs(main: str, crash: str, app_pids: set[str]) -> dict:
                     pauses.append(total)
             else:
                 app_lines.append(line)
+
+    def ours(line: str) -> bool:
+        parts = line.split(None, 5)
+        return ((len(parts) > 2 and parts[2] in app_pids) or f">>> {APP} <<<" in line
+                or re.search(rf"\b{re.escape(APP)}\b(?!:sandboxed)", line) is not None)
+
     crashes = [ln for ln in crash.splitlines() if ln.strip() and not ln.startswith("--------- beginning of")]
+    mine = [ln for ln in crashes if ours(ln)]
     return {"trim_levels": sorted(set(trims)), "trim_critical": trims.count(15), "lmk_kills": kills,
-            "crash_lines": len(crashes), "crash_head": crashes[:20],
+            "app_deaths": deaths, "crash_lines": len(mine), "crash_head": mine[:20],
+            "other_crash_lines": len(crashes) - len(mine),
+            "renderer_crash_lines": sum(1 for ln in crashes if "sandboxed_process" in ln),
             "gc": {"count": len(pauses), "max_pause_ms": rnd(top_value(pauses), 2)}, "app_lines": app_lines[-5000:]}
 
 
@@ -929,19 +1201,15 @@ def ab_compare(web: dict, native: dict) -> dict:
     mn = min((s["mem_available_mb"] for s in native["samples"] if number(s.get("mem_available_mb"))), default=None)
     check(checks, "MemAvailable minimum", None if mw is None or mn is None else mn >= mw - 20,
           f"web {mw} MB, native {mn} MB (native >= web - 20)")
-    logs = native.get("logs") or {}
-    if logs:
-        check(checks, "no trim-memory critical", logs.get("trim_critical", 0) == 0,
-              f"levels seen {logs.get('trim_levels')}")
-        check(checks, "no low-memory kill", not logs.get("lmk_kills"), f"{len(logs.get('lmk_kills') or [])} kill lines")
-        check(checks, "crash log empty", logs.get("crash_lines", 0) == 0, f"{logs.get('crash_lines', 0)} crash lines")
     return {"cpu": {"web": cw, "native": cn, "app_delta": app_d, "renderer_delta": rend_d},
             "memory_matched": matched, "mem_available_min": {"web": mw, "native": mn}, "checks": checks}
 
 
-def format_checks(checks: list[dict]) -> str:
-    return "\n".join(f"  {({True: 'PASS', False: 'FAIL', None: 'n/a '})[c['pass']]} {c['id']}: {c['value']}"
-                     for c in checks)
+def backend_named(ev: dict) -> tuple[str | None, str | None]:
+    """A flight mic-backend event's backend and reason, whether flat or under `backend`."""
+    b = ev.get("backend")
+    kind = ev.get("kind") or (b if isinstance(b, str) else (b or {}).get("kind"))
+    return kind, ev.get("why") or (b.get("why") if isinstance(b, dict) else None)
 
 
 def phase_checks(phase: dict) -> list[dict]:
@@ -955,6 +1223,25 @@ def phase_checks(phase: dict) -> list[dict]:
     if fb:
         check(checks, f"fallback {fb['action']}", fb.get("pass"),
               f"heard again after {fb.get('recovered_s')} s (<= {fb.get('limit_s')}), backend {fb.get('backend_after')}")
+        if fb["action"] == "drop" and fb.get("at_ms"):
+            events = phase.get("flight_events")
+            said = [backend_named(e) for e in events or []
+                    if e.get("ev") == "mic-backend" and number(e.get("t")) and e["t"] >= fb["at_ms"] - 2000]
+            check(checks, "F2 flight mic-backend web (dropped)", None if events is None else ("web", "dropped") in said,
+                  f"mic-backend events after the drop: {said}")
+    pids = phase.get("pids") or {}
+    logs = phase.get("logs")
+    if pids.get("start") or logs:
+        survived = bool(set(pids.get("start") or []) & set(pids.get("end") or [])) if pids.get("start") else None
+        deaths = (logs or {}).get("app_deaths") or []
+        check(checks, "app process survived", False if deaths else survived,
+              f"pid {pids.get('start')} at the start, {pids.get('end')} at the end; {len(deaths)} 'has died' lines")
+    if logs:
+        check(checks, "no trim-memory critical", logs.get("trim_critical", 0) == 0, f"levels seen {logs.get('trim_levels')}")
+        check(checks, "no low-memory kill", not logs.get("lmk_kills"), f"{len(logs.get('lmk_kills') or [])} kill lines")
+        check(checks, "crash log empty", logs.get("crash_lines", 0) == 0,
+              f"{logs.get('crash_lines', 0)} lines of the app (other apps {logs.get('other_crash_lines', 0)},"
+              f" WebView renderers {logs.get('renderer_crash_lines', 0)})")
     return checks
 
 
@@ -963,9 +1250,11 @@ def analyze(report: dict, warmup_s: float) -> list[dict]:
     all_checks: list[dict] = []
     for phase in report.get("phases", []):
         print(f"\n== {phase['voice']} phase: {len(phase.get('samples', []))} samples,"
-              f" app CPU median {cpu_medians(phase.get('samples', []))}")
+              f" app CPU median {cpu_medians(phase.get('samples', []))}, clock offset {phase.get('clock_offset_ms')} ms")
         if phase.get("backend_seen"):
             print(f"backend seen on the page: {phase['backend_seen']}")
+        if phase.get("tick_errors"):
+            print(f"diagnostics errors: {phase['tick_errors']}")
         checks = phase_checks(phase)
         if phase["voice"] == "native" or phase.get("door"):
             rep = native_report(phase.get("door", []), phase.get("tap", []), phase.get("long", []),
@@ -981,14 +1270,25 @@ def analyze(report: dict, warmup_s: float) -> list[dict]:
             print(f"  logcat: trim levels {logs['trim_levels']}, low-memory kills {len(logs['lmk_kills'])},"
                   f" crash lines {logs['crash_lines']}, GC pauses {logs['gc']}")
         all_checks += checks + phase.get("native", {}).get("checks", [])
-    phases = report.get("phases", [])
-    if len(phases) == 2 and phases[0]["voice"] == "web" and phases[1]["voice"] == "native":
-        report["ab_compare"] = ab_compare(phases[0], phases[1])
-        print("\n== A/B, native minus web, same song and phones")
+    by_voice = {p["voice"]: p for p in report.get("phases", [])}
+    if len(report.get("phases", [])) == 2 and set(by_voice) == {"web", "native"}:
+        report["ab_compare"] = ab_compare(by_voice["web"], by_voice["native"])
+        order = " then ".join(p["voice"] for p in report["phases"])
+        print(f"\n== A/B, native minus web, same song and phones ({order})")
         print(format_checks(report["ab_compare"]["checks"]))
         print("memory at matched positions: " + json.dumps(report["ab_compare"]["memory_matched"]))
         all_checks += report["ab_compare"]["checks"]
     return all_checks
+
+
+def result_line(checks: list[dict]) -> tuple[str, int]:
+    """The last line: PASS, or CHECK with the failed and the inconclusive checks; and the exit status."""
+    bad = [c["id"] for c in checks if c["pass"] is False]
+    unsure = [c["id"] for c in checks if c["pass"] == INCONCLUSIVE]
+    if not bad and not unsure:
+        return "RESULT PASS []", 0
+    return ("RESULT CHECK " + json.dumps(bad, ensure_ascii=False)
+            + (" inconclusive " + json.dumps(unsure, ensure_ascii=False) if unsure else "")), 1
 
 
 # --- driving the Cube ------------------------------------------------------------
@@ -999,7 +1299,13 @@ def tool(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def open_tv(lan_url: str, voice: str, token_file: pathlib.Path) -> Cdp:
-    """Launches FireSong with the page's URL for this voice path, records its voice door from the start."""
+    """Launches FireSong with the page's URL for this voice path, records its voice door from the start.
+
+    FireSong is force-stopped first, so every phase runs in a new app process and the A/B memory
+    figures compare processes of the same age.
+    """
+    tool(str(REPO / "tools/tvctl"), "stop", timeout=30)
+    time.sleep(2)
     url = lan_url + (NATIVE_FLAG if voice == "native" else "") + "&fsdiag=1"
     launch = tool("bash", str(REPO / "scripts/firesong/cube.sh"), "launch", "--url", url,
                   "--host-token-file", str(token_file))
@@ -1075,7 +1381,10 @@ def backend_kind(probe: dict | None) -> str | None:
         return b
     if isinstance(b, dict) and isinstance(b.get("kind"), str):
         return b["kind"]
-    door = probe.get("door") or {}
+    door = probe.get("door")
+    if not door:
+        # No recorder on this page (a document loaded after DevTools reconnected): unknown, not web.
+        return None
     return "native" if door.get("state") == "ready" else "web"
 
 
@@ -1088,10 +1397,12 @@ class PhaseRecorder:
         self.tracker = PitchTracker()
         self.data: dict = {"voice": voice, "samples": [], "mem": [], "door": [], "tap": [], "long": [],
                            "backend_seen": {}, "pitch_values": {s["id"]: [] for s in singers},
-                           "pitch_frames": {s["id"]: 0 for s in singers}}
+                           "pitch_frames": {s["id"]: 0 for s in singers}, "tick_errors": {}}
         self.last_delta: dict = {}
+        self.clock = PageClock()
 
     def take(self, tv: Cdp) -> dict | None:
+        self.clock.sample(lambda: tv.eval("Date.now()"))
         try:
             probe = tv.eval(f"({TICK_JS})({json.dumps([s['id'] for s in self.singers])})")
         except (RuntimeError, websocket.WebSocketException):
@@ -1099,14 +1410,21 @@ class PhaseRecorder:
         if not probe:
             return None
         now = int(time.time() * 1000)
+        offset = self.clock.offset()
+        self.data["clock_offset_ms"] = round(offset)
+        for err in probe.get("errors") or []:
+            errors = self.data["tick_errors"]
+            if err in errors or len(errors) < 20:
+                errors[err] = errors.get(err, 0) + 1
         door = probe.get("door")
         if door:
-            self.data["door"].extend(door.get("events") or [])
+            # The recorder stamps the TV's clock; everything else here is on the host's.
+            self.data["door"].extend(on_host_clock(door.get("events") or [], offset))
             self.data["tap"].append({"t": now, **tap_summary(door.get("tap"))})
             self.data["long"].append({"t": now, **(door.get("long") or {})})
-        kind = backend_kind(probe)
-        if kind:
-            self.data["backend_seen"][kind] = self.data["backend_seen"].get(kind, 0) + 1
+        # "unknown": no diagnostics backend and no door recorder on this page.
+        kind = backend_kind(probe) or "unknown"
+        self.data["backend_seen"][kind] = self.data["backend_seen"].get(kind, 0) + 1
         self.last_delta = self.tracker.update(probe.get("pitch"))
         for cid, d in self.last_delta.items():
             if cid in self.data["pitch_values"]:
@@ -1172,6 +1490,7 @@ def run_phase(cube: Cube, tv: Cdp, voice: str, singers: list[dict], args, out: p
     phase["singers"] = singers
     phase["log_since"] = cube.clock()
     pids = cube.pids()
+    phase["pids"] = {"start": sorted(pids)}
     rec.take(tv)
     cmd("add_playback_queue_entry", {"fileHash": args.song, "tempo": 1.0, "keyOffset": 0})
     cmd("request_queue_playback", {"players": [
@@ -1213,8 +1532,10 @@ def run_phase(cube: Cube, tv: Cdp, voice: str, singers: list[dict], args, out: p
     phase["end_ms"] = int(time.time() * 1000)
     cmd("request_playback_command", {"command": "exit"})
     time.sleep(3)
+    end_pids = cube.pids()
+    phase["pids"]["end"] = sorted(end_pids)
     main_log, crash_log = cube.logs(phase["log_since"])
-    logs = scan_logs(main_log, crash_log, pids | cube.pids())
+    logs = scan_logs(main_log, crash_log, pids | end_pids)
     (out / f"logcat-app-{voice}.txt").write_text("\n".join(logs.pop("app_lines")) + "\n")
     phase["logs"] = logs
     return phase
@@ -1229,11 +1550,14 @@ def main() -> int:
     ap.add_argument("--voice", choices=("web", "native"), default="web",
                     help="native: the TV page opens with &voice=native (the app plays the phones)")
     ap.add_argument("--ab", action="store_true", help="the same song and phones on web, then on native")
+    ap.add_argument("--native-first", action="store_true", help="with --ab: native first, then web (checks order bias)")
     ap.add_argument("--fallback", choices=("drop", "reload"),
                     help="with --voice native, mid-song: drop the native link, or reload the TV page")
     ap.add_argument("--fallback-at", type=float, help="seconds into the song (default: half of --seconds)")
     ap.add_argument("--warmup", type=float, default=WARMUP_S, help="seconds of audio before NetEQ is read")
     ap.add_argument("--analyze", metavar="REPORT", help="print the figures of a saved report.json; no Cube")
+    ap.add_argument("--restore-flags", default=None,
+                    help="URL flags FireSong keeps after the run, e.g. '&voice=native' (default: FIRESONG_TV_URL_FLAGS, else none)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -1243,15 +1567,17 @@ def main() -> int:
         if not report.get("phases"):
             print(f"{path} has no phases: it was written before --voice and --ab; nothing to analyze")
             return 2
-        checks = analyze(report, args.warmup)
-        bad = [c for c in checks if c["pass"] is False]
-        print("RESULT", "PASS" if not bad else "CHECK", json.dumps([c["id"] for c in bad]))
-        return 0 if not bad else 1
+        line, status = result_line(analyze(report, args.warmup))
+        print(line)
+        return status
     if not args.song:
         ap.error("--song is required (or --analyze REPORT)")
-    phases = ["web", "native"] if args.ab else [args.voice]
+    if args.native_first and not args.ab:
+        ap.error("--native-first goes with --ab")
+    phases = (["native", "web"] if args.native_first else ["web", "native"]) if args.ab else [args.voice]
     if args.fallback and (args.ab or args.voice != "native"):
         ap.error("--fallback needs --voice native, in a run of its own (not --ab: it would skew the comparison)")
+    keep_flags = restore_flags(args.restore_flags)
 
     serial = env_value("FIRESONG_CUBE_SERIAL")
     os.environ["FIRESONG_CUBE_SERIAL"] = serial or ""
@@ -1261,7 +1587,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     cube = Cube(serial)
     report: dict = {"song": args.song, "phones": args.phones, "seconds": args.seconds, "voices": phases,
-                    "fallback": args.fallback, "warmup_s": args.warmup, "phases": []}
+                    "fallback": args.fallback, "warmup_s": args.warmup, "restore_flags": keep_flags, "phases": []}
 
     start = cube.wakefulness()
     front = cube.resumed()
@@ -1302,7 +1628,9 @@ def main() -> int:
             print(f"== {voice} phase: singers {[(s['slot'], s['want']) for s in singers]}", flush=True)
             report["phases"].append(run_phase(cube, tv, voice, singers, args, out))
         time.sleep(6)
-        flight = flight_rows(started_ms, int(time.time() * 1000))
+        offsets = [p["clock_offset_ms"] for p in report["phases"] if number(p.get("clock_offset_ms"))]
+        report["tv_clock_offset_ms"] = round(median(offsets)) if offsets else 0
+        flight = flight_rows(started_ms, int(time.time() * 1000), report["tv_clock_offset_ms"])
         for phase in report["phases"]:
             rows = [r for r in flight if phase["song_start_ms"] - 5000 <= r["t"] <= phase["end_ms"] + 5000]
             phase["song_peaks"] = [(r["t"], v) for r in rows if r.get("src") == "tv" and r.get("ev") == "sample"
@@ -1324,7 +1652,7 @@ def main() -> int:
         tool(str(REPO / "tools/tvctl"), "home", timeout=30)
         tool(str(REPO / "tools/tvctl"), "undevtools", str(TV_CDP), timeout=30)
         time.sleep(2)
-        tool(str(REPO / "tools/tvctl"), "configure", "--url", lan_url, "--token-file", str(token_file))
+        tool(str(REPO / "tools/tvctl"), "configure", "--url", lan_url + keep_flags, "--token-file", str(token_file))
         time.sleep(3)
         tool(str(REPO / "tools/tvctl"), "home", timeout=30)
         tool(str(REPO / "tools/tvctl"), "stop", timeout=30)
@@ -1339,9 +1667,9 @@ def main() -> int:
         print(f"report: {out / 'report.json'}")
     checks = analyze(report, args.warmup)
     (out / "report.json").write_text(json.dumps(report, indent=1))
-    bad = [c for c in checks if c["pass"] is False]
-    print("RESULT", "PASS" if not bad else "CHECK", json.dumps([c["id"] for c in bad]))
-    return 0 if not bad else 1
+    line, status = result_line(checks)
+    print(line)
+    return status
 
 
 if __name__ == "__main__":

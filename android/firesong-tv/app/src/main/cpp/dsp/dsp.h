@@ -17,7 +17,7 @@ float fsv_ramp_next(fsv_ramp *r);
 
 /* gate.c */
 typedef struct { float env, gain, threshold, env_att, env_rel, gain_att, gain_rel; int hold, hold_samples, meter_samples, meter_count; double meter_sum; } fsv_gate;
-void  fsv_gate_init(fsv_gate *g, float fs, float threshold);
+void  fsv_gate_init(fsv_gate *g, float fs, float threshold_rms);   /* linear RMS (FSV_GATE_THRESHOLD), not dB */
 /* returns the gated sample; when *meter_ready is set, *meter_rms / *meter_open hold the last 50 ms block */
 float fsv_gate_run(fsv_gate *g, float x, int *meter_ready, float *meter_rms, int *meter_open);
 
@@ -41,6 +41,8 @@ void  fsv_echo_reset(fsv_echo *e);
 /* reverb.c */
 typedef struct fsv_reverb fsv_reverb;           /* opaque */
 int   fsv_reverb_size(void);
+/* energy_gain_db: the mean per-channel energy gain of the impulse response (FSV_REVERB_ENERGY_GAIN_DB).
+   Returns 0, or -1 when fs or rt60_s is not positive. */
 int   fsv_reverb_init(fsv_reverb *r, float fs, float rt60_s, float energy_gain_db);
 void  fsv_reverb_run(fsv_reverb *r, const float *in, float *l, float *r_out, int n);   /* adds into l, r_out */
 

@@ -2,7 +2,8 @@ package org.firesong.tv
 
 /** One page text frame: a message, something tolerated and counted, or a reason to close with [Fatal.code]. */
 sealed class ParseResult {
-    data class Message(val message: PageMessage) : ParseResult()
+    /** [unknownFields]: the frame also carried fields this version does not know, at any depth. */
+    data class Message(val message: PageMessage, val unknownFields: Boolean = false) : ParseResult()
 
     data object Ignored : ParseResult()
 

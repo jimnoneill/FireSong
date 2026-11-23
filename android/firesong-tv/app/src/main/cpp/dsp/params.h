@@ -1,5 +1,5 @@
 // Tuning values of the native voice chain. The first block mirrors
-// client/src/audio/voice-params.ts (line cited per value); keep both in step.
+// client/src/audio/voice-params.ts, with the TS line cited per value.
 #pragma once
 
 /* client/src/audio/voice-params.ts */
@@ -35,6 +35,7 @@
 #define FSV_MAX_WET_GAIN 0.6f                 /* :97 */
 
 /* The rest of the page's graph (client/src/audio). */
+#define FSV_GATE_THRESHOLD 0.001f             /* mic-rack.ts:206 gateThreshold = dbToGain(GATE_THRESHOLD_DB), linear RMS */
 #define FSV_RAMP_SEC 0.02f                    /* mic-rack.ts RAMP_SEC: fader, monitor, notch gain, sends, echo */
 #define FSV_BOOST_RAMP_SEC 0.25f              /* mic-rack.ts setBoost */
 #define FSV_SINGING_START_DB (FSV_VOICE_TARGET_DB - FSV_VOICE_START_BOOST_DB) /* mic-rack.ts `singing` */
@@ -66,3 +67,9 @@
 /* Reverb: an 8-line feedback delay network standing in for the convolver. */
 #define FSV_FDN_LINES 8
 #define FSV_FDN_LENGTHS {1123, 1361, 1597, 1847, 2087, 2333, 2593, 2851}
+/* The convolver's mean per-channel energy gain at 48 kHz. Chromium's reverb.cc normalises the impulse h
+   (voice-engine.ts reverbImpulse: 2 channels, len = 1.4 s * 48000 = 67200) by
+   scale = 10^(-58/20) * (44100/48000) / rms(h), so mean(sum h_L^2, sum h_R^2) * scale^2
+   = len * 10^(-58/10) * (44100/48000)^2: 10*log10(67200) - 58 + 20*log10(0.91875) = -10.46 dB
+   (L -10.47, R -10.46 for the seeded noise). */
+#define FSV_REVERB_ENERGY_GAIN_DB -10.46f

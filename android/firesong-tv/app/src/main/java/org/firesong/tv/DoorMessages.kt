@@ -13,7 +13,37 @@ const val FEATURE_MICS = "mics"
 
 data class IceServerSpec(val urls: List<String>, val username: String?, val credential: String?)
 
-data class IceCandidateSpec(val candidate: String, val sdpMid: String?, val sdpMLineIndex: Int?)
+/** `usernameFragment` is part of the page's candidate; libwebrtc's IceCandidate has no use for it. */
+data class IceCandidateSpec(
+    val candidate: String,
+    val sdpMid: String?,
+    val sdpMLineIndex: Int?,
+    val usernameFragment: String?,
+)
+
+/** The value sets of the app's enum fields; [wire] is the JSON string. */
+enum class ReadyAudio(val wire: String) { OPEN("open"), PENDING("pending") }
+
+enum class ReadyFailReason(val wire: String) { LIB("lib"), WEBRTC("webrtc") }
+
+enum class PeerErrorCode(val wire: String) {
+    SDP("sdp"),
+    TIMEOUT("timeout"),
+    INTERNAL("internal"),
+    SUPERSEDED("superseded"),
+}
+
+enum class CandidateType(val wire: String) { HOST("host"), SRFLX("srflx"), PRFLX("prflx"), RELAY("relay") }
+
+/** [code] is the engine's reason: NativeMics.monitorResult out[2], or minus the return of NativeMics.measureMonitor. */
+enum class MonitorFailReason(val code: Int, val wire: String) {
+    BUSY(1, "busy"),
+    NO_AUDIO(2, "no-audio"),
+    NO_TONE(3, "no-tone"),
+    STOPPED(4, "stopped"),
+}
+
+enum class FatalReason(val wire: String) { WEBRTC("webrtc"), INTERNAL("internal") }
 
 sealed class PageMessage(val t: String) {
     data class Hello(val v: Int, val features: List<String>) : PageMessage("hello")
@@ -53,29 +83,37 @@ sealed class PageMessage(val t: String) {
 }
 
 sealed class AppMessage(val t: String) {
-    /** On the wire with `v` and `ok: true`. `audio` is "open" or "pending". */
+    /** On the wire with `v` and `ok: true`. */
     data class ReadyOk(
         val features: List<String>,
-        val audio: String,
+        val audio: ReadyAudio,
         val rate: Int,
         val burstFrames: Int?,
         val outputLatencyMs: Double?,
     ) : AppMessage("ready")
 
-    /** On the wire with `v` and `ok: false`. `reason` is "lib" or "webrtc". */
-    data class ReadyFailed(val reason: String) : AppMessage("ready")
+    /** On the wire with `v` and `ok: false`. */
+    data class ReadyFailed(val reason: ReadyFailReason) : AppMessage("ready")
 
     /** The raw local description, candidates included. */
     data class Answer(val peer: Int, val seq: Int, val sdp: String) : AppMessage("answer")
 
-    /** `code` is "sdp", "timeout", "internal" or "superseded"; `detail` at most 200 chars, no SDP or addresses. */
-    data class PeerError(val peer: Int, val seq: Int, val code: String, val detail: String) : AppMessage("peer-error")
+    /**
+     * `detail` carries no SDP or addresses. The wire limit is [DETAIL_MAX] chars: DoorCodec.encode sends
+     * at most its first [DETAIL_MAX], so producers may pass a longer one.
+     */
+    data class PeerError(val peer: Int, val seq: Int, val code: PeerErrorCode, val detail: String) :
+        AppMessage("peer-error") {
+        companion object {
+            const val DETAIL_MAX = 200
+        }
+    }
 
     data class RestartNeeded(val peer: Int) : AppMessage("restart-needed")
 
     /**
      * The peer's inbound audio stream, cumulative as RTCStats reports it (delays in seconds, counts in
-     * samples or packets). `candidateType` is "host", "srflx", "prflx", "relay" or null.
+     * samples or packets). `candidateType` is null until a candidate pair is nominated.
      */
     data class PeerStats(
         val peer: Int,
@@ -90,18 +128,19 @@ sealed class AppMessage(val t: String) {
         val removedSamplesForAcceleration: Double,
         val jitter: Double,
         val roundTripTimeMs: Double?,
-        val candidateType: String?,
+        val candidateType: CandidateType?,
     ) : AppMessage("peer-stats")
 
     data class Status(val slots: List<SlotStatusMsg>) : AppMessage("status")
 
     data class MonitorResultOk(val id: Int, val slot: Int, val monitorMs: Double) : AppMessage("monitor-result")
 
-    /** On the wire with `ok: false`. `reason` is "busy", "no-audio", "no-tone" or "stopped". */
-    data class MonitorResultFailed(val id: Int, val slot: Int, val reason: String) : AppMessage("monitor-result")
+    /** On the wire with `ok: false`. */
+    data class MonitorResultFailed(val id: Int, val slot: Int, val reason: MonitorFailReason) :
+        AppMessage("monitor-result")
 
-    /** `reason` is "webrtc" or "internal"; the app closes the socket after sending it. */
-    data class Fatal(val reason: String) : AppMessage("fatal")
+    /** The app closes the socket after sending it. */
+    data class Fatal(val reason: FatalReason) : AppMessage("fatal")
 }
 
 data class EchoStatusMsg(val delayMs: Double, val dryGain: Double, val wetGain: Double, val late: Boolean)
@@ -127,7 +166,10 @@ data class SlotStatusMsg(
 
 data class EngineSlotStatsMsg(val slot: Int, val underruns: Long, val trimmedFrames: Long, val marginMs: Double)
 
-/** `apm` is null until known, then "none" or the effective components, e.g. "ec:SOFTWARE,ns:SOFTWARE". */
+/**
+ * `openAttempts` counts the session's AAudio open attempts (NativeMics.engineStats out[18]). `apm` is null
+ * until known, then "none" or the effective components, e.g. "ec:SOFTWARE,ns:SOFTWARE".
+ */
 data class EngineStatsMsg(
     val open: Boolean,
     val outputLatencyMs: Double?,
@@ -167,7 +209,10 @@ interface PageChannel {
 interface PageHandler {
     fun onMessage(message: PageMessage)
 
-    /** The door tolerated something it did not deliver (an unknown `t` or an unknown field); counted in engine-stats `ignored`. */
+    /**
+     * The door tolerated a frame: an unknown `t` (not delivered), or unknown fields (the message is
+     * delivered first). Each call adds 1 to engine-stats `ignored`.
+     */
     fun onIgnored()
 
     /** The connection ended; called exactly once. */

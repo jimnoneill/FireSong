@@ -71,10 +71,12 @@ void fsv_release(int slot);                                /* C */
 int  fsv_push(int slot, int gen, const int16_t *pcm, int frames, int rate, int channels); /* P: tap blocks ready (>= 0) or a negative fsv_result */
 int  fsv_set(int slot, int control, float value);          /* C */
 int  fsv_set_echo_mix(float wet, float feedback, float lowpass_hz, float reverb_send); /* C */
-int  fsv_drain_tap(uint8_t *out, int capacity);            /* D: one complete tap message, its length; 0 when none */
+int  fsv_drain_tap(uint8_t *out, int capacity);            /* D: one complete tap message, its length; 0 when none. Single consumer: calls never overlap, process-wide */
 void fsv_slot_status(int slot, float out[FSV_STATUS_LEN]); /* any */
 void fsv_engine_stats(int64_t out[FSV_STATS_LEN]);         /* any */
-int  fsv_measure_monitor(int slot);                        /* C: token > 0, or <= 0 (busy / not running / no audio) */
+/* C: token > 0, or a negated fsv_monitor_reason: -FSV_MONITOR_BUSY (a measurement is running),
+   -FSV_MONITOR_NO_AUDIO (slot out of range or not attached), -FSV_MONITOR_STOPPED (no session, or the output is not open). */
+int  fsv_measure_monitor(int slot);
 void fsv_monitor_result(int token, float out[3]);          /* C: state, ms, reason */
 
 /* Engine-internal seam (engine.c <-> aaudio_out.c). frame_index = frames written to the stream before this call. */

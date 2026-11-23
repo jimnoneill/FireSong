@@ -3,10 +3,10 @@
 
 #include "dsp.h"
 
-void fsv_gate_init(fsv_gate *g, float fs, float threshold) {
+void fsv_gate_init(fsv_gate *g, float fs, float threshold_rms) {
   (void)fs;
   memset(g, 0, sizeof(*g));
-  g->threshold = threshold;
+  g->threshold = threshold_rms;
 }
 
 float fsv_gate_run(fsv_gate *g, float x, int *meter_ready, float *meter_rms, int *meter_open) {

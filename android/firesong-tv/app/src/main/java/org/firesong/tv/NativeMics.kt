@@ -43,7 +43,10 @@ object NativeMics {
 
     @JvmStatic external fun setEchoMix(wet: Float, feedback: Float, lowpassHz: Float, reverbSend: Float): Boolean
 
-    /** Writes one complete tap message (§3.1.5) into a direct buffer of TAP_MESSAGE_MAX bytes; returns its length, 0 when none. */
+    /**
+     * Writes one complete tap message (§3.1.5) into a direct buffer of TAP_MESSAGE_MAX bytes; returns its length,
+     * 0 when none. The tap queue has a single consumer: calls never overlap, process-wide.
+     */
     @JvmStatic external fun drainTap(out: ByteBuffer): Int
 
     /** out[0..7]: levelRms, gateOpen, feedbackHz (0 = none), boostDb, fillMs, outRms, attached, duckedMs. */
@@ -58,9 +61,12 @@ object NativeMics {
      */
     @JvmStatic external fun engineStats(out: LongArray)
 
-    /** Starts the monitor beep for a slot; returns a token > 0, or <= 0 (busy / not running / no audio). */
+    /**
+     * Starts the monitor beep for a slot; returns a token > 0, or minus a [MonitorFailReason.code]: BUSY (a
+     * measurement is running), NO_AUDIO (slot out of range or not attached), STOPPED (no session, or no output).
+     */
     @JvmStatic external fun measureMonitor(slot: Int): Int
 
-    /** out[0] state (0 pending, 1 done, 2 failed), out[1] ms, out[2] reason (1 busy, 2 no-audio, 3 no-tone, 4 stopped). */
+    /** out[0] state (0 pending, 1 done, 2 failed), out[1] ms, out[2] reason ([MonitorFailReason.code]). */
     @JvmStatic external fun monitorResult(token: Int, out: FloatArray)
 }

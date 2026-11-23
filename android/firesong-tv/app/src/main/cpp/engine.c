@@ -63,7 +63,7 @@ void fsv_engine_stats(int64_t out[FSV_STATS_LEN]) {
 
 int fsv_measure_monitor(int slot) {
   (void)slot;
-  return FSV_ERR_STATE;
+  return -FSV_MONITOR_STOPPED;
 }
 
 void fsv_monitor_result(int token, float out[3]) {

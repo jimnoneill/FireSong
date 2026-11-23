@@ -463,6 +463,7 @@ export class RemoteMics {
     this.latencyFor(micId).resetJitter();
     const peer = this.deps.createPeer({
       micId,
+      slot,
       iceServers: this.iceServers,
       events: {
         onStream: (stream) => this.onStream(slot, micId, stream),

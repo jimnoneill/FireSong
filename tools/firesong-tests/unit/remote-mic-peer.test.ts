@@ -64,7 +64,7 @@ const setup = () => {
     onStats: vi.fn<(stats: PeerStats) => void>(),
     onError: vi.fn(),
   } satisfies PeerEvents;
-  const peer = new TvMicPeer({ micId: 'mic-aaaaaaaa', iceServers: [], events }, (config) => {
+  const peer = new TvMicPeer({ micId: 'mic-aaaaaaaa', slot: 1, iceServers: [], events }, (config) => {
     pc = new FakePc(config);
     return pc as unknown as RTCPeerConnection;
   });

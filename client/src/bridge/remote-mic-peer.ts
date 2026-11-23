@@ -1,6 +1,6 @@
 import { jitterBufferDelayMs, type JitterCounters } from '@/audio/slot-latency';
 import { mungeOpusSdp } from '@/features/remote-mic/opus-sdp';
-import type { IceCandidate, IceServer } from '@/features/remote-mic/protocol';
+import type { IceCandidate, IceServer, MicSlot } from '@/features/remote-mic/protocol';
 
 /**
  * The TV end of one phone's `RTCPeerConnection` (PROTOCOL.md §7): receive
@@ -33,6 +33,7 @@ export type PeerEvents = {
 
 export type PeerInit = {
   micId: string;
+  slot: MicSlot;
   iceServers: readonly IceServer[];
   events: PeerEvents;
 };

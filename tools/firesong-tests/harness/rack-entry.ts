@@ -1,7 +1,9 @@
 // Page for rack-release.test.ts: the real MicRack on the real voice engine,
 // with every AudioWorkletNode the rack builds recorded so the test can probe
-// the processors after the slot is released.
+// the processors after the slot is released. The engine's own song meter runs
+// for the whole page and is not recorded.
 import { MicRack } from '@/audio/mic-rack';
+import { SONG_PEAK_PROCESSOR } from '@/audio/rack-worklets';
 import { getVoiceEngine } from '@/audio/voice-engine';
 
 type Recorded = { name: string; node: AudioWorkletNode; messages: number };
@@ -11,6 +13,9 @@ const Native = window.AudioWorkletNode;
 window.AudioWorkletNode = class extends Native {
   constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
     super(context, name, options);
+    if (name === SONG_PEAK_PROCESSOR) {
+      return;
+    }
     const entry = { name, node: this, messages: 0 };
     this.port.addEventListener('message', () => {
       entry.messages += 1;

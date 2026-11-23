@@ -1,10 +1,10 @@
 import { addFlightSampler, flight } from '@/bridge/flight';
 
-import { startNativeVoice } from './native-voice-out';
-import { rackWorkletUrl } from './rack-worklets';
+import { rackWorkletUrl, SONG_PEAK_PROCESSOR } from './rack-worklets';
 import {
   BUS_COMPRESSOR_RATIO,
   BUS_COMPRESSOR_THRESHOLD_DB,
+  dbToGain,
   LIMITER_RATIO,
   LIMITER_THRESHOLD_DB,
   REVERB_SECONDS,
@@ -15,12 +15,10 @@ import {
  * leave, so pauses and song changes never rebuild audio graphs or stop
  * tracks. Slots feed `bus` (dry and echo) and `reverbSend`; voices leave
  * through the bus compressor and the voice limiter, `output`. Voices and the
- * song meet in `speakers`, a last limiter, so together they never clip. In the
- * FireSong TV app the voices can leave through the app's own low-latency
- * output instead (`native-voice-out.ts`); the speakers then carry only the song.
+ * song meet in `speakers`, a last limiter, so together they never clip. A
+ * trim after it, 0 dB unless set, leaves headroom when voices are mixed in
+ * after the page's output.
  */
-export type VoiceRoute = 'speakers' | 'native';
-
 export type VoiceEngine = {
   readonly context: AudioContext;
   readonly bus: GainNode;
@@ -35,8 +33,10 @@ export type VoiceEngine = {
   outputLatencyMs(): number;
   /** RMS of the last output block, the voices as they leave for the speakers. */
   outputRms(): number;
-  /** Sends the voices to the speakers mix, or takes them out of it for the native output. */
-  setVoiceRoute(route: VoiceRoute): void;
+  /** Gain after `speakers`, in dB; glides there in about 10 ms. */
+  setSongTrimDb(db: number): void;
+  /** Largest absolute sample after the trim since the previous call; null before a new reading. */
+  songPeak(): number | null;
 };
 
 const REVERB_DECAY = 6.9;
@@ -45,7 +45,7 @@ const LIMITER_RELEASE_SEC = 0.1;
 /** The whole mix only, just under full scale: it acts on peaks, not on the song's level. */
 const MIX_LIMITER_THRESHOLD_DB = -1;
 const MIX_LIMITER_RELEASE_SEC = 0.25;
-const ROUTE_SWITCH_SEC = 0.01;
+const TRIM_GLIDE_SEC = 0.01;
 const GESTURES = ['pointerdown', 'keydown'] as const;
 const METER_FFT_SIZE = 2048;
 
@@ -75,6 +75,27 @@ const compressor = (
   return node;
 };
 
+/** Follows the peaks leaving `source` once the worklet module is loaded. */
+const meterSongPeak = async (
+  context: AudioContext,
+  ready: Promise<void>,
+  source: AudioNode,
+  onPeak: (peak: number) => void,
+): Promise<void> => {
+  await ready;
+  const meter = new AudioWorkletNode(context, SONG_PEAK_PROCESSOR, {
+    numberOfInputs: 1,
+    numberOfOutputs: 0,
+  });
+  meter.port.addEventListener('message', (event: MessageEvent<unknown>) => {
+    if (typeof event.data === 'number') {
+      onPeak(event.data);
+    }
+  });
+  meter.port.start();
+  source.connect(meter);
+};
+
 export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
   const bus = context.createGain();
   const reverbSend = context.createGain();
@@ -89,18 +110,22 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
   speakers.knee.value = 0;
   speakers.attack.value = LIMITER_ATTACK_SEC;
   speakers.release.value = MIX_LIMITER_RELEASE_SEC;
-  speakers.connect(context.destination);
+  const songTrim = context.createGain();
+  speakers.connect(songTrim).connect(context.destination);
 
   bus.connect(busCompressor);
   reverbSend.connect(reverb).connect(busCompressor);
-  const voiceToSpeakers = context.createGain();
-  busCompressor.connect(limiter).connect(voiceToSpeakers).connect(speakers);
+  busCompressor.connect(limiter).connect(speakers);
   const meter = context.createAnalyser();
   meter.fftSize = METER_FFT_SIZE;
   limiter.connect(meter);
   const block = new Float32Array(meter.fftSize);
 
   const ready = context.audioWorklet.addModule(rackWorkletUrl());
+  let songPeak: number | null = null;
+  meterSongPeak(context, ready, songTrim, (peak) => {
+    songPeak = Math.max(songPeak ?? 0, peak);
+  }).catch((error: unknown) => flight('song-peak', { why: 'error', error: String(error) }));
 
   return {
     context,
@@ -115,12 +140,13 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
       meter.getFloatTimeDomainData(block);
       return Math.sqrt(block.reduce((sum, sample) => sum + sample * sample, 0) / block.length);
     },
-    setVoiceRoute: (route) => {
-      voiceToSpeakers.gain.setTargetAtTime(
-        route === 'native' ? 0 : 1,
-        context.currentTime,
-        ROUTE_SWITCH_SEC,
-      );
+    setSongTrimDb: (db) => {
+      songTrim.gain.setTargetAtTime(dbToGain(db), context.currentTime, TRIM_GLIDE_SEC);
+    },
+    songPeak: () => {
+      const peak = songPeak;
+      songPeak = null;
+      return peak;
     },
   };
 };
@@ -169,11 +195,6 @@ export const getVoiceEngine = (): VoiceEngine => {
     const engine = createVoiceEngine(new AudioContext({ latencyHint: LOWEST_LATENCY }));
     shared = engine;
     keepRunning(engine);
-    engine.ready
-      .then(() => startNativeVoice(engine))
-      .catch((error: unknown) => {
-        flight('native-voice', { route: 'speakers', why: 'error', error: String(error) });
-      });
   }
   return shared;
 };

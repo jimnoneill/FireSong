@@ -1,13 +1,8 @@
 /** The voice engine's processors, one worklet module on its context. */
 export const GATE_PROCESSOR = 'firesong-gate';
 export const CHUNK_PROCESSOR = 'firesong-chunker';
-/**
- * Sends the voice mix to the TV app's native output as interleaved stereo
- * s16 blocks of `processorOptions.blockFrames` frames, over the MessagePort
- * it is given as `{ out }`; `{ stop: true }` stops sending. Silence is sent
- * too, so the native side never runs dry between phrases.
- */
-export const VOICE_OUT_PROCESSOR = 'firesong-voice-out';
+/** Posts the largest absolute sample of its input, a number, every 250 ms. */
+export const SONG_PEAK_PROCESSOR = 'firesong-song-peak';
 
 /**
  * k-rate parameter on both processors; setting it to 0 ends the processor
@@ -103,48 +98,36 @@ class FireSongChunker extends AudioWorkletProcessor {
     return true;
   }
 }
-const toS16 = (value) => {
-  const clamped = value > 1 ? 1 : value < -1 ? -1 : value;
-  return Math.round(clamped < 0 ? clamped * 32768 : clamped * 32767);
-};
-class FireSongVoiceOut extends AudioWorkletProcessor {
-  static get parameterDescriptors() {
-    return [ACTIVE];
-  }
-  constructor(options) {
+class FireSongSongPeak extends AudioWorkletProcessor {
+  constructor() {
     super();
-    this.frames = (options && options.processorOptions && options.processorOptions.blockFrames) || 256;
-    this.block = new Int16Array(this.frames * 2);
-    this.offset = 0;
-    this.out = null;
-    this.port.onmessage = (event) => {
-      const data = event.data;
-      if (data && data.out) this.out = data.out;
-      if (data && data.stop) this.out = null;
-    };
+    this.reportSamples = Math.round(sampleRate * 0.25);
+    this.peak = 0;
+    this.count = 0;
   }
-  process(inputs, outputs, parameters) {
-    if (ended(parameters)) return false;
-    if (this.out === null) return true;
+  process(inputs) {
     const input = inputs[0] || [];
-    const left = input[0];
-    const right = input[1] || left;
-    const frames = left ? left.length : 128;
-    for (let i = 0; i < frames; i++) {
-      this.block[this.offset++] = left ? toS16(left[i]) : 0;
-      this.block[this.offset++] = right ? toS16(right[i]) : 0;
-      if (this.offset >= this.block.length) {
-        this.out.postMessage(this.block, [this.block.buffer]);
-        this.block = new Int16Array(this.frames * 2);
-        this.offset = 0;
+    let frames = 0;
+    for (let c = 0; c < input.length; c++) {
+      const channel = input[c];
+      frames = channel.length;
+      for (let i = 0; i < channel.length; i++) {
+        const magnitude = Math.abs(channel[i]);
+        if (magnitude > this.peak) this.peak = magnitude;
       }
+    }
+    this.count += frames || 128;
+    if (this.count >= this.reportSamples) {
+      this.port.postMessage(this.peak);
+      this.peak = 0;
+      this.count = 0;
     }
     return true;
   }
 }
 registerProcessor(${JSON.stringify(GATE_PROCESSOR)}, FireSongGate);
 registerProcessor(${JSON.stringify(CHUNK_PROCESSOR)}, FireSongChunker);
-registerProcessor(${JSON.stringify(VOICE_OUT_PROCESSOR)}, FireSongVoiceOut);
+registerProcessor(${JSON.stringify(SONG_PEAK_PROCESSOR)}, FireSongSongPeak);
 `;
 
 let rackUrl: string | null = null;

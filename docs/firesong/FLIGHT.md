@@ -29,9 +29,26 @@ lyrics or audio. Song identity is the file hash.
 | `tv` | `slot-joined`, `slot-left` | a phone joined or left a slot |
 | `tv` | `song-load`, `song-fetched`, `song-ready`, `song-error`, `song-play`, `song-pause`, `song-resume`, `song-unload` | the song player, with timings |
 | `tv` | `voice-context`, `song-context` | an audio context changed state |
-| `tv` | `native-voice` | in the TV app, the voices moved between the app's low-latency output (`route: native`) and the page's own (`speakers`), with `why` (`open`, `closed`, `stopped`, `stalled`, `unreachable`, `rate`, `error`) |
+| `tv` | `mic-backend` | who plays the phones' voices: `kind` `web` (the page) or `native` (the TV app's voice engine, with `?voice=native`), and `why`. Once when the TV seat is first taken: `ready` for native; for web `not-requested`, `no-endpoint` (no voice engine in this app) or why the link to the app failed (`native mic link …`). Again on a fall back to web, with why the app's engine was lost: `closed <code>`, `error`, `fatal <reason>`, `silent` (nothing from the app for 5 s), `no-audio` (its output shut for 20 s), `stalled` (it stopped reading the page) or `dropped` (`fireSongDiag.dropNativeLink()`) |
+| `tv` | `native-mics` | a problem on the link to the app's voice engine, each kind once per link: `why` `bad-message` (a message that fails the schema; `type` is its `t` or `null`), `bad-tap` (a malformed tap message), `too-large` (a page message over 64 KiB; `type` is its `t`) or `listener-error` (a page listener threw; `type` is `message`, `tap` or `lost`) |
+| `tv` | `monitor-latency` | after a phone's "Tune my mic" on the native voices: the app's monitor beep for `slot`, `monitorMs` the singer's own loop (TV out, air, phone, network, jitter buffer), or `null` when it failed |
+| `tv` | `song-peak` | `why: error`: the song's peak meter could not start; `error` says why |
 | `tv` | `party-start`, `party-start-failed`, `party-notice` | the lobby conductor |
-| `tv` | `sample` | every 10 s: heap, voice context state and output level, the song player, each slot's level, gate, monitor, mute and automatic boost, and in the TV app `nativeVoice` (route, ring fill and margin, output latency, underruns, played peak over the last second) |
+| `tv` | `sample` | every 10 s: heap, voice context state and output level, the song player, and `mics`: the TV seat, each slot's level, gate, monitor, mute and automatic boost (with `calBackend`, the backend its saved calibration was measured on, `assumed-web` when this TV has no record), and `backend` (below) |
+
+`mics.backend` in a TV sample: `kind`, `why` and `songPeak`, the largest song sample since the
+previous sample (after the song trim: under native the song plays 6 dB lower so the song and the
+voices together stay under full scale). Under native it also holds the app engine's latest
+statistics (the `engine-stats` message): output `open`, `outputLatencyMs`, `burstFrames`,
+`bufferFrames`, `apm`; over about the last second `pushIntervalP50Us`, `pushIntervalP99Us`,
+`pushIntervalMaxUs`, `callbackP99Us`, `callbackMaxUs`, `pushToPresentP50Ms`, `pushToPresentP95Ms`,
+`tapDrainP99Us`, `tapDrainMaxUs` and `peak` (the voices' output peak); the counters `xruns`,
+`restarts`, `openAttempts`, `tapDropped`, `trims`, `jumps`, `inserts`, `insertedFrames`,
+`clampHits` and `ignored`, which count up from the start of the link, and `sinkErrors`, from the
+app's start; `slots`, with each slot's `underruns`, `trimmedFrames` and `marginMs` and its ring
+`fillMs`, output `outRms` and last `monitorMs`; and `tapArrival` (`p99Ms`, `maxMs`, `count`), the
+intervals between tap messages reaching the page since the previous sample, while any slot is
+tapped.
 
 The TV page posts its events to `POST /api/firesong/flight` on the TV door (host token) every
 5 s; the server adds `t` (arrival) and `src`. TV events also carry `wall`, the TV's own clock when

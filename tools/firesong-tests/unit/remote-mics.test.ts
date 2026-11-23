@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MicRackPort, TapListener } from '@/audio/mic-rack';
 import { DEFAULT_ECHO_MIX, type EchoMix, type SlotMix } from '@/audio/voice-params';
+import type { MicBackend } from '@/bridge/mic-backend';
 import type { PeerEvents, PeerInit, PeerPort } from '@/bridge/remote-mic-peer';
 import { RemoteMics, type RemoteMicsDeps } from '@/bridge/remote-mics';
 import { phoneCalibration } from '@/features/remote-mic/calibration';
@@ -95,6 +96,20 @@ class FakePeer implements PeerPort {
   }
 }
 
+const webBackend = (rack: MicRackPort, createPeer: (init: PeerInit) => PeerPort): MicBackend => ({
+  kind: 'web',
+  why: 'not-requested',
+  rack,
+  createPeer,
+  calibrationOutput: () => {
+    throw new Error('no audio output in unit tests');
+  },
+  measureMonitor: async () => null,
+  onLost: () => () => undefined,
+  flightSample: () => ({ kind: 'web' }),
+  close: () => undefined,
+});
+
 const slot = (n: 1 | 2 | 3 | 4, extra: Partial<TvSlot> = {}): TvSlot => ({
   slot: n,
   color: (['rose', 'fuchsia', 'amber', 'emerald'] as const)[n - 1],
@@ -120,8 +135,14 @@ const setup = (monitorAlways = false) => {
   let push: (frame: ServerToTv | ServerToTvParty) => void = () => undefined;
   let stopped = 0;
   const deviceChanges = vi.fn();
+  const createPeer = (init: PeerInit) => {
+    const peer = new FakePeer(init);
+    peers.push(peer);
+    return peer;
+  };
   const deps: RemoteMicsDeps = {
-    rack: async () => rack,
+    backend: async () => webBackend(rack, createPeer),
+    fallback: async () => webBackend(rack, createPeer),
     connect: (onFrame, onOpen) => {
       push = onFrame;
       onOpen(true);
@@ -134,11 +155,6 @@ const setup = (monitorAlways = false) => {
           stopped += 1;
         },
       };
-    },
-    createPeer: (init) => {
-      const peer = new FakePeer(init);
-      peers.push(peer);
-      return peer;
     },
     dispatchFrame: (captureId, frame) => frames.push([captureId, frame]),
     devicesChanged: deviceChanges,

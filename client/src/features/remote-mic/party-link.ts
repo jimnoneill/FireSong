@@ -1,5 +1,6 @@
 import { createFxSynth, type FxSynth } from '@/audio/fx-synth';
 import { getVoiceEngine } from '@/audio/voice-engine';
+import { flight } from '@/bridge/flight';
 import { microphoneAdapter } from '@/bridge/microphone';
 import type { RemoteMics, TvPartyEvent } from '@/bridge/remote-mics';
 import { measureMicLatencySec } from '@/features/microphone/lib/latency-test';
@@ -19,6 +20,29 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
+/**
+ * The scoring beep on the voice backend's path; then, when the TV app plays
+ * the voices, its monitor beep for the singer's own loop, which only goes to
+ * the flight recorder. A backend that changes during the beep test fails it,
+ * because the result would belong to neither.
+ */
+const measureOnBackend = async (mics: RemoteMics, deviceId: string): Promise<number> => {
+  const backend = mics.backendSample()?.kind;
+  const output = mics.calibrationOutput();
+  if (backend === undefined || output === null) {
+    throw new Error('no voice backend for the beep test');
+  }
+  const seconds = await measureMicLatencySec(deviceId, microphoneAdapter, output);
+  if (mics.backendSample()?.kind !== backend) {
+    throw new Error('the voice backend changed during the beep test');
+  }
+  const slot = mics.slotForMicrophone(deviceId);
+  if (backend === 'native' && slot !== null) {
+    flight('monitor-latency', { slot, monitorMs: await mics.measureMonitor(slot) });
+  }
+  return seconds;
+};
+
 export const linkParty = (mics: RemoteMics): (() => void) => {
   let synth: FxSynth | null = null;
   const fx = (): FxSynth => {
@@ -30,13 +54,7 @@ export const linkParty = (mics: RemoteMics): (() => void) => {
   };
 
   const calibrator = new PhoneCalibrator({
-    measure: (deviceId) => {
-      const engine = getVoiceEngine();
-      return measureMicLatencySec(deviceId, microphoneAdapter, {
-        context: engine.context,
-        destination: engine.output,
-      });
-    },
+    measure: (deviceId) => measureOnBackend(mics, deviceId),
     send: (frame) => mics.sendParty(frame),
     reportLatency: (micId, latencyMs, method) => mics.reportLatency(micId, latencyMs, method),
     hasAudio: (slot) => mics.slotStatus(slot)?.attached === true,

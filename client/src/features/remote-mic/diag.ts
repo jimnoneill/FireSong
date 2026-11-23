@@ -1,6 +1,6 @@
 import { getVoiceEngine } from '@/audio/voice-engine';
 import { subscribeMicSamples } from '@/bridge/microphone-samples';
-import type { RemoteMics } from '@/bridge/remote-mics';
+import type { BackendSample, RemoteMics } from '@/bridge/remote-mics';
 import { SampleRing } from '@/features/microphone/lib/sample-ring';
 import { partyTv, type StageReport } from '@/features/party-lobby/party-store';
 import { PITCH_WINDOW_SAMPLES } from '@/features/playback/lib/pitch/constants';
@@ -11,9 +11,11 @@ import { isMicSlot } from '@/features/remote-mic/protocol';
  * Opt-in TV diagnostics for test drivers and the Cube runs (WP7). Off unless
  * the TV page was opened with `?fsdiag=1` (kept in session storage like the
  * launch flags). It exposes `window.fireSongDiag`: the phone-mic roster,
- * each slot's rack status, the voice context, and the pitch of the frames a
- * capture id (a player) receives, detected exactly as `useMicPitch` does. It
- * never exposes tokens, `resumeKey` or SDP.
+ * each slot's rack status, the voice context and backend, and the pitch of
+ * the frames a capture id (a player) receives, detected exactly as
+ * `useMicPitch` does. It can also drop the link to the TV app's voice engine,
+ * to test the fall back to the page's own voices. It never exposes tokens,
+ * `resumeKey` or SDP.
  */
 
 const STORAGE_KEY = 'firesong.diag';
@@ -38,6 +40,10 @@ export type FireSongDiag = {
   fx(): { played: number; dropped: number };
   /** The party stage the TV last reported. */
   stage(): StageReport;
+  /** Who plays the voices (`web`: the page, `native`: the TV app) and why; null while none is chosen. */
+  voiceBackend(): BackendSample | null;
+  /** Drops the link to the TV app's voice engine as a failure would; false when the voices are not native. */
+  dropNativeLink(): boolean;
 };
 
 const GLOBAL_NAME = 'fireSongDiag';
@@ -136,6 +142,8 @@ export const installDiag = (mics: RemoteMics): (() => void) => {
     },
     fx: () => partyTv.fxCounters(),
     stage: () => partyTv.getState().stage,
+    voiceBackend: () => mics.backendSample(),
+    dropNativeLink: () => mics.dropNativeLink(),
   };
   Reflect.defineProperty(window, GLOBAL_NAME, { value: diag, configurable: true });
   return () => {

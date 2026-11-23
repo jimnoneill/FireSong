@@ -7,6 +7,7 @@ import { createFxSynth, FX_DURATION_SEC } from '@/audio/fx-synth';
 import { MicRack } from '@/audio/mic-rack';
 import { getVoiceEngine } from '@/audio/voice-engine';
 import { DEFAULT_ECHO_MIX } from '@/audio/voice-params';
+import type { MicBackend } from '@/bridge/mic-backend';
 import { dispatchMicFrame } from '@/bridge/microphone-samples';
 import { withRemoteMics } from '@/bridge/microphone.phone';
 import { webMicrophoneAdapter } from '@/bridge/microphone.web';
@@ -149,13 +150,10 @@ const calibrate = async (kind: 'loopback' | 'silent', delaysMs: number[]) => {
   let phone: FakePhone | null = null;
   const sent: TvOutbound[] = [];
   let push: ((frame: TvInbound) => void) | null = null;
-  const mics = new RemoteMics({
-    rack: async () => rack,
-    connect: (onFrame, onOpen) => {
-      push = onFrame;
-      onOpen(true);
-      return { send: (frame) => (sent.push(frame), true), stop: () => undefined };
-    },
+  const backend: MicBackend = {
+    kind: 'web',
+    why: 'not-requested',
+    rack,
     createPeer: (init) => ({
       micId: init.micId,
       acceptOffer: async () => {
@@ -166,6 +164,20 @@ const calibrate = async (kind: 'loopback' | 'silent', delaysMs: number[]) => {
       addIce: () => undefined,
       close: () => undefined,
     }),
+    calibrationOutput: () => ({ context: engine.context, destination: engine.output }),
+    measureMonitor: async () => null,
+    onLost: () => () => undefined,
+    flightSample: () => ({ kind: 'web' }),
+    close: () => undefined,
+  };
+  const mics = new RemoteMics({
+    backend: async () => backend,
+    fallback: async () => backend,
+    connect: (onFrame, onOpen) => {
+      push = onFrame;
+      onOpen(true);
+      return { send: (frame) => (sent.push(frame), true), stop: () => undefined };
+    },
     dispatchFrame: dispatchMicFrame,
     devicesChanged: () => undefined,
     label: (slot) => `Slot ${slot.slot}`,

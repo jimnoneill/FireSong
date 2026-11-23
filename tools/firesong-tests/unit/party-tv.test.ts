@@ -133,6 +133,9 @@ describe('party link', () => {
       reportLatency: (micId: string, ms: number, method: LatencyMethod) =>
         (latencies.push([micId, ms, method]), true),
       slotStatus: (slot: number) => (attached.has(slot) ? { attached: true } : null),
+      backendSample: () => ({ kind: 'web', why: 'not-requested' }),
+      calibrationOutput: () => ({ context: {}, destination: {} }),
+      slotForMicrophone: () => 3,
     };
     // The link only uses these members of RemoteMics.
     const unlink = linkParty(mics as never);

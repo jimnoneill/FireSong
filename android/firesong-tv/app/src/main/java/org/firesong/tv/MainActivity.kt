@@ -47,7 +47,8 @@ import java.util.concurrent.Executors
  * FireSong on the Fire TV: one fullscreen WebView showing the TV page of the
  * FireSong server (design §5). Everything the page needs from the host lives
  * here: settings, the host-token cookie, remote keys, crash and network
- * recovery, console logging and the FSPROBE bridge.
+ * recovery, console logging, the FSPROBE bridge and the voice door, which
+ * lives exactly as long as the WebView it serves.
  *
  * Configuration comes only through the `org.firesong.tv/.Configure` alias,
  * which requires WRITE_SECURE_SETTINGS (held by `adb shell`, not by apps):
@@ -86,7 +87,9 @@ class MainActivity : Activity() {
     private val page = PageLifecycle()
     private var loads = 0
     private var settings = TvSettings()
-    private var targetUrl: String? = null
+
+    /** Also read by the voice door's connection threads, for the page's origin. */
+    @Volatile private var targetUrl: String? = null
     private var mainFrameFailed = false
     private var pageLoaded = false
     private var retryScheduled = false

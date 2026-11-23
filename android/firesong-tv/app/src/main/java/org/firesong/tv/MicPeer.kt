@@ -18,7 +18,6 @@ import org.webrtc.PeerConnection.PeerConnectionState
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RTCStats
 import org.webrtc.RTCStatsReport
-import org.webrtc.RtpReceiver
 import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
@@ -171,7 +170,6 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
     private var link = PeerConnectionState.NEW
     private var remoteReady = false
     private val pendingIce = ArrayList<IceCandidate>()
-    private val transceivers = ArrayList<RtpTransceiver>()
     private var track: AudioTrack? = null
     private var sink: SlotSink? = null
     private var gatherSeq = 0
@@ -225,7 +223,10 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
         connection.getStats { report -> host.post { if (!closed) onStats(report) } }
     }
 
-    /** The `close` of design §3.1.3; idempotent. */
+    /**
+     * The `close` of design §3.1.3; idempotent. The transceiver from onTrack, its receiver and track are
+     * disposed by [PeerConnection.dispose]: the JNI observer owns them, and a second dispose aborts.
+     */
     fun close() {
         if (closed) return
         closed = true
@@ -241,8 +242,6 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
             host.channel.wakeTap()
         }
         pc?.close()
-        transceivers.forEach { it.dispose() }
-        transceivers.clear()
         pc?.dispose()
         pc = null
         track = null
@@ -341,7 +340,6 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
     }
 
     private fun attachTrack(transceiver: RtpTransceiver) {
-        transceivers.add(transceiver)
         if (transceiver.mediaType != MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO) return
         val audio = transceiver.receiver.track() as? AudioTrack ?: return
         val previousTrack = track
@@ -452,14 +450,7 @@ internal class MicPeer(val id: Int, val slot: Int, private val host: PeerHost) {
 
         override fun onRenegotiationNeeded() = Unit
 
-        /** The wrapper is ours to dispose; the streams belong to the observer. */
-        override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) = host.post { receiver.dispose() }
-
-        override fun onRemoveTrack(receiver: RtpReceiver) = host.post { receiver.dispose() }
-
-        override fun onTrack(transceiver: RtpTransceiver) = host.post {
-            if (closed) transceiver.dispose() else attachTrack(transceiver)
-        }
+        override fun onTrack(transceiver: RtpTransceiver) = host.post { if (!closed) attachTrack(transceiver) }
     }
 
     companion object {

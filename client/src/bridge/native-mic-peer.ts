@@ -114,6 +114,8 @@ export class NativeMicPeer implements PeerPort {
   private state: PeerState = 'idle';
   private pending: Pending | null = null;
   private counters: JitterCounters | null = null;
+  /** A failed offer asked the phone for a restart, and no answer has come since. */
+  private restartAsked = false;
 
   constructor(
     private readonly link: NativeMicLinkPort,
@@ -193,6 +195,7 @@ export class NativeMicPeer implements PeerPort {
       case 'answer':
         if (message.seq === this.pending?.seq) {
           this.settle();
+          this.restartAsked = false;
           this.events.onAnswer(mungeOpusSdp(message.sdp));
         }
         return;
@@ -243,9 +246,10 @@ export class NativeMicPeer implements PeerPort {
 
   /**
    * Closes the app's connection for this id, so the next offer opens a fresh
-   * one, and asks the phone for that offer when `restart`. A link that takes
-   * no `close` is closed or stalled and could not carry a restart either, so
-   * the waiting offer then ends quietly.
+   * one, and asks the phone for that offer when `restart`, once until an
+   * answer comes: a failure that repeats is then retried at the phone's own
+   * pace. A link that takes no `close` is closed or stalled and could not
+   * carry a restart either, so the waiting offer then ends quietly.
    */
   private fail(error: Error, restart: boolean): void {
     const pending = this.take();
@@ -258,7 +262,8 @@ export class NativeMicPeer implements PeerPort {
       pending?.resolve();
       return;
     }
-    if (restart) {
+    if (restart && !this.restartAsked) {
+      this.restartAsked = true;
       this.events.onRestartNeeded();
     }
     pending?.reject(error);

@@ -9,7 +9,7 @@ import type { PhoneMicApp } from '@/features/phone-mic/lib/app';
 import type { PartyState } from '@/features/phone-mic/lib/party-state';
 import type { SongBook, SongBookView } from '@/features/phone-mic/lib/song-book';
 import { MAX_SEARCH_CHARS, type BookSong, type MicSlot } from '@/features/remote-mic/protocol';
-import { formatNumber, t } from '@/i18n';
+import { formatNumber, t, tp } from '@/i18n';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 
@@ -174,10 +174,7 @@ export function SongsTab({
       </div>
       {view.status === 'ready' && view.text.trim() !== '' && view.total > 0 ? (
         <p aria-live="polite" className="px-1 text-sm text-muted-foreground">
-          {t('phoneMic.songs.matches', {
-            count: formatNumber(view.total),
-            ready: formatNumber(view.readyTotal),
-          })}
+          {tp('phoneMic.songs.matches', view.total, { ready: formatNumber(view.readyTotal) })}
         </p>
       ) : null}
       {view.status === 'ready' && view.readyTotal > 0 ? (

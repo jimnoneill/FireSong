@@ -822,6 +822,7 @@ pub const ABSENT_SINGER_GRACE_SECS: u32 = 30;
 pub const MIC_PARTY_TYPES: &[&str] = &[
     "reserve",
     "edit",
+    "sing-along",
     "cancel",
     "control",
     "shift-current",
@@ -2017,6 +2018,10 @@ mod tests {
                 key_offset: Some(1),
                 tempo: None,
                 sing_next: None,
+            },
+            MicPartyToServer::SingAlong {
+                req_id: None,
+                reservation_id: "r1".into(),
             },
             MicPartyToServer::Cancel {
                 req_id: None,

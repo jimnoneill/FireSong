@@ -1079,8 +1079,9 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
 
     opened = [m for _, m in eng if m.get("open")]
     minutes = max((eng[-1][0] - eng[0][0]) / 60000, 1 / 60)
-    # An app from before the resampling ring reports trims, jumps and inserts; its runs keep the old M3.
-    legacy = any("trims" in m for _, m in eng)
+    # An app from before the resampling ring reports no conceals (a newer one sends its old keys too, for old
+    # pages); its runs keep the old M3.
+    legacy = not any("conceals" in m for _, m in eng)
     out["engine"] = {
         "seconds": len(eng), "open_share": round(len(opened) / len(eng), 3),
         "burst_frames": eng[-1][1].get("burstFrames"), "buffer_frames": eng[-1][1].get("bufferFrames"),
@@ -1099,7 +1100,9 @@ def native_report(events, tap_rows=(), long_rows=(), song_peaks=(), start_ms=Non
             "inserts": increase(m.get("inserts") for _, m in eng),
             "inserted_ms": rnd(increase(m.get("insertedFrames") for _, m in eng) / 48, 1)})
     else:
-        ratios = [m.get(k) for _, m in eng for k in ("ratioMinPpm", "ratioMaxPpm") if number(m.get(k))]
+        # A window in which no slot played reports 0 and 0.
+        ratios = [m[k] for _, m in eng if (m.get("ratioMinPpm"), m.get("ratioMaxPpm")) != (0, 0)
+                  for k in ("ratioMinPpm", "ratioMaxPpm") if number(m.get(k))]
         out["engine"].update({
             "conceals": increase(m.get("conceals") for _, m in eng),
             "concealed_ms": rnd(increase(m.get("concealedFrames") for _, m in eng) / 48, 1),
@@ -1586,7 +1589,10 @@ def scan_logs(main: str, crash: str, app_pids: set[str]) -> dict:
 
 
 def cpu_medians(samples: list[dict]) -> dict:
-    return {k: rnd(median((s.get("cpu") or {}).get(k) for s in samples)) for k in ("app", "webview", "box")}
+    """Medians over the /proc readings (they carry their interval); an older rig's readings, without one, were
+    not measurements."""
+    read = [s["cpu"] for s in samples if "seconds" in (s.get("cpu") or {})]
+    return {k: rnd(median(c.get(k) for c in read)) for k in ("app", "webview", "box")}
 
 
 def thread_summary(samples: list[dict]) -> list[dict]:

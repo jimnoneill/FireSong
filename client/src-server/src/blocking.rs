@@ -16,13 +16,26 @@ pub(crate) async fn run<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'st
     }
 }
 
-/// Starts `work` on the blocking pool without waiting for it; without a
-/// runtime (the desktop app, plain unit tests) it runs inline.
+/// Starts `work` on the blocking pool without waiting for it. Without a
+/// runtime (the desktop app, plain unit tests), or when a runtime that is
+/// shutting down drops it unstarted, it runs inline.
 pub(crate) fn detach(work: impl FnOnce() + Send + 'static) {
+    let work = RunOnDrop(Some(work));
     match tokio::runtime::Handle::try_current() {
         Ok(runtime) => {
-            runtime.spawn_blocking(work);
+            runtime.spawn_blocking(move || drop(work));
         }
-        Err(_) => work(),
+        Err(_) => drop(work),
+    }
+}
+
+/// Runs its work when dropped, wherever that happens.
+struct RunOnDrop<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> Drop for RunOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(work) = self.0.take() {
+            work();
+        }
     }
 }

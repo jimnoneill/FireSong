@@ -20,9 +20,9 @@ lyrics or audio. Song identity is the file hash.
 | `src` | `ev` | When |
 | --- | --- | --- |
 | `server` | `start` | the server started |
-| `server` | `stall` | the process (`kind: process`) or its async runtime (`kind: runtime`) ran `ms` late, 1 s or more |
+| `server` | `stall` | the process (`kind: process`) or its async runtime (`kind: runtime`) ran `ms` late, or the `/rtc` hub every socket and the party wait on was held `ms` (`kind: hub`, `at` the source line that took it), 1 s or more |
 | `server` | `rtc-open`, `rtc-close` | a TV or phone `/rtc` socket opened or closed, with `why` |
-| `server` | `dropped` | the recorder fell behind the disk and dropped `lines` lines; written when it catches up |
+| `server` | `dropped` | the recorder fell behind the disk and dropped `lines` lines; written when it catches up, with `t` the first drop |
 | `host` | `sample` | every 10 s: load, available memory, swap pages in/out per second, server RSS |
 | `tv` | `page-load`, `page-hide`, `visibility` | the TV page's life |
 | `tv` | `error`, `rejection` | uncaught errors in the TV page |

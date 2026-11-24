@@ -4,21 +4,25 @@
 //! the full router [`tv_upgrade`]. Each socket runs one task that reads
 //! frames, enforces the handshake, size and rate limits, and writes whatever
 //! the [`Hub`] queued for it. Party frames (§13) share the socket; the hub
-//! hands them to [`party`]. Hub calls run on the blocking pool, since party
-//! work behind them reads the library database and the analyzer queue.
+//! hands them to [`party`]. Party work behind the hub reads the library
+//! database and the analyzer queue, so hub calls run on the blocking pool, one
+//! batch at a time in the order they were read, while the task keeps reading
+//! and answers `ping` itself: a slow hub delays frames but cuts no one off.
 
 mod hub;
 mod mic_store;
 mod party;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use app_core::remote_mic::{
-    close_code, decode_mic_inbound, decode_tv_inbound, MicInbound, MicToServer, RtcErrorCode,
-    ServerToMic, ServerToTv, TvInbound, TvToServer, MAX_FRAME_BYTES, RATE_BURST, RATE_PER_SEC,
-    SLOT_COUNT,
+    close_code, decode_mic_inbound, decode_tv_inbound, MicInbound, MicPartyToServer, MicToServer,
+    RtcErrorCode, ServerToMic, ServerToTv, TvInbound, TvPartyToServer, TvToServer, MAX_FRAME_BYTES,
+    RATE_BURST, RATE_PER_SEC, SLOT_COUNT,
 };
 use axum::{
     extract::{
@@ -40,6 +44,9 @@ use hub::{ConnId, MicHello, Outbound, Peer};
 
 /// Frames queued for one socket before it counts as not reading.
 const OUTBOUND_CAPACITY: usize = 256;
+
+/// Frames a socket reads ahead of a busy hub before it stops reading.
+const READ_AHEAD: usize = 256;
 
 /// Frames this much over [`MAX_FRAME_BYTES`] still reach the decoder, so the
 /// client gets a `too-large` error instead of a bare protocol close.
@@ -235,30 +242,73 @@ impl Bucket {
     }
 }
 
-struct Session {
+/// Hub work one socket read, applied in that order.
+enum Step {
+    MicHello(MicHello),
+    Mic(MicToServer),
+    MicParty(MicPartyToServer),
+    TvHello,
+    Tv(TvToServer),
+    TvParty(TvPartyToServer),
+    Fail(RtcErrorCode),
+    Sweep,
+}
+
+/// What hub work needs of a socket; it travels to the blocking pool.
+#[derive(Clone)]
+struct Relay {
     hub: Arc<Hub>,
     party_hold: Duration,
     role: Role,
     peer: Peer,
     conn: ConnId,
-    greeted: bool,
-    closing: bool,
-    bucket: Bucket,
-    /// The phone's id from its `hello`.
-    mic_id: Option<String>,
 }
 
-impl Session {
+impl Relay {
+    /// Applies `steps` in order and stops at the first fatal error, which
+    /// closes the socket; returns whether one did.
+    fn apply(&self, steps: Vec<Step>, mic_id: Option<&str>) -> bool {
+        for step in steps {
+            let result = match step {
+                Step::MicHello(hello) => self.hub.mic_hello(self.peer.clone(), hello),
+                Step::Mic(frame) => self.hub.mic_frame(self.conn, frame),
+                Step::MicParty(frame) => {
+                    self.hub.mic_party(self.conn, frame);
+                    Ok(())
+                }
+                Step::TvHello => {
+                    self.hub.tv_hello(self.peer.clone());
+                    app_core::party_started();
+                    Ok(())
+                }
+                Step::Tv(frame) => self.hub.tv_frame(self.conn, frame),
+                Step::TvParty(frame) => self.hub.tv_party(self.conn, frame),
+                Step::Fail(code) => Err(code),
+                Step::Sweep => {
+                    self.hub.sweep();
+                    Ok(())
+                }
+            };
+            if let Err(code) = result {
+                self.fail(code, mic_id);
+                if code.is_fatal() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Sends `error` and, for fatal codes, the matching close. Everything goes
     /// through the peer queue so it stays ordered after frames the hub queued.
-    fn fail(&mut self, code: RtcErrorCode) {
+    fn fail(&self, code: RtcErrorCode, mic_id: Option<&str>) {
         match self.role {
             Role::Tv => self.peer.send(&ServerToTv::Error {
                 code,
                 message: None,
             }),
             Role::Mic => {
-                let position = match (code, self.mic_id.as_deref()) {
+                let position = match (code, mic_id) {
                     (RtcErrorCode::SlotsFull, Some(mic_id)) => self.hub.line_position(mic_id),
                     _ => None,
                 };
@@ -270,8 +320,40 @@ impl Session {
             }
         }
         if code.is_fatal() {
-            self.closing = true;
             self.peer.close(code.close_code());
+        }
+    }
+
+    fn gone(&self) {
+        match self.role {
+            Role::Tv => {
+                if self.hub.tv_gone(self.conn) {
+                    app_core::party_paused(self.party_hold);
+                }
+            }
+            Role::Mic => self.hub.mic_gone(self.conn),
+        }
+    }
+}
+
+struct Session {
+    relay: Relay,
+    greeted: bool,
+    closing: bool,
+    bucket: Bucket,
+    /// The phone's id from its `hello`.
+    mic_id: Option<String>,
+    /// Hub work read and not yet started.
+    steps: Vec<Step>,
+}
+
+impl Session {
+    /// Queues `error` behind the hub work already read; a fatal code also
+    /// ends reading.
+    fn fail(&mut self, code: RtcErrorCode) {
+        self.steps.push(Step::Fail(code));
+        if code.is_fatal() {
+            self.closing = true;
         }
     }
 
@@ -293,12 +375,14 @@ impl Session {
             self.fail(code);
             return;
         };
-        let result = match self.role {
+        let result = match self.relay.role {
             Role::Mic => self.on_mic_text(text),
             Role::Tv => self.on_tv_text(text),
         };
-        if let Err(code) = result {
-            self.fail(code);
+        match result {
+            Ok(Some(step)) => self.steps.push(step),
+            Ok(None) => {}
+            Err(code) => self.fail(code),
         }
     }
 
@@ -314,14 +398,13 @@ impl Session {
         }
     }
 
-    fn on_mic_text(&mut self, text: &str) -> Result<(), RtcErrorCode> {
+    /// The hub work for one phone frame; `ping` is answered here, so a busy
+    /// hub cannot make the phone think the server is gone.
+    fn on_mic_text(&mut self, text: &str) -> Result<Option<Step>, RtcErrorCode> {
         let frame = match decode_mic_inbound(text).map_err(|code| self.before_hello(code))? {
             MicInbound::Rtc(frame) => frame,
             MicInbound::Party(_) if !self.greeted => return Err(RtcErrorCode::NoHello),
-            MicInbound::Party(frame) => {
-                self.hub.mic_party(self.conn, frame);
-                return Ok(());
-            }
+            MicInbound::Party(frame) => return Ok(Some(Step::MicParty(frame))),
         };
         match frame {
             MicToServer::Hello {
@@ -336,26 +419,28 @@ impl Session {
                 }
                 self.greeted = true;
                 self.mic_id = Some(mic_id.clone());
-                self.hub.mic_hello(
-                    self.peer.clone(),
-                    MicHello {
-                        mic_id,
-                        resume_key,
-                        slot,
-                        name,
-                    },
-                )
+                Ok(Some(Step::MicHello(MicHello {
+                    mic_id,
+                    resume_key,
+                    slot,
+                    name,
+                })))
             }
             _ if !self.greeted => Err(RtcErrorCode::NoHello),
-            frame => self.hub.mic_frame(self.conn, frame),
+            MicToServer::Ping { t } => {
+                self.relay.peer.send(&ServerToMic::Pong { t });
+                Ok(None)
+            }
+            frame => Ok(Some(Step::Mic(frame))),
         }
     }
 
-    fn on_tv_text(&mut self, text: &str) -> Result<(), RtcErrorCode> {
+    /// The hub work for one TV frame; `ping` is answered here.
+    fn on_tv_text(&mut self, text: &str) -> Result<Option<Step>, RtcErrorCode> {
         let frame = match decode_tv_inbound(text).map_err(|code| self.before_hello(code))? {
             TvInbound::Rtc(frame) => frame,
             TvInbound::Party(_) if !self.greeted => return Err(RtcErrorCode::NoHello),
-            TvInbound::Party(frame) => return self.hub.tv_party(self.conn, frame),
+            TvInbound::Party(frame) => return Ok(Some(Step::TvParty(frame))),
         };
         match frame {
             TvToServer::Hello { .. } => {
@@ -363,43 +448,37 @@ impl Session {
                     return Err(RtcErrorCode::BadHello);
                 }
                 self.greeted = true;
-                self.hub.tv_hello(self.peer.clone());
-                app_core::party_started();
-                Ok(())
+                Ok(Some(Step::TvHello))
             }
             _ if !self.greeted => Err(RtcErrorCode::NoHello),
-            frame => self.hub.tv_frame(self.conn, frame),
-        }
-    }
-
-    fn gone(&self) {
-        if !self.greeted {
-            return;
-        }
-        match self.role {
-            Role::Tv => {
-                if self.hub.tv_gone(self.conn) {
-                    app_core::party_paused(self.party_hold);
-                }
+            TvToServer::Ping { t } => {
+                self.relay.peer.send(&ServerToTv::Pong { t });
+                Ok(None)
             }
-            Role::Mic => self.hub.mic_gone(self.conn),
+            frame => Ok(Some(Step::Tv(frame))),
         }
     }
 }
+
+/// Hub work waiting on the blocking pool; `true` when it closed the socket.
+type HubWork = Pin<Box<dyn Future<Output = bool> + Send>>;
 
 async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut socket: WebSocket) {
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let (peer, mut outbound, overflow) = Peer::new(conn, OUTBOUND_CAPACITY);
     let mut session = Session {
-        hub: hub.clone(),
-        party_hold: timings.party_hold,
-        role,
-        peer,
-        conn,
+        relay: Relay {
+            hub,
+            party_hold: timings.party_hold,
+            role,
+            peer,
+            conn,
+        },
         greeted: false,
         mic_id: None,
         closing: false,
         bucket: Bucket::for_socket(role),
+        steps: Vec::new(),
     };
     tracing::debug!(conn, ?role, "rtc connected");
     flight.record(
@@ -415,10 +494,19 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
         timings.ping_interval,
     );
     let mut last_heard = Instant::now();
+    let mut hub_work: Option<HubWork> = None;
 
     let why = loop {
+        if hub_work.is_none() && !session.steps.is_empty() {
+            let relay = session.relay.clone();
+            let steps = std::mem::take(&mut session.steps);
+            let mic_id = session.mic_id.clone();
+            hub_work = Some(Box::pin(blocking::run(move || {
+                relay.apply(steps, mic_id.as_deref())
+            })));
+        }
         tokio::select! {
-            inbound = socket.recv() => {
+            inbound = socket.recv(), if session.steps.len() < READ_AHEAD => {
                 let Some(Ok(message)) = inbound else { break "client gone" };
                 last_heard = Instant::now();
                 let text = match message {
@@ -427,13 +515,23 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
                     Message::Ping(_) | Message::Pong(_) => continue,
                     Message::Close(_) => break "client closed",
                 };
-                session = blocking::run(move || {
-                    session.on_frame(text.as_deref());
-                    session
-                })
-                .await;
-                // Time spent waiting for the hub is not the client's silence.
-                last_heard = Instant::now();
+                session.on_frame(text.as_deref());
+            }
+            closed = async {
+                match hub_work.as_mut() {
+                    Some(work) => work.await,
+                    None => std::future::pending().await,
+                }
+            }, if hub_work.is_some() => {
+                hub_work = None;
+                if session.steps.len() >= READ_AHEAD {
+                    // Reading waited for the hub; the client was not silent.
+                    last_heard = Instant::now();
+                }
+                if closed {
+                    session.closing = true;
+                    session.steps.clear();
+                }
             }
             queued = outbound.recv() => match queued {
                 Some(Outbound::Text(text)) => {
@@ -460,10 +558,11 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
                     close(&mut socket, close_code::TIMEOUT).await;
                     break "idle timeout";
                 }
-                let swept = Instant::now();
-                let sweeper = hub.clone();
-                blocking::run(move || sweeper.sweep()).await;
-                last_heard += swept.elapsed();
+                // Hub work in flight expires reservations and relays held
+                // offers when it takes the lock, as a sweep would.
+                if hub_work.is_none() {
+                    session.steps.push(Step::Sweep);
+                }
                 if socket.send(Message::Ping(Vec::new())).await.is_err() {
                     break "ping failed";
                 }
@@ -471,7 +570,28 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
         }
     };
 
-    blocking::run(move || session.gone()).await;
+    // Frames read before the socket ended still reach the hub, in order.
+    let closed = match hub_work {
+        Some(work) => work.await,
+        None => false,
+    };
+    let Session {
+        relay,
+        greeted,
+        mic_id,
+        mut steps,
+        ..
+    } = session;
+    if closed {
+        steps.clear();
+    }
+    blocking::run(move || {
+        relay.apply(steps, mic_id.as_deref());
+        if greeted {
+            relay.gone();
+        }
+    })
+    .await;
     tracing::debug!(conn, ?role, why, "rtc disconnected");
     flight.record(
         "server",

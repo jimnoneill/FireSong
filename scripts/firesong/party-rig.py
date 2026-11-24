@@ -1445,6 +1445,8 @@ def judge(_args) -> int:
     if offsets:
         out["tv_clock_offset_ms"] = tv_offset
     out["server_stalls_ms"] = [r.get("ms") for r in flight if r["ev"] == "stall"]
+    out["server_stalls"] = [{k: r.get(k) for k in ("kind", "ms", "at", "t")} for r in flight if r["ev"] == "stall"][:40]
+    out["flight_lines_dropped"] = sum(r.get("lines") or 0 for r in flight if r["ev"] == "dropped" and r["src"] == "server")
     out["tv_errors"] = [r.get("message") for r in flight if r["src"] == "tv" and r["ev"] in ("error", "rejection", "react-crash")][:10]
     out["rtc_closes"] = [{k: r.get(k) for k in ("role", "slot", "why", "t")} for r in flight if r["ev"] == "rtc-close"][:40]
     out["songs_ready_ms"] = [r.get("ms") for r in flight if r["ev"] == "song-ready"]

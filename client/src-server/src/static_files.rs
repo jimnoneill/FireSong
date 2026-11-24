@@ -19,7 +19,9 @@ pub(crate) async fn handle(request: Request<Body>) -> Response<Body> {
         return method_not_allowed();
     }
     let uri = request.uri().clone();
-    serve_path(&uri).unwrap_or_else(serve_index)
+    // Copying an embedded file reads the binary's pages, which a busy disk
+    // may have to bring back.
+    crate::blocking::run(move || serve_path(&uri).unwrap_or_else(serve_index)).await
 }
 
 fn serve_path(uri: &Uri) -> Option<Response<Body>> {

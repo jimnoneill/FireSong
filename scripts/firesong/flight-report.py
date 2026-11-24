@@ -218,9 +218,13 @@ def summarize(rows):
     print("\n== server stalls (>= 1 s)")
     if stalls:
         worst = max(stalls, key=lambda r: r.get("ms", 0))
-        print(f"{len(stalls)} stalls; worst {worst['ms']} ms ({worst.get('kind')}) at {local(worst['t']):%H:%M:%S}")
+        where = f", hub taken at {worst['at']}" if worst.get("at") else ""
+        print(f"{len(stalls)} stalls; worst {worst['ms']} ms ({worst.get('kind')}{where}) at {local(worst['t']):%H:%M:%S}")
     else:
         print("none")
+    dropped = [r for r in rows if r["ev"] == "dropped" and r["src"] == "server"]
+    if dropped:
+        print(f"recorder fell behind: {sum(r.get('lines') or 0 for r in dropped)} lines dropped, first at {local(dropped[0]['t']):%H:%M:%S}")
 
     print("\n== connections")
     for r in rows:

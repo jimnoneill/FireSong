@@ -34,7 +34,7 @@ const KEEP_DAYS: u64 = 14;
 const QUEUE: usize = 4096;
 /// Watchdog beat, and how late a beat must be to count as a stall.
 const BEAT: Duration = Duration::from_millis(250);
-const STALL: Duration = Duration::from_millis(1000);
+pub(crate) const STALL: Duration = Duration::from_millis(1000);
 /// Host sample interval.
 const HOST_EVERY: Duration = Duration::from_secs(10);
 /// Events one TV request may carry, and the largest event kept.
@@ -48,8 +48,34 @@ pub(crate) const MAX_BODY_BYTES: usize = 256 * 1024;
 #[derive(Clone, Default)]
 pub(crate) struct Flight {
     sender: Arc<OnceLock<SyncSender<String>>>,
-    /// Lines dropped on a full queue since the writer last noted it.
-    dropped: Arc<AtomicU64>,
+    dropped: Arc<Dropped>,
+}
+
+/// Lines dropped on a full queue since the writer last noted it, and when the
+/// first of them was (Unix ms, 0 for none).
+#[derive(Default)]
+struct Dropped {
+    lines: AtomicU64,
+    since: AtomicU64,
+}
+
+impl Dropped {
+    fn count(&self) {
+        let _ = self
+            .since
+            .compare_exchange(0, unix_millis(), Ordering::Relaxed, Ordering::Relaxed);
+        self.lines.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The lines dropped since the last call and when the first was.
+    fn take(&self) -> Option<(u64, u64)> {
+        let lines = self.lines.swap(0, Ordering::Relaxed);
+        if lines == 0 {
+            return None;
+        }
+        let since = self.since.swap(0, Ordering::Relaxed);
+        Some((lines, if since == 0 { unix_millis() } else { since }))
+    }
 }
 
 impl Flight {
@@ -97,7 +123,7 @@ impl Flight {
             return;
         };
         if let Err(TrySendError::Full(_)) = sender.try_send(line(src, ev, fields)) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.dropped.count();
         }
     }
 
@@ -145,12 +171,16 @@ impl Flight {
 }
 
 fn line(src: &str, ev: &str, fields: Value) -> String {
+    line_at(unix_millis(), src, ev, fields)
+}
+
+fn line_at(t: u64, src: &str, ev: &str, fields: Value) -> String {
     let mut object = match fields {
         Value::Object(map) => map,
         Value::Null => Map::new(),
         other => Map::from_iter([("value".to_owned(), other)]),
     };
-    object.insert("t".into(), json!(unix_millis()));
+    object.insert("t".into(), json!(t));
     object.insert("src".into(), json!(src));
     object.insert("ev".into(), json!(ev));
     Value::Object(object).to_string()
@@ -207,7 +237,7 @@ fn tv_event(event: Value) -> Option<(String, Value)> {
     Some((ev, fields))
 }
 
-fn write_lines(dir: &Path, receiver: &Receiver<String>, dropped: &AtomicU64) {
+fn write_lines(dir: &Path, receiver: &Receiver<String>, dropped: &Dropped) {
     let mut open: Option<(u64, File)> = None;
     for queued in receiver {
         let day = unix_secs() / 86_400;
@@ -224,10 +254,11 @@ fn write_lines(dir: &Path, receiver: &Receiver<String>, dropped: &AtomicU64) {
         let Some((_, file)) = open.as_mut() else {
             continue;
         };
-        let lost = dropped.swap(0, Ordering::Relaxed);
-        let note = (lost > 0).then(|| {
+        // Stamped with the first drop: sorted by `t`, it lands after the
+        // lines queued before that drop, which follow it in the file.
+        let note = dropped.take().map(|(lost, since)| {
             tracing::warn!(lines = lost, "flight recorder fell behind: lines dropped");
-            line("server", "dropped", json!({ "lines": lost }))
+            line_at(since, "server", "dropped", json!({ "lines": lost }))
         });
         for text in note.iter().chain([&queued]) {
             if let Err(error) = writeln!(file, "{text}") {
@@ -325,10 +356,12 @@ fn field(text: &str, name: &str) -> Option<u64> {
         .and_then(|value| value.parse().ok())
 }
 
-fn unix_millis() -> u128 {
+fn unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis())
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn unix_secs() -> u64 {

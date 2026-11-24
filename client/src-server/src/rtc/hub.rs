@@ -3,6 +3,8 @@
 //! lock is held across an await. Party frames (§13) are handled in
 //! [`super::party`] on the same state.
 
+use std::ops::{Deref, DerefMut};
+use std::panic::Location;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -12,11 +14,13 @@ use app_core::remote_mic::{
     OFFER_BURST, OFFER_PER_SEC, PROTOCOL_VERSION, SLOT_COUNT,
 };
 use serde::Serialize;
+use serde_json::json;
 use tokio::sync::{mpsc, Notify};
 
 use super::mic_store::MicStore;
 use super::party::{Phone, Room};
 use super::Bucket;
+use crate::flight::{self, Flight};
 use crate::host_auth::new_token;
 use crate::remote::constant_time_eq;
 
@@ -144,6 +148,42 @@ pub(super) struct Inner {
     pub(super) room: Room,
     /// Phones told `slots-full`, in the order they first asked (PROTOCOL.md §6.1).
     pub(super) waiting: Vec<Waiter>,
+    flight: Flight,
+}
+
+/// The hub's lock. Every socket and the party wait while it is held, so a
+/// hold of [`flight::STALL`] or longer is recorded with where it was taken.
+pub(super) struct Locked<'a> {
+    inner: MutexGuard<'a, Inner>,
+    since: Instant,
+    at: &'static Location<'static>,
+}
+
+impl Deref for Locked<'_> {
+    type Target = Inner;
+
+    fn deref(&self) -> &Inner {
+        &self.inner
+    }
+}
+
+impl DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut Inner {
+        &mut self.inner
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        let held = self.since.elapsed();
+        if held >= flight::STALL {
+            self.inner.flight.record(
+                "server",
+                "stall",
+                json!({ "kind": "hub", "ms": super::millis(held), "at": self.at.to_string() }),
+            );
+        }
+    }
 }
 
 pub(super) struct Waiter {
@@ -184,6 +224,7 @@ impl Hub {
                 store,
                 room: Room::default(),
                 waiting: Vec::new(),
+                flight: Flight::default(),
             }),
         }
     }
@@ -194,18 +235,25 @@ impl Hub {
         reservation: Duration,
         evict_after: Duration,
         store: MicStore,
+        flight: Flight,
     ) {
         let mut inner = self.lock();
         inner.ice_servers = ice_servers;
         inner.reservation = reservation;
         inner.evict_after = evict_after;
         inner.store = store;
+        inner.flight = flight;
     }
 
     #[track_caller]
-    pub(super) fn lock(&self) -> MutexGuard<'_, Inner> {
+    pub(super) fn lock(&self) -> Locked<'_> {
         let asked = Instant::now();
-        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = Location::caller();
+        let mut inner = Locked {
+            inner: self.inner.lock().unwrap_or_else(PoisonError::into_inner),
+            since: Instant::now(),
+            at,
+        };
         let waited = asked.elapsed();
         inner.expire(Instant::now());
         inner.flush_offers();
@@ -214,7 +262,7 @@ impl Hub {
             tracing::warn!(
                 waited_ms = super::millis(waited),
                 expire_ms = super::millis(total.saturating_sub(waited)),
-                at = %std::panic::Location::caller(),
+                %at,
                 "slow rtc hub lock"
             );
         }

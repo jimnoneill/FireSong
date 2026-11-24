@@ -133,10 +133,13 @@ pub fn configure(state: &AppState, config: Config) {
     let store = data_dir.map_or_else(MicStore::in_memory, |dir| {
         MicStore::load(dir.join("firesong").join("remote-mics.json"))
     });
-    state
-        .firesong
-        .hub
-        .configure(ice_servers, timings.reservation, timings.evict_after, store);
+    state.firesong.hub.configure(
+        ice_servers,
+        timings.reservation,
+        timings.evict_after,
+        store,
+        state.firesong.flight.clone(),
+    );
     state
         .firesong
         .hub

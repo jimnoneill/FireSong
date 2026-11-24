@@ -6,9 +6,9 @@
 
 use std::io::{self, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -16,6 +16,8 @@ use tracing_subscriber::fmt::MakeWriter;
 const QUEUE_LINES: usize = 16_384;
 /// How long exiting waits for queued lines to reach stdout.
 const FLUSH_WAIT: Duration = Duration::from_secs(1);
+/// How often exiting retries a full queue.
+const FLUSH_RETRY: Duration = Duration::from_millis(10);
 
 enum Queued {
     Line(Vec<u8>),
@@ -71,9 +73,22 @@ impl io::Write for &LogOutput {
 
 impl Drop for LogGuard {
     fn drop(&mut self) {
+        let deadline = Instant::now() + FLUSH_WAIT;
         let (done, flushed) = mpsc::sync_channel(1);
-        if self.sender.try_send(Queued::Flush(done)).is_ok() {
-            let _ = flushed.recv_timeout(FLUSH_WAIT);
+        let mut flush = Queued::Flush(done);
+        loop {
+            match self.sender.try_send(flush) {
+                Ok(()) => {
+                    let _ =
+                        flushed.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+                    return;
+                }
+                Err(TrySendError::Full(again)) if Instant::now() < deadline => {
+                    flush = again;
+                    std::thread::sleep(FLUSH_RETRY);
+                }
+                Err(_) => return,
+            }
         }
     }
 }

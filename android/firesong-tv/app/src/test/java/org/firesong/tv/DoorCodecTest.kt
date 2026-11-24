@@ -697,9 +697,13 @@ class DoorCodecTest {
                     "pushToPresentP50Ms", "pushToPresentP95Ms", "tapDropped", "tapDrainP99Us", "tapDrainMaxUs",
                     "conceals", "resyncs", "concealedFrames", "silentFrames", "clampHits", "ratioMinPpm", "ratioMaxPpm",
                     "longestConcealUs", "callbackBusyPermille", "callbackGapMaxUs", "outputStalls", "pushGaps20",
-                    "pushIntervals", "callbacksOver2ms", "tapDrainsOver25ms", "tapDrains", "peak", "sinkErrors", "ignored",
-                    "apm", "slots",
+                    "pushIntervals", "callbacksOver2ms", "tapDrainsOver25ms", "tapDrains", "trims", "jumps", "inserts",
+                    "insertedFrames", "peak", "sinkErrors", "ignored", "apm", "slots",
                 )
+                assertEquals(0L, o.getLong("trims"))
+                assertEquals(o.getLong("resyncs"), o.getLong("jumps"))
+                assertEquals(0L, o.getLong("inserts"))
+                assertEquals(0L, o.getLong("insertedFrames"))
                 val slots = o.getJSONArray("slots")
                 EngineStatsMsg(
                     o.getBoolean("open"),
@@ -741,7 +745,12 @@ class DoorCodecTest {
                     if (o.isNull("apm")) null else o.getString("apm"),
                     (0 until slots.length()).map { i ->
                         val s = slots.getJSONObject(i)
-                        assertEquals(setOf("slot", "underruns", "droppedFrames", "lowWaterMs"), s.keySet())
+                        assertEquals(
+                            setOf("slot", "underruns", "droppedFrames", "lowWaterMs", "trimmedFrames", "marginMs"),
+                            s.keySet(),
+                        )
+                        assertEquals(s.getLong("droppedFrames"), s.getLong("trimmedFrames"))
+                        assertEquals(s.getDouble("lowWaterMs"), s.getDouble("marginMs"), 0.0)
                         EngineSlotStatsMsg(s.getInt("slot"), s.getLong("underruns"), s.getLong("droppedFrames"), s.getDouble("lowWaterMs"))
                     },
                 )

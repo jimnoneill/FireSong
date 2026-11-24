@@ -154,7 +154,7 @@ const engineStatsSchema = z.object({
   /** A backlog far over the low water cut back. */
   resyncs: countSchema.optional(),
   concealedFrames: countSchema.optional(),
-  /** Silence after a concealment faded out. */
+  /** Silence after a concealment of audible output faded out. */
   silentFrames: countSchema.optional(),
   trims: countSchema.optional(),
   jumps: countSchema.optional(),

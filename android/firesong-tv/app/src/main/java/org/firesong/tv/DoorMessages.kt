@@ -178,12 +178,13 @@ data class EngineSlotStatsMsg(val slot: Int, val underruns: Long, val droppedFra
  * engine starts a new window at most once per 900 ms, so each is about 1 s). Cumulative since this connection's
  * `hello` started the engine: `xruns`, `restarts`, `openAttempts` (AAudio open attempts), `tapDropped`, `conceals`
  * (a slot's ring ran dry), `resyncs` (a backlog far over the low water cut back), `concealedFrames`,
- * `silentFrames` (silence after a concealment faded out), `clampHits` (output frames the voice ceiling clamp cut),
- * `outputStalls` (callback intervals over 40 ms), `pushGaps20` of `pushIntervals`, `callbacksOver2ms`,
- * `tapDrainsOver25ms` of `tapDrains`, and per slot `underruns` and `droppedFrames` (late audio skipped at a resume
- * or resync); per slot `lowWaterMs` is the last window's lowest fill after a callback. `sinkErrors` counts since
- * the app started, `ignored` since this connection opened. `peak` is the output peak since the previous
- * engine-stats. `apm` is null until known, then "none" or the effective components, e.g. "ec:SOFTWARE,ns:SOFTWARE".
+ * `silentFrames` (silence after a concealment of audible output faded out), `clampHits` (output frames the voice
+ * ceiling clamp cut), `outputStalls` (callback intervals over 40 ms), `pushGaps20` of `pushIntervals`,
+ * `callbacksOver2ms`, `tapDrainsOver25ms` of `tapDrains`, and per slot `underruns` and `droppedFrames` (late audio
+ * skipped at a resume or resync); per slot `lowWaterMs` is the last window's lowest fill after a callback.
+ * `sinkErrors` counts since the app started, `ignored` since this connection opened. `peak` is the output peak since
+ * the previous engine-stats. `apm` is null until known, then "none" or the effective components, e.g.
+ * "ec:SOFTWARE,ns:SOFTWARE".
  */
 data class EngineStatsMsg(
     val open: Boolean,

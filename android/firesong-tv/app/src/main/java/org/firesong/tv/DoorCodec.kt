@@ -244,6 +244,12 @@ object DoorCodec {
         put("callbacksOver2ms", s.callbacksOver2ms)
         put("tapDrainsOver25ms", s.tapDrainsOver25ms)
         put("tapDrains", s.tapDrains)
+        // A page from before the resampling ring requires its splice counters: no trims or inserts, its jumps
+        // are the resyncs.
+        put("trims", 0L)
+        put("jumps", s.resyncs)
+        put("inserts", 0L)
+        put("insertedFrames", 0L)
         put("peak", s.peak)
         put("sinkErrors", s.sinkErrors)
         put("ignored", s.ignored)
@@ -255,6 +261,8 @@ object DoorCodec {
                     put("underruns", slot.underruns)
                     put("droppedFrames", slot.droppedFrames)
                     put("lowWaterMs", slot.lowWaterMs)
+                    put("trimmedFrames", slot.droppedFrames)
+                    put("marginMs", slot.lowWaterMs)
                 }
             }
         }

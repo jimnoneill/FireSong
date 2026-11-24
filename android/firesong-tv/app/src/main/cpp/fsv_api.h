@@ -58,14 +58,16 @@ enum fsv_stats_index {
   FSV_STATS_CONCEALS = 19,         /* a slot's ring ran dry: a concealment started */
   FSV_STATS_RESYNCS = 20,          /* backlog-ceiling resyncs: a fill far above the low water cut back */
   FSV_STATS_CONCEALED_FRAMES = 21, /* output frames played from a concealment, all slots */
-  FSV_STATS_SILENT_FRAMES = 22,    /* output frames of silence after a concealment faded out (not priming) */
+  FSV_STATS_SILENT_FRAMES = 22,    /* output frames of silence after a concealment of output above -50 dBFS faded out */
   FSV_STATS_CLAMP_HITS = 23,       /* output frames the +-FSV_VOICE_CEILING clamp cut */
-  FSV_STATS_RATIO_MIN_PPM = 40,    /* window: the resampling ratio's lowest deviation from 1, any playing slot */
+  FSV_STATS_RATIO_MIN_PPM = 40,    /* window: the resampling ratio's lowest deviation from 1, any playing slot; 0
+                                      with RATIO_MAX_PPM 0 when no slot played */
   FSV_STATS_RATIO_MAX_PPM = 41,    /* window: and its highest */
   FSV_STATS_LONGEST_CONCEAL_US = 42, /* window: the longest dry spell that ended, running dry to resume */
   FSV_STATS_CALLBACK_BUSY_PERMILLE = 43, /* window: time inside the callback per 1000 of wall time */
-  FSV_STATS_CALLBACK_GAP_MAX_US = 44,    /* window: the longest interval between callback starts */
-  FSV_STATS_OUTPUT_STALLS = 45,    /* callback intervals over 40 ms while a stream is open */
+  FSV_STATS_CALLBACK_GAP_MAX_US = 44,    /* window: the longest interval between callback starts, past each
+                                            stream's first 100 ms */
+  FSV_STATS_OUTPUT_STALLS = 45,    /* callback intervals over 40 ms, past each stream's first 100 ms */
   FSV_STATS_PUSH_GAPS_20 = 46,     /* push intervals over 20 ms, all slots */
   FSV_STATS_PUSH_INTERVALS = 47,   /* push intervals, all slots */
   FSV_STATS_CALLBACKS_OVER_2MS = 48, /* of CALLBACKS */

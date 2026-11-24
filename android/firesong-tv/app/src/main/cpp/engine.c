@@ -48,7 +48,7 @@ _Static_assert(4 + FSV_TAP_MAX_BLOCKS * FSV_TAP_BLOCK_BYTES <= 65536, "a tap mes
 /* Ring read, in frames: a resampling servo holds each slot's low water (the lowest fill after a callback, per
    window) at LOW_WATER; an underrun is concealed and the ring resumes where the late audio would have played. */
 #define LOW_WATER 240          /* 5 ms */
-#define SERVO_CALLBACKS 25     /* callbacks per low-water window, about 200 ms */
+#define SERVO_FRAMES 9600      /* output frames per low-water window: 200 ms, 25 callbacks of 384 */
 #define SERVO_SMOOTH 0.5       /* one-pole weight of each window's error */
 #define SERVO_GAIN 1.0e-5      /* ratio deviation per frame of smoothed error */
 #define RATIO_SPAN 0.005       /* |ratio - 1| at most: 8.7 cents */
@@ -79,12 +79,16 @@ _Static_assert(4 + FSV_TAP_MAX_BLOCKS * FSV_TAP_BLOCK_BYTES <= 65536, "a tap mes
 #define PLC_UNVOICED_PERIOD 480
 #define PLC_UNVOICED_HOLD 480
 #define PLC_UNVOICED_FADE 960
+#define PLC_SPAN ((PLC_WINDOW + PLC_LAG_MAX) * PLC_DECIMATE) /* the recent output the period search reads */
+#define HEARD_RMS 0.00316f     /* -50 dBFS over the last PLC_REFINE frames: silence after a quieter output is not
+                                  counted */
 
 /* Event thresholds for the counters, and the shortest interval between two log lines of a kind. */
 #define PUSH_GAP_NS NS_MS(20)
 #define SLOW_CALLBACK_NS NS_MS(2)
 #define SLOW_DRAIN_NS NS_MS(25)
 #define OUTPUT_STALL_NS NS_MS(40)
+#define OUTPUT_SETTLE_FRAMES 4800 /* a stream's first 100 ms (buffer filling, device start) counts no stalls */
 #define LOG_EVERY_NS NS_MS(1000)
 
 /* Monitor beep. */
@@ -205,16 +209,17 @@ typedef struct {
   float frac;   /* and the fraction past it, 0 to 1 */
   double ratio, ratio_target, err; /* ring frames per output frame now, the servo's aim, its smoothed error */
   int64_t low_min;
-  int low_n;
+  int low_frames;
   int gap;      /* the ring ran dry: concealing, then silent, until the resume */
   int64_t lost, gap_out; /* where it ran dry, and the output frames since */
-  int64_t drop_from, drop_to; /* the latest span of late audio skipped */
+  int64_t drop_from, drop_to; /* the latest span of late audio skipped, with any span right before it */
   int resume_xf;
   float xf_buf[XFADE];
   float hist[HIST_FRAMES]; /* the slot's own output before its strip */
   int64_t hist_w;
   float plc_buf[PLC_PERIOD_MAX];
   int plc_period, plc_i, plc_n, plc_voiced;
+  int heard; /* the output before the ring ran dry was above HEARD_RMS */
   fsv_compressor *comp;
   fsv_echo *echo;
   fsv_biquad notch;
@@ -272,7 +277,8 @@ static int beep_on;
 static int64_t beep_from;
 static float in_buf[FSV_SLOTS][RENDER_MAX], bus_buf[RENDER_MAX], rev_buf[RENDER_MAX], left[RENDER_MAX],
     right[RENDER_MAX], synth[RENDER_MAX];
-static float plc_dec[PLC_WINDOW + PLC_LAG_MAX], plc_ncc[PLC_LAG_MAX + 1];
+static float plc_lin[PLC_SPAN], plc_dec[PLC_WINDOW + PLC_LAG_MAX], plc_ncc[PLC_LAG_MAX + 1];
+static float align_buf[2 * ALIGN_MAX + XFADE];
 
 /* G */
 static float g_x[FSV_GUARD_FFT_SIZE], g_spectrum[FSV_GUARD_FFT_SIZE / 2], g_scratch[2 * FSV_GUARD_FFT_SIZE];
@@ -391,7 +397,7 @@ static void start_priming(slot *s, render_slot *rs, int64_t w) {
   rs->ratio = rs->ratio_target = 1.0;
   rs->err = 0.0;
   rs->low_min = INT64_MAX;
-  rs->low_n = 0;
+  rs->low_frames = 0;
   rs->gap = 0;
   rs->drop_from = rs->drop_to = 0;
   rs->resume_xf = 0;
@@ -1188,24 +1194,46 @@ static void hist_put(render_slot *rs, const float *x, int n) {
 
 static float hist_at(const render_slot *rs, int64_t back) { return rs->hist[(rs->hist_w - back) & HIST_MASK]; }
 
+/* x . y over n frames, n a multiple of 4: four partial sums, so the multiply-adds do not wait on each other. */
+static float dot(const float *x, const float *y, int n) {
+  float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;
+  for (int k = 0; k < n; k += 4) {
+    a += x[k] * y[k];
+    b += x[k + 1] * y[k + 1];
+    c += x[k + 2] * y[k + 2];
+    d += x[k + 3] * y[k + 3];
+  }
+  return (a + b) + (c + d);
+}
+
+static float square(float x) { return x * x; }
+
+/* Whether the slot's last PLC_REFINE frames of output were above HEARD_RMS. */
+static int heard(const render_slot *rs) {
+  float e = 0.0f;
+  for (int t = 1; t <= PLC_REFINE; t++) e += square(hist_at(rs, t));
+  return e > HEARD_RMS * HEARD_RMS * PLC_REFINE;
+}
+
 /* The pitch period of the slot's recent output: the normalised autocorrelation of the last 512 frames, 4x
-   decimated, takes the first local peak near the best, then a search at full rate around it. */
+   decimated, takes the first local peak near the best, then a search at full rate around it. The energies of
+   the shifted windows are running sums. */
 static int plc_period(const render_slot *rs, float *ncc_out) {
   const int nd = PLC_WINDOW + PLC_LAG_MAX;
+  for (int i = 0; i < PLC_SPAN; i++) plc_lin[i] = hist_at(rs, PLC_SPAN - i);
   for (int t = 0; t < nd; t++) {
-    int64_t back = (int64_t)(nd - t) * PLC_DECIMATE;
-    plc_dec[t] = 0.25f * (hist_at(rs, back) + hist_at(rs, back - 1) + hist_at(rs, back - 2) + hist_at(rs, back - 3));
+    const float *x = plc_lin + t * PLC_DECIMATE;
+    plc_dec[t] = 0.25f * (x[0] + x[1] + x[2] + x[3]);
   }
   float e0 = 0.0f, best = -2.0f;
   for (int t = PLC_LAG_MAX; t < nd; t++) e0 += plc_dec[t] * plc_dec[t];
+  double e1 = 0.0;
+  for (int t = PLC_LAG_MAX; t < nd; t++) e1 += (double)square(plc_dec[t - PLC_LAG_MIN]);
   for (int lag = PLC_LAG_MIN; lag <= PLC_LAG_MAX; lag++) {
-    float xy = 0.0f, e1 = 0.0f;
-    for (int t = PLC_LAG_MAX; t < nd; t++) {
-      xy += plc_dec[t] * plc_dec[t - lag];
-      e1 += plc_dec[t - lag] * plc_dec[t - lag];
-    }
-    plc_ncc[lag] = xy / sqrtf(e0 * e1 + 1e-12f);
+    float xy = dot(plc_dec + PLC_LAG_MAX, plc_dec + PLC_LAG_MAX - lag, PLC_WINDOW);
+    plc_ncc[lag] = xy / sqrtf(e0 * (float)(e1 > 0.0 ? e1 : 0.0) + 1e-12f);
     if (plc_ncc[lag] > best) best = plc_ncc[lag];
+    if (lag < PLC_LAG_MAX) e1 += (double)square(plc_dec[PLC_LAG_MAX - lag - 1]) - square(plc_dec[nd - lag - 1]);
   }
   int pick = PLC_LAG_MIN;
   for (int lag = PLC_LAG_MIN + 1; lag < PLC_LAG_MAX; lag++) {
@@ -1214,21 +1242,19 @@ static int plc_period(const render_slot *rs, float *ncc_out) {
       break;
     }
   }
-  int period = pick * PLC_DECIMATE;
+  const float *recent = plc_lin + PLC_SPAN - PLC_REFINE;
+  float a = dot(recent, recent, PLC_REFINE);
+  int p0 = (pick - 1) * PLC_DECIMATE, period = pick * PLC_DECIMATE;
+  double b = 0.0;
+  for (int k = 0; k < PLC_REFINE; k++) b += (double)square(recent[k - p0]);
   float best_full = -2.0f;
-  for (int p = (pick - 1) * PLC_DECIMATE; p <= (pick + 1) * PLC_DECIMATE; p++) {
-    float xy = 0.0f, a = 0.0f, b = 0.0f;
-    for (int t = 1; t <= PLC_REFINE; t++) {
-      float x = hist_at(rs, t), y = hist_at(rs, t + p);
-      xy += x * y;
-      a += x * x;
-      b += y * y;
-    }
-    float c = xy / sqrtf(a * b + 1e-12f);
+  for (int p = p0; p <= (pick + 1) * PLC_DECIMATE; p++) {
+    float c = dot(recent, recent - p, PLC_REFINE) / sqrtf(a * (float)(b > 0.0 ? b : 0.0) + 1e-12f);
     if (c > best_full) {
       best_full = c;
       period = p;
     }
+    b += (double)square(recent[-p - 1]) - square(recent[PLC_REFINE - 1 - p]);
   }
   *ncc_out = best_full;
   return period;
@@ -1281,27 +1307,29 @@ static void conceal_into(render_slot *rs, float *dst, int count) {
     }
   }
   if (concealed > 0) atomic_fetch_add_explicit(&concealed_frames, concealed, memory_order_relaxed);
-  if (concealed < count) atomic_fetch_add_explicit(&silent_frames, count - concealed, memory_order_relaxed);
+  if (concealed < count && rs->heard) {
+    atomic_fetch_add_explicit(&silent_frames, count - concealed, memory_order_relaxed);
+  }
 }
 
 /* The ring position within [pos + lo, pos + hi] whose next XFADE frames best continue `from` (the normalised
-   correlation), kept inside what the ring holds. */
+   correlation), kept inside what the ring holds. The candidates' energy is a running sum. */
 static int64_t align(const slot *s, int64_t pos, int lo, int hi, const float *from, int64_t w) {
   if (pos + hi + XFADE > w) hi = (int)(w - XFADE - pos);
+  if (hi < lo) return pos;
+  int span = hi - lo;
+  for (int k = 0; k < span + XFADE; k++) align_buf[k] = s->ring[(pos + lo + k) & RING_MASK];
+  double e = 0.0;
+  for (int k = 0; k < XFADE; k++) e += (double)square(align_buf[k]);
   int64_t best_pos = pos;
   float best = -1e30f;
-  for (int d = lo; d <= hi; d++) {
-    float xy = 0.0f, e = 1e-12f;
-    for (int k = 0; k < XFADE; k++) {
-      float y = s->ring[(pos + d + k) & RING_MASK];
-      xy += from[k] * y;
-      e += y * y;
-    }
-    float c = xy / sqrtf(e);
+  for (int d = 0; d <= span; d++) {
+    float c = dot(from, align_buf + d, XFADE) / sqrtf((float)(e > 0.0 ? e : 0.0) + 1e-12f);
     if (c > best) {
       best = c;
-      best_pos = pos + d;
+      best_pos = pos + lo + d;
     }
+    if (d < span) e += (double)square(align_buf[d + XFADE]) - square(align_buf[d]);
   }
   return best_pos;
 }
@@ -1311,7 +1339,7 @@ static void skip_to(slot *s, render_slot *rs, int64_t from, int64_t to) {
   rs->frac = 0.0f;
   if (to <= from) return;
   atomic_fetch_add_explicit(&s->dropped, to - from, memory_order_relaxed);
-  rs->drop_from = from;
+  if (from != rs->drop_to) rs->drop_from = from;
   rs->drop_to = to;
 }
 
@@ -1334,7 +1362,7 @@ static void resume(slot *s, render_slot *rs, int64_t at, int64_t w, int n) {
   rs->gap = 0;
   rs->err = 0.0;
   rs->low_min = INT64_MAX;
-  rs->low_n = 0;
+  rs->low_frames = 0;
 }
 
 /* A backlog far over the low water (the output stopped pulling): back to it, aligned and cross-faded. */
@@ -1356,7 +1384,7 @@ static void servo_window(slot *s, render_slot *rs) {
   double dev = SERVO_GAIN * rs->err;
   rs->ratio_target = 1.0 + (dev > RATIO_SPAN ? RATIO_SPAN : dev < -RATIO_SPAN ? -RATIO_SPAN : dev);
   rs->low_min = INT64_MAX;
-  rs->low_n = 0;
+  rs->low_frames = 0;
 }
 
 /* Output frame of a ring position, through this callback's mean ratio: frame_index for `start`. */
@@ -1451,7 +1479,7 @@ static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int
     rs->priming = 0;
     rs->fade_in = 1;
     rs->low_min = INT64_MAX;
-    rs->low_n = 0;
+    rs->low_frames = 0;
   }
 
   if (rs->gap) {
@@ -1513,21 +1541,21 @@ static void take_slot(int index, slot *s, render_slot *rs, float *in, int n, int
     rs->gap = 1;
     rs->lost = ip;
     rs->gap_out = n - k;
+    hist_put(rs, in, k);
+    rs->heard = heard(rs);
     if (FSV_CONCEAL) {
-      hist_put(rs, in, k);
       plc_start(rs);
-      conceal_into(rs, in + k, n - k);
-      hist_put(rs, in + k, n - k);
     } else {
       for (int j = 0; j < FADE && j < k; j++) in[k - 1 - j] *= (float)j / FADE;
-      conceal_into(rs, in + k, n - k);
-      hist_put(rs, in, n);
     }
+    conceal_into(rs, in + k, n - k);
+    hist_put(rs, in + k, n - k);
   } else {
     hist_put(rs, in, n);
     double low = (double)(w - ip) - fr - AHEAD;
     if (low < (double)rs->low_min) rs->low_min = (int64_t)low;
-    if (++rs->low_n >= SERVO_CALLBACKS) servo_window(s, rs);
+    rs->low_frames += n;
+    if (rs->low_frames >= SERVO_FRAMES) servo_window(s, rs);
   }
   atomic_store_explicit(&s->read, ip - BEHIND, memory_order_release);
   if (k == 0) return;
@@ -1706,7 +1734,7 @@ void fsv_render(int16_t *out, int frames, int64_t frame_index) {
     memset(out, 0, (size_t)frames * 2 * sizeof(int16_t));
     return;
   }
-  if (frame_index == cb_next_index) {
+  if (frame_index == cb_next_index && frame_index >= OUTPUT_SETTLE_FRAMES) {
     int64_t gap = t0 - cb_last_ns;
     max_update(&cb_gap_max_us, gap / 1000);
     if (gap > OUTPUT_STALL_NS) {

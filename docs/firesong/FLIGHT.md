@@ -52,7 +52,9 @@ of the link, and `sinkErrors`, from the app's start; `slots`, with each slot's `
 `tapArrival` (`p99Ms`, `maxMs`, `count`), the intervals between tap messages reaching the page
 since the previous sample, while any slot is tapped. Records from an app before the resampling ring
 carry `trims`, `jumps`, `inserts`, `insertedFrames` and per slot `trimmedFrames` and `marginMs`
-instead.
+instead. A newer app sends those keys too, for pages from before it: `trims`, `inserts` and
+`insertedFrames` 0, `jumps` equal to `resyncs`, and `trimmedFrames` and `marginMs` equal to
+`droppedFrames` and `lowWaterMs`.
 
 The TV page posts its events to `POST /api/firesong/flight` on the TV door (host token) every
 5 s; the server adds `t` (arrival) and `src`. TV events also carry `wall`, the TV's own clock when

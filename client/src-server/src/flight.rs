@@ -5,8 +5,9 @@
 //! Lines go to `<data>/firesong/sessions/<UTC date>.jsonl`, one JSON object per
 //! line with `t` (Unix ms), `src` (`tv`, `server`, `host`) and `ev`. A writer
 //! thread owns the file, so a stalled async runtime still gets its stall
-//! written down; a full queue drops lines instead of blocking a caller. Files
-//! untouched for [`KEEP_DAYS`] are removed when the day changes.
+//! written down; a full queue drops lines instead of blocking a caller, and
+//! the writer notes how many once it catches up. Files untouched for
+//! [`KEEP_DAYS`] are removed when the day changes.
 //!
 //! Two watchdogs report stalls: an OS thread that measures how late its own
 //! sleeps wake (the whole process stalled: swapping, CPU starvation), and a
@@ -16,6 +17,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -46,6 +48,8 @@ pub(crate) const MAX_BODY_BYTES: usize = 256 * 1024;
 #[derive(Clone, Default)]
 pub(crate) struct Flight {
     sender: Arc<OnceLock<SyncSender<String>>>,
+    /// Lines dropped on a full queue since the writer last noted it.
+    dropped: Arc<AtomicU64>,
 }
 
 impl Flight {
@@ -63,10 +67,11 @@ impl Flight {
             return false;
         }
         let writer_dir = dir.clone();
+        let dropped = self.dropped.clone();
         let watchdog = self.clone();
         let spawned = std::thread::Builder::new()
             .name("flight-writer".into())
-            .spawn(move || write_lines(&writer_dir, &receiver))
+            .spawn(move || write_lines(&writer_dir, &receiver, &dropped))
             .and_then(|_| {
                 std::thread::Builder::new()
                     .name("flight-watchdog".into())
@@ -92,7 +97,7 @@ impl Flight {
             return;
         };
         if let Err(TrySendError::Full(_)) = sender.try_send(line(src, ev, fields)) {
-            tracing::warn!("flight recorder queue full: a line was dropped");
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -202,9 +207,9 @@ fn tv_event(event: Value) -> Option<(String, Value)> {
     Some((ev, fields))
 }
 
-fn write_lines(dir: &Path, receiver: &Receiver<String>) {
+fn write_lines(dir: &Path, receiver: &Receiver<String>, dropped: &AtomicU64) {
     let mut open: Option<(u64, File)> = None;
-    for line in receiver {
+    for queued in receiver {
         let day = unix_secs() / 86_400;
         if open.as_ref().is_none_or(|(current, _)| *current != day) {
             prune(dir);
@@ -216,8 +221,16 @@ fn write_lines(dir: &Path, receiver: &Receiver<String>) {
                 .inspect_err(|error| tracing::warn!("flight recorder: {error}"))
                 .ok();
         }
-        if let Some((_, file)) = open.as_mut() {
-            if let Err(error) = writeln!(file, "{line}") {
+        let Some((_, file)) = open.as_mut() else {
+            continue;
+        };
+        let lost = dropped.swap(0, Ordering::Relaxed);
+        let note = (lost > 0).then(|| {
+            tracing::warn!(lines = lost, "flight recorder fell behind: lines dropped");
+            line("server", "dropped", json!({ "lines": lost }))
+        });
+        for text in note.iter().chain([&queued]) {
+            if let Err(error) = writeln!(file, "{text}") {
                 tracing::warn!("flight recorder: {error}");
             }
         }

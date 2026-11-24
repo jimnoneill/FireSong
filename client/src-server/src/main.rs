@@ -5,6 +5,8 @@ use clap::Parser;
 use server::{AppState, EventBus};
 use tracing_subscriber::EnvFilter;
 
+mod log_output;
+
 #[derive(Debug, Parser)]
 #[command(name = "server", about = "Nightingale self-hosted web server.")]
 struct Args {
@@ -56,15 +58,19 @@ async fn main() -> Result<(), String> {
 
     let _ = dotenvy_quiet();
 
+    let (log_writer, log_guard) =
+        log_output::start().map_err(|error| format!("log writer: {error}"))?;
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("info,tower_http=info,server=info")),
         )
+        .with_writer(log_writer)
         .init();
 
     if let Err(e) = app_core::startup() {
         tracing::error!("startup failed: {e}");
+        drop(log_guard);
         std::process::exit(1);
     }
 
@@ -90,6 +96,7 @@ async fn main() -> Result<(), String> {
 
     if let Err(e) = server::firesong::start(&state, &firesong).await {
         tracing::error!("FireSong startup failed: {e}");
+        drop(log_guard);
         std::process::exit(1);
     }
 
@@ -99,6 +106,7 @@ async fn main() -> Result<(), String> {
         Ok(l) => l,
         Err(e) => {
             tracing::error!("failed to bind {}: {e}", args.bind);
+            drop(log_guard);
             std::process::exit(1);
         }
     };

@@ -1,4 +1,5 @@
 mod backgrounds;
+mod blocking;
 mod bootstrap;
 mod commands;
 mod events;

@@ -44,7 +44,10 @@ impl TemporaryUpload {
 
 impl Drop for TemporaryUpload {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let path = std::mem::take(&mut self.path);
+        crate::blocking::detach(move || {
+            let _ = std::fs::remove_file(path);
+        });
     }
 }
 

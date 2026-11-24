@@ -11,6 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
+use crate::blocking;
 use crate::state::AppState;
 
 /// Resolved-and-canonicalised view of a candidate media path. Constructing it
@@ -55,7 +56,8 @@ pub(crate) async fn handle_asset(
     // the browser, so serve and delete in one request instead of leaving a copy
     // of every exported bundle on disk.
     if query.download {
-        if let Some(path) = export_file(query.path.as_ref()) {
+        let path = PathBuf::from(&query.path);
+        if let Some(path) = blocking::run(move || export_file(&path)).await {
             return serve_export(path).await;
         }
     }
@@ -85,7 +87,10 @@ pub(crate) async fn handle_remote_asset(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
-    if query.download || !app_core::media_server::is_cover_art_path(Path::new(&query.path)) {
+    let path = PathBuf::from(&query.path);
+    let allowed = !query.download
+        && blocking::run(move || app_core::media_server::is_cover_art_path(&path)).await;
+    if !allowed {
         return not_found("media path not found or outside media roots");
     }
 
@@ -109,9 +114,12 @@ struct ExportCleanup(PathBuf);
 
 impl Drop for ExportCleanup {
     fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_file(&self.0) {
-            tracing::warn!("failed removing export {:?}: {error}", self.0);
-        }
+        let path = std::mem::take(&mut self.0);
+        blocking::detach(move || {
+            if let Err(error) = std::fs::remove_file(&path) {
+                tracing::warn!("failed removing export {path:?}: {error}");
+            }
+        });
     }
 }
 
@@ -164,12 +172,13 @@ pub(crate) async fn handle_hashed(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
-    let path = match kind.as_str() {
+    let path = blocking::run(move || match kind.as_str() {
         "instrumental" => Some(app_core::get_audio_paths(&hash).instrumental),
         "vocals" => app_core::get_audio_paths(&hash).vocals,
         "source-video" | "video" => app_core::ensure_playable_source_video(&hash).ok().flatten(),
         _ => None,
-    };
+    })
+    .await;
 
     let Some(path) = path else {
         return not_found("unknown media kind");
@@ -325,7 +334,8 @@ fn unsatisfiable(length: u64) -> Response<Body> {
 }
 
 async fn serve(path: &Path, _headers: HeaderMap, request: Request<Body>) -> Response<Body> {
-    let Some(resolved) = ResolvedPath::resolve(path) else {
+    let path = path.to_path_buf();
+    let Some(resolved) = blocking::run(move || ResolvedPath::resolve(&path)).await else {
         return not_found("media path not found or outside media roots");
     };
 

@@ -22,6 +22,7 @@ use axum::{
 use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::blocking;
 use crate::flight::{self, Flight};
 use crate::remote::REMOTE_COMMANDS;
 pub use crate::rtc::Timings;
@@ -173,8 +174,13 @@ fn start_party_task(state: &AppState, poll_every: Duration, tv_gone_reset: Durat
                 tokio::select! {
                     _ = tick.tick() => {
                         let Some(hub) = hub.upgrade() else { return };
-                        hub.party_tick();
-                        if let Some((left, away)) = hub.tv_absence() {
+                        let ticked = hub.clone();
+                        let absence = blocking::run(move || {
+                            ticked.party_tick();
+                            ticked.tv_absence()
+                        })
+                        .await;
+                        if let Some((left, away)) = absence {
                             if away >= tv_gone_reset && reset_for != Some(left) {
                                 reset_for = Some(left);
                                 tokio::spawn(stop_stale_playback(commands.clone()));
@@ -195,7 +201,7 @@ fn start_party_task(state: &AppState, poll_every: Duration, tv_gone_reset: Durat
                         };
                         if queue_changed {
                             let Some(hub) = hub.upgrade() else { return };
-                            hub.party_changed();
+                            blocking::run(move || hub.party_changed()).await;
                         }
                     }
                 }
@@ -451,7 +457,8 @@ async fn handle_rotate_pairing_token(
             FAILED
         })?;
     *state.remote.write().unwrap_or_else(PoisonError::into_inner) = fresh;
-    let kicked = state.firesong.hub().kick_all();
+    let hub = state.firesong.hub();
+    let kicked = blocking::run(move || hub.kick_all()).await;
     tracing::info!(kicked, "pairing token rotated");
     Ok(Json(mic_links(&state, &headers)))
 }

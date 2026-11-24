@@ -2,6 +2,7 @@ use app_core::{AppConfig, SongsStore};
 use axum::{extract::State, Json};
 use serde::Serialize;
 
+use crate::blocking;
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -21,8 +22,13 @@ pub(crate) struct Bootstrap {
 /// the web client awaits this once and seeds `window.__NIGHTINGALE_*` from
 /// the response before mounting React.
 pub(crate) async fn handle(State(state): State<AppState>) -> Json<Bootstrap> {
-    let config = app_api::redact_config(AppConfig::load());
-    let songs_meta = SongsStore::load_meta();
+    let (config, songs_meta) = blocking::run(|| {
+        (
+            app_api::redact_config(AppConfig::load()),
+            SongsStore::load_meta(),
+        )
+    })
+    .await;
     Json(Bootstrap {
         config,
         songs_meta,

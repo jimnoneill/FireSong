@@ -4,7 +4,8 @@
 //! the full router [`tv_upgrade`]. Each socket runs one task that reads
 //! frames, enforces the handshake, size and rate limits, and writes whatever
 //! the [`Hub`] queued for it. Party frames (§13) share the socket; the hub
-//! hands them to [`party`].
+//! hands them to [`party`]. Hub calls run on the blocking pool, since party
+//! work behind them reads the library database and the analyzer queue.
 
 mod hub;
 mod mic_store;
@@ -32,6 +33,7 @@ use serde_json::json;
 pub(crate) use hub::Hub;
 pub(crate) use mic_store::MicStore;
 
+use crate::blocking;
 use crate::flight::Flight;
 use crate::state::AppState;
 use hub::{ConnId, MicHello, Outbound, Peer};
@@ -419,12 +421,19 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
             inbound = socket.recv() => {
                 let Some(Ok(message)) = inbound else { break "client gone" };
                 last_heard = Instant::now();
-                match message {
-                    Message::Text(text) => session.on_frame(Some(&text)),
-                    Message::Binary(_) => session.on_frame(None),
-                    Message::Ping(_) | Message::Pong(_) => {}
+                let text = match message {
+                    Message::Text(text) => Some(text),
+                    Message::Binary(_) => None,
+                    Message::Ping(_) | Message::Pong(_) => continue,
                     Message::Close(_) => break "client closed",
-                }
+                };
+                session = blocking::run(move || {
+                    session.on_frame(text.as_deref());
+                    session
+                })
+                .await;
+                // Time spent waiting for the hub is not the client's silence.
+                last_heard = Instant::now();
             }
             queued = outbound.recv() => match queued {
                 Some(Outbound::Text(text)) => {
@@ -451,7 +460,10 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
                     close(&mut socket, close_code::TIMEOUT).await;
                     break "idle timeout";
                 }
-                hub.sweep();
+                let swept = Instant::now();
+                let sweeper = hub.clone();
+                blocking::run(move || sweeper.sweep()).await;
+                last_heard += swept.elapsed();
                 if socket.send(Message::Ping(Vec::new())).await.is_err() {
                     break "ping failed";
                 }
@@ -459,7 +471,7 @@ async fn run(hub: Arc<Hub>, timings: Timings, flight: Flight, role: Role, mut so
         }
     };
 
-    session.gone();
+    blocking::run(move || session.gone()).await;
     tracing::debug!(conn, ?role, why, "rtc disconnected");
     flight.record(
         "server",

@@ -122,13 +122,7 @@ impl MicStore {
         };
         let revision = self.revision;
         let written = self.written.clone();
-        let job = move || write_if_newer(&path, &file, revision, &written);
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn_blocking(job);
-            }
-            Err(_) => job(),
-        }
+        crate::blocking::detach(move || write_if_newer(&path, &file, revision, &written));
     }
 }
 

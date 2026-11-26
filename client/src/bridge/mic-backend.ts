@@ -78,7 +78,13 @@ export type MicBackend = {
 export const NATIVE_DELIVERY_OFFSET_MS: number | null = null;
 
 /** The song's level while the app plays the voices: song and voices each keep under half of full scale. */
-const NATIVE_SONG_TRIM_DB = -6;
+const NATIVE_SONG_TRIM_DB = -8;
+/**
+ * On the TV the song plays this much under its mastered level, so a singer
+ * sits on top of it as in a noraebang room (a -10 LUFS master left voices
+ * 24 dB under the song, 2026-11-25) and the phones hear less of it.
+ */
+const KARAOKE_SONG_TRIM_DB = -10;
 /** The app gives up on a monitor beep after about 4 s; this only ends a wait the app never answers. */
 const MONITOR_TIMEOUT_MS = 6000;
 
@@ -92,6 +98,7 @@ export const webMicBackend = async (why: string): Promise<MicBackend> => {
   const engine = getVoiceEngine();
   webRack ??= MicRack.create(engine);
   const rack = await webRack;
+  engine.setSongTrimDb(KARAOKE_SONG_TRIM_DB);
   return {
     kind: 'web',
     why,
@@ -209,7 +216,7 @@ const nativeMicBackend = (link: NativeMicLinkPort): MicBackend => {
     }),
     close: () => {
       link.close();
-      engine.setSongTrimDb(0);
+      engine.setSongTrimDb(KARAOKE_SONG_TRIM_DB);
       endMonitors('closed');
     },
   };

@@ -133,7 +133,7 @@ Whether the Amazon WebView lets the https release page open `ws://127.0.0.1` is 
   - for the mix: an FDN reverb, the bus compressor and the limiter, into one AAudio low-latency output.
 
   A failed or lost output is retried every 2 s, backing off to 10 s (HDMI may still be waking), and is never fatal. A started output whose callbacks stop for 1 s counts as lost and is reopened. Xruns in an output's first 0.5 s are counted but do not grow its buffer.
-- **Headroom.** Song and voices now sum in Android, with no limiter over the sum. So the app trims the voices by 4 dB and clamps them at ±0.5 (−6 dBFS), and while this path is on the page trims the song by 6 dB. Their sum stays below full scale. Everything is about 6 dB quieter at HDMI; turn the TV up to match.
+- **Headroom.** Song and voices now sum in Android, with no limiter over the sum. So the app trims the voices by 4 dB and clamps them at ±0.5 (−6 dBFS), and while this path is on the page trims the song by 8 dB (the page's own path trims it by 10 dB, so singers sit on top of the song). Their sum stays below full scale. The song is quieter at HDMI than its master; turn the TV up to match.
 - **Scoring.** The app sends each phone's input back to the page, after high-pass, gate and auto level, as 512-sample float blocks. Pitch and scoring run on them unchanged.
 - **Calibration.** A phone's "Tune my mic" runs two beeps:
   1. the scoring beep, played on the song's path; its result is persisted, as before;

@@ -23,11 +23,11 @@ export const LIMITER_RATIO = 20;
 export const ECHO_DELAY_MS = 120;
 /** Above this the TV copy of the voice is later than any echo can hide; the TV warns. */
 export const ECHO_MAX_DELAY_MS = 220;
-export const ECHO_FEEDBACK = 0.48;
+export const ECHO_FEEDBACK = 0.38;
 export const ECHO_LOWPASS_HZ = 3000;
 /** Low cut inside the echo loop: repeats thin out like a noraebang echo instead of piling up bass. */
 export const ECHO_HIGHPASS_HZ = 300;
-export const ECHO_WET_GAIN = 0.36;
+export const ECHO_WET_GAIN = 0.3;
 
 export const REVERB_SEND = 0.14;
 export const REVERB_SECONDS = 1.4;

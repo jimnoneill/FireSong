@@ -22,9 +22,9 @@ export type EchoPreset = {
 
 export const ECHO_PRESETS: Readonly<Record<EchoPresetId, EchoPreset>> = {
   off: { id: 'off', wet: 0, feedback: 0, lowpassHz: 3500, reverbSend: 0 },
-  light: { id: 'light', wet: 0.22, feedback: 0.3, lowpassHz: 3800, reverbSend: 0.1 },
-  noraebang: { id: 'noraebang', wet: 0.36, feedback: 0.48, lowpassHz: 3000, reverbSend: 0.14 },
-  hall: { id: 'hall', wet: 0.42, feedback: 0.55, lowpassHz: 2800, reverbSend: 0.3 },
+  light: { id: 'light', wet: 0.18, feedback: 0.25, lowpassHz: 3800, reverbSend: 0.1 },
+  noraebang: { id: 'noraebang', wet: 0.3, feedback: 0.38, lowpassHz: 3000, reverbSend: 0.14 },
+  hall: { id: 'hall', wet: 0.38, feedback: 0.48, lowpassHz: 2800, reverbSend: 0.28 },
 };
 
 /** The preset chosen in the noraebang settings. */

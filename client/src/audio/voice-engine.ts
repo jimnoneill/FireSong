@@ -14,18 +14,19 @@ import {
  * The TV's long-lived voice context. It owns every phone voice from join to
  * leave, so pauses and song changes never rebuild audio graphs or stop
  * tracks. Slots feed `bus` (dry and echo) and `reverbSend`; voices leave
- * through the bus compressor and the voice limiter, `output`. Voices and the
- * song meet in `speakers`, a last limiter, so together they never clip. A
- * trim after it, 0 dB unless set, leaves headroom when voices are mixed in
- * after the page's output.
+ * through the bus compressor and the voice limiter, `output`. The song comes
+ * in at `speakers`, its own level (the song trim, 0 dB unless set), and meets
+ * the voices in a last limiter, so together they never clip. The trim acts on
+ * the song alone: on the TV it keeps singers on top of the song, and with the
+ * app's native voice output it leaves headroom for voices mixed in later.
  */
 export type VoiceEngine = {
   readonly context: AudioContext;
   readonly bus: GainNode;
   readonly reverbSend: GainNode;
   readonly output: DynamicsCompressorNode;
-  /** Where the song's stems connect: the mix limiter in front of the speakers. */
-  readonly speakers: DynamicsCompressorNode;
+  /** Where the song's stems connect: the song's own level, in front of the mix limiter. */
+  readonly speakers: GainNode;
   /** Resolves once the chunker and gate worklets are loaded. */
   readonly ready: Promise<void>;
   resume(): Promise<void>;
@@ -33,9 +34,9 @@ export type VoiceEngine = {
   outputLatencyMs(): number;
   /** RMS of the last output block, the voices as they leave for the speakers. */
   outputRms(): number;
-  /** Gain after `speakers`, in dB; glides there in about 10 ms. */
+  /** The song's level at `speakers`, in dB; glides there in about 10 ms. Voices are not affected. */
   setSongTrimDb(db: number): void;
-  /** Largest absolute sample after the trim since the previous call; null before a new reading. */
+  /** Largest absolute song sample after the trim since the previous call; null before a new reading. */
   songPeak(): number | null;
 };
 
@@ -106,16 +107,17 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
   limiter.knee.value = 0;
   limiter.attack.value = LIMITER_ATTACK_SEC;
   limiter.release.value = LIMITER_RELEASE_SEC;
-  const speakers = compressor(context, MIX_LIMITER_THRESHOLD_DB, LIMITER_RATIO);
-  speakers.knee.value = 0;
-  speakers.attack.value = LIMITER_ATTACK_SEC;
-  speakers.release.value = MIX_LIMITER_RELEASE_SEC;
-  const songTrim = context.createGain();
-  speakers.connect(songTrim).connect(context.destination);
+  const mix = compressor(context, MIX_LIMITER_THRESHOLD_DB, LIMITER_RATIO);
+  mix.knee.value = 0;
+  mix.attack.value = LIMITER_ATTACK_SEC;
+  mix.release.value = MIX_LIMITER_RELEASE_SEC;
+  mix.connect(context.destination);
+  const speakers = context.createGain();
+  speakers.connect(mix);
 
   bus.connect(busCompressor);
   reverbSend.connect(reverb).connect(busCompressor);
-  busCompressor.connect(limiter).connect(speakers);
+  busCompressor.connect(limiter).connect(mix);
   const meter = context.createAnalyser();
   meter.fftSize = METER_FFT_SIZE;
   limiter.connect(meter);
@@ -123,7 +125,7 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
 
   const ready = context.audioWorklet.addModule(rackWorkletUrl());
   let songPeak: number | null = null;
-  meterSongPeak(context, ready, songTrim, (peak) => {
+  meterSongPeak(context, ready, speakers, (peak) => {
     songPeak = Math.max(songPeak ?? 0, peak);
   }).catch((error: unknown) => flight('song-peak', { why: 'error', error: String(error) }));
 
@@ -141,7 +143,7 @@ export const createVoiceEngine = (context: AudioContext): VoiceEngine => {
       return Math.sqrt(block.reduce((sum, sample) => sum + sample * sample, 0) / block.length);
     },
     setSongTrimDb: (db) => {
-      songTrim.gain.setTargetAtTime(dbToGain(db), context.currentTime, TRIM_GLIDE_SEC);
+      speakers.gain.setTargetAtTime(dbToGain(db), context.currentTime, TRIM_GLIDE_SEC);
     },
     songPeak: () => {
       const peak = songPeak;

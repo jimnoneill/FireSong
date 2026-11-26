@@ -48,6 +48,7 @@ below.
 
 ### Fixes
 
+- Singers are clearly heard over the song again: on the TV the song now plays 10 dB under its master while the voices stay at full level (turn the TV up a little), and the echo is lighter.
 - Your voice comes out of the TV sooner and with a proper noraebang echo: the TV plays through its fastest audio output (about 125 ms sooner on a Fire TV Cube), and the echo is short repeats 120 ms apart behind your full voice, thinning out like a noraebang echo, instead of a copy timed to your phone's delay. In the FireSong TV app, a trial (off by default) plays phone voices through the app itself, so singers hear themselves noticeably sooner and without brief dropouts; the trial plays everything a little quieter, so turn the TV up a bit.
 - You can hear yourself sing on the TV: each phone's voice is now brought up to a singing level on the TV (phones send their microphones without automatic gain, so a singer came out 20-30 dB under the song), and quiet phones are scored properly. On the TV the original singer's vocal no longer plays under your voice unless someone turns it up.
 - During a song the TV shows only what the remote can use: the song's time and a progress bar instead of seek and line buttons, "OK · Skip intro" instead of a button, and no touch-screen "Playback controls".

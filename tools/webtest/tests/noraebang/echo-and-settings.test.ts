@@ -10,8 +10,8 @@ import {
 describe('noraebang echo presets', () => {
   it('keeps the noraebang preset and silences "off"', () => {
     expect(ECHO_PRESETS.noraebang).toMatchObject({
-      wet: 0.36,
-      feedback: 0.48,
+      wet: 0.3,
+      feedback: 0.38,
       lowpassHz: 3000,
       reverbSend: 0.14,
     });

@@ -27,11 +27,12 @@ describe('noraebang echo presets', () => {
 });
 
 describe('noraebang settings', () => {
-  it('defaults to off with Korean captions and the noraebang echo', () => {
+  it('defaults to off with Korean captions, the noraebang echo and no voices on the TV', () => {
     expect(parseStoredSettings(null)).toEqual({
       enabled: false,
       koreanCaptions: true,
       echoPreset: 'noraebang',
+      voicesOnTv: false,
     });
   });
 
@@ -55,6 +56,10 @@ describe('noraebang settings', () => {
       echoPreset: 'hall',
     });
     expect(applyUrlOverrides(on, '?tv=1')).toBeNull();
+    expect(applyUrlOverrides(DEFAULT_NORAEBANG_SETTINGS, '?voices=on')).toEqual({
+      ...DEFAULT_NORAEBANG_SETTINGS,
+      voicesOnTv: true,
+    });
     expect(applyUrlOverrides(on, '?mode=karaoke&echo=loud')).toBeNull();
   });
 });

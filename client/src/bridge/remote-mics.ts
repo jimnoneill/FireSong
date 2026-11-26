@@ -6,6 +6,7 @@ import { installDiag } from '@/features/remote-mic/diag';
 import {
   linkNoraebang,
   noraebangMonitorAlways,
+  noraebangVoicesOnTv,
   presetEchoMix,
 } from '@/features/remote-mic/noraebang-link';
 import {
@@ -111,6 +112,8 @@ export type RemoteMicsDeps = {
   label: (slot: TvSlot) => string;
   /** Monitor every slot with a phone, whatever the bindings say (noraebang mode). */
   monitorAlways: () => boolean;
+  /** Whether phone voices play through the TV at all; scoring taps them either way. */
+  voicesOnTv: () => boolean;
   /** Echo and reverb levels for every slot (the echo preset). */
   echoMix: () => EchoMix;
 };
@@ -265,7 +268,7 @@ export class RemoteMics {
     return this.bindings.has(captureId);
   }
 
-  /** Re-reads `monitorAlways` and `echoMix`, after the noraebang settings change. */
+  /** Re-reads `voicesOnTv`, `monitorAlways` and `echoMix`, after the noraebang settings change. */
   refreshSettings(): void {
     this.rack?.setEchoMix(this.deps.echoMix());
     this.syncSlots();
@@ -701,7 +704,9 @@ export class RemoteMics {
     for (const entry of this.roster) {
       const bound = [...this.bindings.values()].filter((binding) => binding.micId === entry.micId);
       this.syncTap(entry, bound.length > 0);
-      const monitor = this.deps.monitorAlways() || bound.some((binding) => binding.monitor);
+      const monitor =
+        this.deps.voicesOnTv() &&
+        (this.deps.monitorAlways() || bound.some((binding) => binding.monitor));
       this.rack?.setMonitor(entry.slot, monitor);
     }
     this.publish();
@@ -821,6 +826,7 @@ export const remoteMics = new RemoteMics({
   devicesChanged: notifyDeviceChange,
   label: slotLabel,
   monitorAlways: noraebangMonitorAlways,
+  voicesOnTv: noraebangVoicesOnTv,
   echoMix: presetEchoMix,
 });
 

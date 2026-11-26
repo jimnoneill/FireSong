@@ -19,12 +19,18 @@ export type NoraebangSettings = {
   koreanCaptions: boolean;
   /** Echo preset the TV voice engine applies to phone mics. */
   echoPreset: EchoPresetId;
+  /**
+   * Phone voices through the TV speakers. Off by default until the feedback
+   * and lag are fixed (owner, 2026-11-25); scoring hears the phones either way.
+   */
+  voicesOnTv: boolean;
 };
 
 export const DEFAULT_NORAEBANG_SETTINGS: NoraebangSettings = {
   enabled: false,
   koreanCaptions: true,
   echoPreset: 'noraebang',
+  voicesOnTv: false,
 };
 
 export const NORAEBANG_SETTINGS_STORAGE_KEY = 'firesong.noraebang';
@@ -38,6 +44,7 @@ const storedSettingsSchema = z.object({
   enabled: z.boolean().catch(DEFAULT_NORAEBANG_SETTINGS.enabled),
   koreanCaptions: z.boolean().catch(DEFAULT_NORAEBANG_SETTINGS.koreanCaptions),
   echoPreset: echoPresetSchema.catch(DEFAULT_NORAEBANG_SETTINGS.echoPreset),
+  voicesOnTv: z.boolean().catch(DEFAULT_NORAEBANG_SETTINGS.voicesOnTv),
 });
 
 function parseJson(raw: string): unknown {
@@ -69,16 +76,28 @@ function echoOverride(echo: string | null): Partial<NoraebangSettings> {
   return parsed.success ? { echoPreset: parsed.data } : {};
 }
 
+function voicesOverride(voices: string | null): Partial<NoraebangSettings> {
+  if (voices === 'on') {
+    return { voicesOnTv: true };
+  }
+  return voices === 'off' ? { voicesOnTv: false } : {};
+}
+
 /**
- * Applies `?mode=noraebang|classic` and `?echo=<preset>`. Returns `null` when
- * the query changes nothing, so nothing is written back to storage.
+ * Applies `?mode=noraebang|classic`, `?echo=<preset>` and `?voices=on|off`.
+ * Returns `null` when the query changes nothing, so nothing is written back
+ * to storage.
  */
 export function applyUrlOverrides(
   settings: NoraebangSettings,
   search: string,
 ): NoraebangSettings | null {
   const params = new URLSearchParams(search);
-  const overrides = { ...modeOverride(params.get('mode')), ...echoOverride(params.get('echo')) };
+  const overrides = {
+    ...modeOverride(params.get('mode')),
+    ...echoOverride(params.get('echo')),
+    ...voicesOverride(params.get('voices')),
+  };
   if (Object.keys(overrides).length === 0) {
     return null;
   }

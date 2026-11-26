@@ -275,7 +275,7 @@ describe('TV voice engine, one phone at 440 Hz', () => {
   it('lists the phone, taps frames into the bus, tracks pitch, and survives rebinding', async () => {
     const browser = await launch(toneWav);
     browsers.push(browser);
-    const tv = await openTv(browser, relay, '?tv=1');
+    const tv = await openTv(browser, relay, '?tv=1&voices=on');
     const micId = 'fakeA1234567';
     const phone = await joinPhone(browser, relay, micId, 1, tv);
     const deviceId = `remote:${micId}`;
@@ -366,7 +366,7 @@ describe('noraebang echo', () => {
   it('keeps the audible echo at 120 ms whatever the slot latency', async () => {
     const browser = await launch(burstWav);
     browsers.push(browser);
-    const tv = await openTv(browser, relay, '?tv=1&mode=noraebang');
+    const tv = await openTv(browser, relay, '?tv=1&mode=noraebang&voices=on');
     const micId = 'fakeEcho1234';
     await joinPhone(browser, relay, micId, 1, tv);
 
@@ -423,7 +423,7 @@ describe('independent slots', () => {
     const tvBrowser = await launch(lowToneWav);
     const otherBrowser = await launch(highToneWav);
     browsers.push(tvBrowser, otherBrowser);
-    const tv = await openTv(tvBrowser, relay, '?tv=1');
+    const tv = await openTv(tvBrowser, relay, '?tv=1&voices=on');
     await joinPhone(tvBrowser, relay, 'fakeLow12345', 1, tv);
     const high = await joinPhone(otherBrowser, relay, 'fakeHigh1234', 2, tv);
 

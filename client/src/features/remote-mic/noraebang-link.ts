@@ -3,7 +3,7 @@ import type { EchoMix } from '@/audio/voice-params';
 import type { RemoteMics } from '@/bridge/remote-mics';
 import { provideRevealSoundOutput } from '@/features/noraebang/audio/sound-output';
 import { currentEchoPreset, phoneMicMonitoringForced } from '@/features/noraebang/echo';
-import { subscribeNoraebangSettings } from '@/features/noraebang/settings';
+import { getNoraebangSettings, subscribeNoraebangSettings } from '@/features/noraebang/settings';
 import { registerSongResultSink } from '@/features/noraebang/song-result';
 
 /**
@@ -20,6 +20,8 @@ export const presetEchoMix = (): EchoMix => {
 };
 
 export const noraebangMonitorAlways = (): boolean => phoneMicMonitoringForced();
+
+export const noraebangVoicesOnTv = (): boolean => getNoraebangSettings().voicesOnTv;
 
 /** Registers the TV's sinks with the noraebang module; returns the unlink function. */
 export const linkNoraebang = (mics: RemoteMics): (() => void) => {

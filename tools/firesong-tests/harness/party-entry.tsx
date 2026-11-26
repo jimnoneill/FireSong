@@ -182,6 +182,7 @@ const calibrate = async (kind: 'loopback' | 'silent', delaysMs: number[]) => {
     devicesChanged: () => undefined,
     label: (slot) => `Slot ${slot.slot}`,
     monitorAlways: () => false,
+    voicesOnTv: () => true,
     echoMix: () => DEFAULT_ECHO_MIX,
   });
   const stop = mics.start();

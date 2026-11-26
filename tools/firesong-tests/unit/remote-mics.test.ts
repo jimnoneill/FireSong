@@ -160,6 +160,7 @@ const setup = (monitorAlways = false) => {
     devicesChanged: deviceChanges,
     label: (entry) => `Slot ${entry.slot} · ${entry.name ?? entry.color}${entry.state === 'reserved' ? ' (reconnecting)' : ''}`,
     monitorAlways: () => settings.monitorAlways,
+    voicesOnTv: () => true,
     echoMix: () => settings.mix,
   };
   const mics = new RemoteMics(deps);
